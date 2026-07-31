@@ -256,8 +256,28 @@ $rootSourceFiles = @(
 foreach ($relativePath in $rootSourceFiles) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $relativePath) -Destination $sourceStage
 }
-foreach ($directoryName in @('assets', 'schemas', 'server', 'tools', 'vendor')) {
+foreach ($directoryName in @('assets', 'schemas', 'tools', 'vendor')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $directoryName) -Destination $sourceStage -Recurse
+}
+
+$serverStage = Join-Path $sourceStage 'server'
+New-Item -ItemType Directory -Path $serverStage | Out-Null
+foreach ($relativePath in @(
+    '.env.business.example',
+    '.env.example',
+    'package.json',
+    'physics-ai-gateway.mjs',
+    'pnpm-lock.yaml',
+    'pnpm-workspace.yaml',
+    'README.md',
+    'tsconfig.build.json',
+    'tsconfig.json',
+    'vitest.config.ts'
+)) {
+    Copy-Item -LiteralPath (Join-Path $projectDirectory "server\$relativePath") -Destination $serverStage
+}
+foreach ($directoryName in @('migrations', 'src', 'tests')) {
+    Copy-Item -LiteralPath (Join-Path $projectDirectory "server\$directoryName") -Destination $serverStage -Recurse
 }
 
 $androidStage = Join-Path $sourceStage 'android'
