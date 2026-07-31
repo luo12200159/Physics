@@ -6,6 +6,11 @@ Microsoft.Web.WebView2.Core.dll
 Microsoft.Web.WebView2.WinForms.dll
 runtimes/
 
+server/node_modules/
+server/dist/
+server/coverage/
+server/.env
+
 android/signing/*.jks
 android/signing/keystore.properties
 
