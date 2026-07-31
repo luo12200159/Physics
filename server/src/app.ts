@@ -1,9 +1,15 @@
+import { randomUUID } from "node:crypto";
+
 import { Type } from "@sinclair/typebox";
 import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 
 import type { AppConfig } from "./config.js";
 import { ApiError, ApiErrorBodySchema, apiErrorBody } from "./common/errors.js";
+import {
+  requireMutationIdempotency,
+  type MutationIdempotency,
+} from "./common/idempotency.js";
 import { StrictObject } from "./common/schema.js";
 
 export interface AppDependencies {
@@ -27,7 +33,18 @@ declare module "fastify" {
   interface FastifyInstance {
     deps: AppDependencies;
   }
+
+  interface FastifyRequest {
+    mutationIdempotency: MutationIdempotency | null;
+  }
 }
+
+const mutableMethods = new Set(["POST", "PATCH", "DELETE"]);
+const idempotencyExemptRoutes = new Set([
+  "POST /v1/auth/login",
+  "POST /v1/auth/refresh",
+  "POST /v1/auth/reauthenticate",
+]);
 
 const LiveResponseSchema = StrictObject({
   status: Type.Literal("ok"),
@@ -47,9 +64,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   const app = Fastify({
     logger: deps.config.nodeEnv !== "test",
     bodyLimit: 1_048_576,
+    genReqId: () => randomUUID(),
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   app.decorate("deps", deps);
+  app.decorateRequest("mutationIdempotency", null);
+
+  app.addHook("preHandler", async (request) => {
+    const method = request.method.toUpperCase();
+    if (!mutableMethods.has(method)) return;
+    const routeIdentity = `${method} ${request.routeOptions.url}`;
+    if (idempotencyExemptRoutes.has(routeIdentity)) return;
+    request.mutationIdempotency = requireMutationIdempotency(request);
+  });
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ApiError) {
