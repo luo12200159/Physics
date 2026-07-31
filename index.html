@@ -1,0 +1,588 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f4f6f2" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' data: blob: https:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none';"
+    />
+    <meta
+      name="description"
+      content="可离线使用的初高中物理试题与解题视频管理应用"
+    />
+    <title>物理研习室｜初高中物理题库</title>
+    <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="learning-lab.css" />
+    <link rel="stylesheet" href="experience-shell.css" />
+    <link rel="stylesheet" href="activation.css" />
+  </head>
+  <body class="activation-pending">
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#top" aria-label="物理研习室首页">
+        <span class="brand-mark" aria-hidden="true">φ</span>
+        <span>
+          <strong>物理研习室</strong>
+          <small>PHYSICS STUDIO</small>
+        </span>
+      </a>
+
+      <nav class="nav-list">
+        <button class="nav-item active" data-view="library" type="button">
+          <span class="nav-icon">⌂</span>
+          <span>我的题库</span>
+        </button>
+        <button class="nav-item" data-view="wrong" type="button">
+          <span class="nav-icon">!</span>
+          <span>错题集</span>
+          <span class="nav-count" id="wrongNavCount">0</span>
+        </button>
+        <button class="nav-item" data-view="videos" type="button">
+          <span class="nav-icon">▷</span>
+          <span>方法视频</span>
+        </button>
+        <button class="nav-item" data-view="mastered" type="button">
+          <span class="nav-icon">✓</span>
+          <span>已掌握</span>
+        </button>
+        <button class="nav-item" data-view="progress" type="button">
+          <span class="nav-icon">↗</span>
+          <span>掌握进度</span>
+        </button>
+        <button class="nav-item" data-view="knowledge" type="button">
+          <span class="nav-icon">◎</span>
+          <span>知识点掌握</span>
+        </button>
+        <button class="nav-item" data-view="curriculum" type="button">
+          <span class="nav-icon">▤</span>
+          <span>教材知识目录</span>
+        </button>
+        <button class="nav-item" data-view="analysis" type="button">
+          <span class="nav-icon">▥</span>
+          <span>学情分析</span>
+        </button>
+        <button class="nav-item lab-nav-item" id="learningLabButton" type="button">
+          <span class="nav-icon">⌬</span>
+          <span>学习实验室</span>
+          <span class="lab-new-badge">闭环</span>
+        </button>
+        <button class="nav-item" id="syncCenterButton" type="button">
+          <span class="nav-icon">⌕</span>
+          <span>互联网题源</span>
+          <i class="sync-dot" id="syncDot" aria-hidden="true"></i>
+        </button>
+      </nav>
+
+      <div class="sidebar-tip">
+        <span class="tip-label">学习建议</span>
+        <p>先独立分析受力与过程，再对照解析，最后用视频复盘关键方法。</p>
+      </div>
+
+      <div class="sidebar-actions">
+        <button class="text-button" id="fullBackupButton" type="button">完整备份（含附件）</button>
+        <label class="text-button file-label" for="fullRestoreInput">恢复完整备份</label>
+        <input id="fullRestoreInput" class="visually-hidden" type="file" accept=".pslab,application/zip" />
+        <button class="text-button" id="exportButton" type="button">轻量导出 JSON</button>
+        <label class="text-button file-label" for="importInput">导入轻量 JSON</label>
+        <input id="importInput" class="visually-hidden" type="file" accept="application/json,.json" />
+      </div>
+    </aside>
+
+    <main class="main" id="top">
+      <header class="topbar">
+        <button class="menu-button" id="menuButton" type="button" aria-label="打开导航">☰</button>
+        <div class="eyebrow"><span></span> PERSONAL KNOWLEDGE BASE</div>
+        <div class="topbar-actions">
+          <button class="lab-quick-button" id="learningLabQuickButton" type="button">
+            <span aria-hidden="true">⌬</span>
+            <span><strong>开始闭环学习</strong><small>诊断 · 建模 · 验证 · 复习</small></span>
+          </button>
+          <button class="sync-status-button" id="quickSyncButton" type="button">
+            <span class="sync-status-icon" aria-hidden="true">⌕</span>
+            <span><strong>互联网题源</strong><small id="quickSyncStatus">来源与授权索引</small></span>
+          </button>
+          <button class="primary-button" id="addQuestionButton" type="button">
+            <span aria-hidden="true">＋</span> 添加试题
+          </button>
+        </div>
+      </header>
+
+      <section class="hero" aria-labelledby="pageTitle">
+        <div>
+          <p class="hero-kicker" id="viewKicker">题目不是答案，是通往规律的路径。</p>
+          <h1 id="pageTitle">我的物理题库</h1>
+          <p class="hero-copy" id="viewDescription">
+            把典型问题、推理过程与方法视频沉淀在一起，让每次练习都留下可复用的理解。
+          </p>
+        </div>
+        <div class="orbit-graphic" aria-hidden="true">
+          <div class="orbit orbit-a"><i></i></div>
+          <div class="orbit orbit-b"><i></i></div>
+          <span>F</span>
+        </div>
+      </section>
+
+      <section class="stats-grid" aria-label="题库统计">
+        <button class="stat-card stat-total" data-view-target="library" type="button" aria-label="打开全部收录试题">
+          <span class="stat-symbol">Σ</span>
+          <span class="stat-copy"><strong id="totalCount">0</strong><span class="stat-label">完整试题</span><span class="stat-link">打开全部题目与索引 →</span></span>
+        </button>
+        <button class="stat-card stat-video" data-view-target="videos" type="button" aria-label="打开附带方法视频的试题">
+          <span class="stat-symbol">▶</span>
+          <span class="stat-copy"><strong id="videoCount">0</strong><span class="stat-label">方法视频</span><span class="stat-link">打开视频题目 →</span></span>
+        </button>
+        <button class="stat-card stat-mastered" data-view-target="mastered" type="button" aria-label="打开已经掌握的试题">
+          <span class="stat-symbol">✓</span>
+          <span class="stat-copy"><strong id="masteredCount">0</strong><span class="stat-label">已经掌握</span><span class="stat-link">打开已掌握题目 →</span></span>
+        </button>
+        <button class="stat-card stat-rate" data-view-target="progress" type="button" aria-label="打开掌握进度">
+          <span class="stat-symbol">↗</span>
+          <span class="stat-copy"><strong id="masteryRate">0%</strong><span class="stat-label">掌握进度</span><span class="stat-link">查看学习进度 →</span></span>
+        </button>
+      </section>
+
+      <section class="workspace" id="workspace" aria-label="题库内容">
+        <div class="toolbar" id="toolbar">
+          <form class="unified-search" id="unifiedSearchForm" role="search">
+            <label class="search-box" for="searchInput">
+              <span aria-hidden="true">⌕</span>
+              <input
+                id="searchInput"
+                type="search"
+                placeholder="搜索题目、知识点、解析或答案…"
+                aria-describedby="searchHint"
+                autocomplete="off"
+              />
+            </label>
+            <button class="search-action-button search-local-button" type="submit">搜站内试题</button>
+            <button class="search-action-button search-edge-button" id="edgeSearchButton" type="button">
+              Edge 搜全网 <span aria-hidden="true">↗</span>
+            </button>
+            <p class="search-hint" id="searchHint">
+              <span id="searchStatus" aria-live="polite">输入关键词可实时筛选站内试题。</span>
+              <span>全网搜索需要联网，将在 Edge/Bing 中打开外部网站。</span>
+            </p>
+          </form>
+          <div class="filter-row">
+            <label>
+              <span class="visually-hidden">学段筛选</span>
+              <select id="stageFilter">
+                <option value="all">全部学段</option>
+                <option value="初中">初中</option>
+                <option value="高中">高中</option>
+              </select>
+            </label>
+            <label>
+              <span class="visually-hidden">难度筛选</span>
+              <select id="difficultyFilter">
+                <option value="all">全部难度</option>
+                <option value="基础">基础</option>
+                <option value="进阶">进阶</option>
+                <option value="挑战">挑战</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        <section class="progress-panel hidden" id="progressPanel" aria-labelledby="progressTitle">
+          <div class="progress-overview">
+            <span class="progress-kicker">MASTERY TRACKER</span>
+            <div class="progress-title-row">
+              <div>
+                <h2 id="progressTitle">掌握进度</h2>
+                <p id="progressSummary">尚未开始标记掌握情况。</p>
+              </div>
+              <strong id="progressRate">0%</strong>
+            </div>
+            <div class="progress-track" id="progressTrack" role="progressbar" aria-label="试题掌握进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+              <span id="progressBarFill"></span>
+            </div>
+          </div>
+          <div class="progress-actions" aria-label="进度快捷入口">
+            <button data-progress-view="mastered" type="button">
+              <span class="progress-action-icon mastered">✓</span>
+              <strong id="progressMasteredCount">0</strong>
+              <small>查看已掌握试题</small>
+            </button>
+            <button data-progress-view="pending" type="button">
+              <span class="progress-action-icon pending">↻</span>
+              <strong id="progressPendingCount">0</strong>
+              <small>继续完成待掌握试题</small>
+            </button>
+          </div>
+        </section>
+
+        <section class="analysis-panel hidden" id="analysisPanel" aria-labelledby="analysisTitle">
+          <header class="insight-header">
+            <div>
+              <span class="progress-kicker">LEARNING EVIDENCE</span>
+              <h2 id="analysisTitle" tabindex="-1">学情分析</h2>
+              <p>仅依据本应用内的题目、错题、掌握标记、方法视频和举一反三记录进行描述，不替代正式测评。</p>
+            </div>
+            <button class="secondary-button" data-analysis-view="wrong" type="button">打开错题集</button>
+          </header>
+          <div class="analysis-metrics">
+            <article><span>掌握率</span><strong id="analysisMasteryRate">0%</strong><small>已掌握 ÷ 收录题目</small></article>
+            <article><span>错题</span><strong id="analysisWrongCount">0</strong><small>当前错题集题数</small></article>
+            <article><span>知识点</span><strong id="analysisTopicCount">0</strong><small>题库内不同知识点</small></article>
+            <article><span>变式记录</span><strong id="analysisTransferCount">0</strong><small>已保存举一反三记录</small></article>
+          </div>
+          <div class="analysis-content-grid">
+            <article class="analysis-card priority-card">
+              <span class="analysis-card-index">01</span>
+              <h3>优先巩固</h3>
+              <div id="analysisPriority"></div>
+              <button class="text-link-button" data-analysis-view="knowledge" type="button">查看知识点掌握情况 →</button>
+            </article>
+            <article class="analysis-card">
+              <span class="analysis-card-index">02</span>
+              <h3>下一步建议</h3>
+              <ol class="analysis-advice-list" id="analysisAdviceList"></ol>
+              <button class="text-link-button" data-analysis-view="pending" type="button">继续练习待掌握题目 →</button>
+            </article>
+          </div>
+        </section>
+
+        <section class="knowledge-panel hidden" id="knowledgePanel" aria-labelledby="knowledgeTitle">
+          <header class="insight-header">
+            <div>
+              <span class="progress-kicker">KNOWLEDGE MAP</span>
+              <h2 id="knowledgeTitle" tabindex="-1">知识点掌握情况</h2>
+              <p>掌握率按“该知识点已掌握题数 ÷ 该知识点收录题数”计算。点击知识点可打开对应试题。</p>
+            </div>
+            <button class="secondary-button" data-analysis-view="analysis" type="button">查看学情分析</button>
+          </header>
+          <div class="knowledge-grid" id="knowledgeGrid"></div>
+        </section>
+
+        <section class="curriculum-panel hidden" id="curriculumPanel" aria-labelledby="curriculumTitle">
+          <header class="insight-header curriculum-header">
+            <div>
+              <span class="progress-kicker">TEXTBOOK TAXONOMY</span>
+              <h2 id="curriculumTitle" tabindex="-1">教材知识目录</h2>
+              <p>按教材册、章、节组织题库。点击章或知识点可筛选站内试题，也可在 Edge 中定向查找长沙最新题源。</p>
+            </div>
+            <div class="curriculum-filter">
+              <label>
+                <span>年级</span>
+                <select id="curriculumGradeFilter">
+                  <option value="all">全部年级</option>
+                  <option value="八年级">八年级</option>
+                  <option value="九年级">九年级</option>
+                  <option value="高一">高一</option>
+                  <option value="高二">高二</option>
+                  <option value="高三">高三</option>
+                </select>
+              </label>
+            </div>
+          </header>
+          <div class="curriculum-summary" id="curriculumSummary"></div>
+          <div class="curriculum-grid" id="curriculumGrid"></div>
+        </section>
+
+        <div id="questionListSection">
+          <div class="section-heading">
+            <div>
+              <span class="heading-index">01</span>
+              <h2 id="listHeading" tabindex="-1">全部试题</h2>
+            </div>
+            <span id="resultCount">0 道题</span>
+          </div>
+
+          <div class="question-grid" id="questionGrid" aria-live="polite"></div>
+
+          <div class="empty-state hidden" id="emptyState">
+            <div class="empty-illustration" aria-hidden="true">λ</div>
+            <h3>这里还没有匹配的题目</h3>
+            <p>可以调整筛选条件，或添加一道新的物理试题。</p>
+            <button class="secondary-button" id="emptyAddButton" type="button">添加第一道题</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <div class="drawer-backdrop" id="drawerBackdrop"></div>
+
+    <dialog class="modal question-modal" id="questionModal">
+      <form id="questionForm" method="dialog">
+        <div class="modal-header">
+          <div>
+            <span class="modal-index">NEW ENTRY</span>
+            <h2 id="formTitle">添加物理试题</h2>
+          </div>
+          <button class="icon-button close-modal" type="button" aria-label="关闭">×</button>
+        </div>
+
+        <div class="modal-body">
+          <input id="questionId" type="hidden" />
+          <div class="form-section capture-import-section">
+            <h3><span>00</span> 扫描与文件导入</h3>
+            <p class="section-helper">可拍照扫描题目、识别二维码，也可从相册、文件、拖拽或剪贴板添加材料。</p>
+            <div class="capture-method-grid">
+              <button class="capture-method-card" id="openPhotoScannerButton" type="button">
+                <span aria-hidden="true">▣</span>
+                <strong>拍照扫描</strong>
+                <small>调用摄像头拍摄试题</small>
+              </button>
+              <label class="capture-method-card" for="scanImageInput">
+                <span aria-hidden="true">▧</span>
+                <strong>相册 / 图片</strong>
+                <small>支持多张 JPG、PNG、WebP</small>
+              </label>
+              <button class="capture-method-card" id="openQrScannerButton" type="button">
+                <span aria-hidden="true">⌗</span>
+                <strong>扫描二维码</strong>
+                <small>摄像头或二维码图片</small>
+              </button>
+              <label class="capture-method-card" for="attachmentFileInput">
+                <span aria-hidden="true">↑</span>
+                <strong>上传文件</strong>
+                <small>PDF、Word、TXT、Markdown</small>
+              </label>
+            </div>
+            <input class="visually-hidden" id="scanImageInput" type="file" accept="image/jpeg,image/png,image/webp,image/gif,.jpg,.jpeg,.png,.webp,.gif" multiple />
+            <input class="visually-hidden" id="attachmentFileInput" type="file" accept="image/*,application/pdf,text/plain,text/markdown,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.pdf,.txt,.md,.doc,.docx" multiple />
+            <div class="attachment-drop-zone" id="attachmentDropZone" tabindex="0">
+              <strong>也可以把扫描件或文件拖到这里</strong>
+              <small>在此处按 Ctrl+V 可粘贴截图；每题最多 12 个附件，单个文件不超过 20 MB</small>
+            </div>
+            <div class="attachment-list hidden" id="attachmentList" aria-live="polite"></div>
+          </div>
+
+          <div class="form-section">
+            <h3><span>01</span> 基本信息</h3>
+            <div class="form-grid">
+              <label class="field field-wide">
+                <span>题目名称 <i>*</i></span>
+                <input id="titleInput" required maxlength="80" placeholder="例如：斜面上的物块受力分析" />
+              </label>
+              <label class="field">
+                <span>学段 <i>*</i></span>
+                <select id="stageInput" required>
+                  <option value="初中">初中</option>
+                  <option value="高中">高中</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>年级</span>
+                <select id="gradeInput">
+                  <option>八年级</option>
+                  <option>九年级</option>
+                  <option>高一</option>
+                  <option>高二</option>
+                  <option>高三</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>知识点 <i>*</i></span>
+                <input id="topicInput" required maxlength="40" placeholder="例如：牛顿运动定律" />
+              </label>
+              <label class="field">
+                <span>难度</span>
+                <select id="difficultyInput">
+                  <option value="基础">基础</option>
+                  <option value="进阶" selected>进阶</option>
+                  <option value="挑战">挑战</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span>题目来源</span>
+                <input id="sourceInput" maxlength="60" placeholder="例如：2025 年期中考试 / 自编题" />
+              </label>
+              <label class="field">
+                <span>教材册别</span>
+                <select id="bookInput"></select>
+              </label>
+              <label class="field">
+                <span>章</span>
+                <select id="chapterInput"></select>
+              </label>
+              <label class="field">
+                <span>节 / 知识点</span>
+                <select id="sectionInput"></select>
+              </label>
+              <label class="field">
+                <span>正文收录依据</span>
+                <select id="sourceLicenseInput">
+                  <option value="应用内原创">应用内原创</option>
+                  <option value="个人原创" selected>个人原创</option>
+                  <option value="官方公开许可">官方公开许可</option>
+                  <option value="已取得书面授权">已取得书面授权</option>
+                  <option value="仅保存来源链接">仅保存来源链接</option>
+                  <option value="用户自行上传（权利状态由用户确认）">用户自行上传（权利状态由用户确认）</option>
+                </select>
+              </label>
+              <label class="field field-wide">
+                <span>来源网页</span>
+                <input id="sourceUrlInput" type="url" maxlength="500" placeholder="https://example.com/question-source" />
+                <small>只有确认允许收录正文时才复制题目；否则选择“仅保存来源链接”。</small>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-section">
+            <h3><span>02</span> 题目与解析</h3>
+            <div class="form-stack">
+              <label class="field">
+                <span>题目内容 <i>*</i></span>
+                <textarea id="contentInput" required rows="5" placeholder="完整填写题目条件和设问…"></textarea>
+              </label>
+              <label class="field">
+                <span>解题方法 / 关键步骤 <i>*</i></span>
+                <textarea id="solutionInput" required rows="6" placeholder="按分析对象、物理规律、方程与结论的顺序记录…"></textarea>
+              </label>
+              <label class="field">
+                <span>答案</span>
+                <textarea id="answerInput" rows="3" placeholder="填写最终结论、数值及单位…"></textarea>
+              </label>
+            </div>
+          </div>
+
+          <div class="form-section content-audit-section">
+            <h3><span>QA</span> 保存前自动检查</h3>
+            <p class="section-helper">检查题名与设问、图和选项、答案单位、公式条件、教材分类及来源记录。检查结果只提示风险，不能替代教师审核。</p>
+            <div class="content-audit-panel" id="contentAuditPanel" aria-live="polite"></div>
+          </div>
+
+          <div class="form-section">
+            <h3><span>03</span> 方法视频</h3>
+            <div class="video-source-tabs" role="tablist">
+              <button class="source-tab active" type="button" data-source="file">上传本地视频</button>
+              <button class="source-tab" type="button" data-source="url">填写视频链接</button>
+            </div>
+            <div class="video-source-panel" id="filePanel">
+              <label class="upload-zone" for="videoFileInput">
+                <span class="upload-icon">↑</span>
+                <strong>选择解题方法视频</strong>
+                <small>支持 MP4、WebM、MOV；文件保存在当前浏览器中</small>
+              </label>
+              <input class="visually-hidden" id="videoFileInput" type="file" accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" />
+              <div class="selected-file hidden" id="selectedFile"></div>
+            </div>
+            <div class="video-source-panel hidden" id="urlPanel">
+              <label class="field">
+                <span>视频直链</span>
+                <input id="videoUrlInput" type="url" placeholder="https://example.com/solution.mp4" />
+                <small>请输入以 http:// 或 https:// 开头、浏览器可直接播放的视频地址。</small>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <span id="saveHint">带 * 的项目为必填项</span>
+          <div>
+            <button class="ghost-button close-modal" type="button">取消</button>
+            <button class="primary-button" id="saveButton" type="submit">保存试题</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal detail-modal" id="detailModal">
+      <article id="detailContent"></article>
+    </dialog>
+
+    <dialog class="modal capture-modal" id="photoScanModal">
+      <article>
+        <div class="modal-header">
+          <div>
+            <span class="modal-index">CAMERA SCAN</span>
+            <h2>拍照扫描试题</h2>
+          </div>
+          <button class="icon-button close-photo-scan" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="camera-modal-body">
+          <div class="camera-viewport">
+            <video id="photoCameraVideo" autoplay muted playsinline aria-label="试题拍摄预览"></video>
+            <div class="camera-guide" aria-hidden="true"></div>
+          </div>
+          <canvas class="visually-hidden" id="photoCameraCanvas"></canvas>
+          <p class="camera-status" id="photoCameraStatus">正在准备摄像头…</p>
+          <div class="camera-actions">
+            <button class="ghost-button close-photo-scan" type="button">取消</button>
+            <button class="primary-button" id="capturePhotoButton" type="button">拍摄并加入题目</button>
+          </div>
+        </div>
+      </article>
+    </dialog>
+
+    <dialog class="modal capture-modal" id="qrScannerModal">
+      <article>
+        <div class="modal-header">
+          <div>
+            <span class="modal-index">QR IMPORT</span>
+            <h2>扫描二维码添加试题</h2>
+          </div>
+          <button class="icon-button close-qr-scanner" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="camera-modal-body">
+          <div class="camera-viewport qr-camera-viewport">
+            <video id="qrCameraVideo" autoplay muted playsinline aria-label="二维码扫描预览"></video>
+            <div class="qr-scan-line" aria-hidden="true"></div>
+          </div>
+          <canvas class="visually-hidden" id="qrCameraCanvas"></canvas>
+          <p class="camera-status" id="qrScannerStatus">将二维码放入取景框内。</p>
+          <div class="qr-import-options">
+            <label class="secondary-button qr-image-picker" for="qrImageInput">选择二维码图片</label>
+            <input class="visually-hidden" id="qrImageInput" type="file" accept="image/*,.jpg,.jpeg,.png,.webp" />
+            <label class="field">
+              <span>也可粘贴二维码中的文字或链接</span>
+              <textarea id="qrManualInput" rows="3" placeholder="支持网页链接、题目文字或物理研习室 JSON"></textarea>
+            </label>
+          </div>
+          <div class="camera-actions">
+            <button class="ghost-button close-qr-scanner" type="button">取消</button>
+            <button class="primary-button" id="applyQrTextButton" type="button">使用上述内容</button>
+          </div>
+        </div>
+      </article>
+    </dialog>
+
+    <dialog class="modal transfer-modal" id="transferModal">
+      <article id="transferContent"></article>
+    </dialog>
+
+    <dialog class="learning-lab-modal" id="learningLabModal" aria-label="物理学习实验室">
+      <article id="learningLabContent"></article>
+    </dialog>
+
+    <dialog class="confirm-dialog" id="confirmDialog">
+      <div class="confirm-mark">!</div>
+      <h2>确认删除这道题？</h2>
+      <p>题目、解析、本地视频与扫描附件都将被删除，此操作无法撤销。</p>
+      <div>
+        <button class="ghost-button" id="cancelDeleteButton" type="button">取消</button>
+        <button class="danger-button" id="confirmDeleteButton" type="button">确认删除</button>
+      </div>
+    </dialog>
+
+    <dialog class="modal sync-modal" id="syncModal" aria-label="长沙互联网物理题源"></dialog>
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="activation-public-key.js"></script>
+    <script src="activation.js"></script>
+    <script src="curriculum-taxonomy.js"></script>
+    <script src="curriculum-bank.js"></script>
+    <script src="exam-question-index.js"></script>
+    <script src="mock-exam-bank.js"></script>
+    <script src="original-practice-bank.js"></script>
+    <script src="targeted-practice-bank.js"></script>
+    <script src="vendor/fflate.js"></script>
+    <script src="security.js"></script>
+    <script src="backup.js"></script>
+    <script src="backup-validator.js"></script>
+    <script src="ai-tutor.js"></script>
+    <script src="document-import.js"></script>
+    <script src="content-catalog.js"></script>
+    <script src="learning-engine.js"></script>
+    <script src="vendor/jsQR.js"></script>
+    <script src="app.js"></script>
+    <script src="learning-lab.js"></script>
+    <script src="experience-shell.js"></script>
+  </body>
+</html>

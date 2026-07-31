@@ -1,0 +1,14 @@
+.build/
+qa-output/
+发布/
+物理研习室.exe
+Microsoft.Web.WebView2.Core.dll
+Microsoft.Web.WebView2.WinForms.dll
+runtimes/
+
+android/signing/*.jks
+android/signing/keystore.properties
+
+*.user
+*.tmp
+Thumbs.db

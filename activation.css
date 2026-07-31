@@ -1,0 +1,220 @@
+body.activation-pending {
+  overflow: hidden;
+}
+
+body.activation-pending > :not(#activationGate):not(script) {
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.activation-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 100000;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  padding: 24px;
+  color: #1f2c27;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(38, 115, 82, 0.14), transparent 34%),
+    radial-gradient(circle at 88% 92%, rgba(186, 112, 50, 0.12), transparent 32%),
+    #f4f6f2;
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+.activation-panel {
+  width: min(680px, 100%);
+  padding: clamp(24px, 5vw, 46px);
+  border: 1px solid rgba(24, 77, 57, 0.16);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 24px 70px rgba(33, 59, 49, 0.14);
+}
+
+.activation-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 26px;
+}
+
+.activation-brand-mark {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border-radius: 15px;
+  color: #fff;
+  background: #195b43;
+  font: 700 24px/1 Georgia, serif;
+}
+
+.activation-brand strong,
+.activation-brand span {
+  display: block;
+}
+
+.activation-brand strong {
+  font-size: 18px;
+}
+
+.activation-brand span {
+  margin-top: 2px;
+  color: #6a7771;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+
+.activation-panel h1 {
+  margin: 0 0 10px;
+  color: #163f31;
+  font-size: clamp(26px, 5vw, 38px);
+  line-height: 1.18;
+}
+
+.activation-intro {
+  margin: 0 0 24px;
+  color: #5d6964;
+  font-size: 16px;
+  line-height: 1.75;
+}
+
+.activation-device-card {
+  padding: 18px;
+  border: 1px solid #dce5df;
+  border-radius: 16px;
+  background: #f7faf8;
+}
+
+.activation-device-card label,
+.activation-code-field span {
+  display: block;
+  margin-bottom: 8px;
+  color: #52615b;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.activation-device-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.activation-device-code {
+  flex: 1;
+  overflow-wrap: anywhere;
+  color: #143d30;
+  font: 650 14px/1.65 Consolas, "SFMono-Regular", monospace;
+}
+
+.activation-copy-button,
+.activation-submit {
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.activation-copy-button {
+  flex: none;
+  padding: 0 15px;
+  color: #195b43;
+  background: #e4efe9;
+}
+
+.activation-code-field {
+  display: block;
+  margin-top: 20px;
+}
+
+.activation-code-field textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 118px;
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid #cdd9d2;
+  border-radius: 14px;
+  outline: none;
+  color: #1f2c27;
+  background: #fff;
+  font: 14px/1.55 Consolas, "SFMono-Regular", monospace;
+}
+
+.activation-code-field textarea:focus {
+  border-color: #277657;
+  box-shadow: 0 0 0 3px rgba(39, 118, 87, 0.13);
+}
+
+.activation-submit {
+  width: 100%;
+  margin-top: 14px;
+  padding: 0 20px;
+  color: #fff;
+  background: #195b43;
+}
+
+.activation-submit:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.activation-status {
+  min-height: 24px;
+  margin: 14px 0 0;
+  color: #5f6e67;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.activation-status[data-state="error"] {
+  color: #a23e35;
+}
+
+.activation-status[data-state="success"] {
+  color: #176640;
+}
+
+.activation-boundary {
+  margin: 18px 0 0;
+  color: #79847f;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+@media (max-width: 560px) {
+  .activation-gate {
+    align-items: start;
+    padding: 14px;
+  }
+
+  .activation-panel {
+    margin: 8px 0;
+    padding: 22px 18px;
+    border-radius: 18px;
+  }
+
+  .activation-device-row {
+    display: block;
+  }
+
+  .activation-copy-button {
+    width: 100%;
+    margin-top: 10px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activation-gate *,
+  .activation-gate *::before,
+  .activation-gate *::after {
+    scroll-behavior: auto !important;
+    transition: none !important;
+    animation: none !important;
+  }
+}

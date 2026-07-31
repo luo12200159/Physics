@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://physics-studio.local/schema/backup-v4.json",
+  "title": "物理研习室轻量题库备份 v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "version", "exportedAt", "questions"],
+  "properties": {
+    "format": { "const": "physics-studio-backup" },
+    "version": { "const": 4 },
+    "exportedAt": { "type": "string", "format": "date-time", "maxLength": 40 },
+    "questions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/question" }
+    }
+  },
+  "$defs": {
+    "shortString": { "type": "string", "maxLength": 1000 },
+    "nullableDate": {
+      "anyOf": [
+        { "type": "null" },
+        { "type": "string", "maxLength": 40 }
+      ]
+    },
+    "stringArray": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "maxLength": 500 }
+    },
+    "question": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "stage", "grade", "topic", "difficulty", "content", "solution"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 160 },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "stage": { "enum": ["初中", "高中"] },
+        "grade": { "enum": ["八年级", "九年级", "高一", "高二", "高三"] },
+        "topic": { "type": "string", "maxLength": 100 },
+        "difficulty": { "enum": ["基础", "进阶", "挑战"] },
+        "content": { "type": "string", "maxLength": 60000 },
+        "solution": { "type": "string", "maxLength": 60000 },
+        "answer": { "type": "string", "maxLength": 30000 },
+        "source": { "$ref": "#/$defs/shortString" },
+        "sourceUrl": { "type": "string", "maxLength": 2000 },
+        "answerUrl": { "type": "string", "maxLength": 2000 },
+        "sourceLicense": { "$ref": "#/$defs/shortString" },
+        "textbookUnit": { "$ref": "#/$defs/shortString" },
+        "curriculumBasis": { "type": "string", "maxLength": 5000 },
+        "copyrightNote": { "type": "string", "maxLength": 5000 },
+        "curriculumBook": { "$ref": "#/$defs/shortString" },
+        "curriculumChapter": { "$ref": "#/$defs/shortString" },
+        "curriculumSection": { "$ref": "#/$defs/shortString" },
+        "curriculumBookId": { "$ref": "#/$defs/shortString" },
+        "curriculumChapterId": { "$ref": "#/$defs/shortString" },
+        "curriculumSectionId": { "$ref": "#/$defs/shortString" },
+        "collection": { "$ref": "#/$defs/shortString" },
+        "syncOrigin": { "$ref": "#/$defs/shortString" },
+        "examLevel": { "$ref": "#/$defs/shortString" },
+        "examYear": { "type": "number", "minimum": 1900, "maximum": 2200 },
+        "examRegion": { "$ref": "#/$defs/shortString" },
+        "examPaperTitle": { "$ref": "#/$defs/shortString" },
+        "examQuestionNumber": { "type": ["string", "number"] },
+        "examQuestionType": { "$ref": "#/$defs/shortString" },
+        "examPoints": { "$ref": "#/$defs/stringArray" },
+        "modelFamilyId": { "$ref": "#/$defs/shortString" },
+        "variantRole": { "enum": ["core", "near", "far", "counter"] },
+        "transferGroupId": { "$ref": "#/$defs/shortString" },
+        "misconceptionTags": { "$ref": "#/$defs/stringArray" },
+        "recommendationTags": { "$ref": "#/$defs/stringArray" },
+        "examScopeNote": { "type": "string", "maxLength": 5000 },
+        "examPaperStatus": { "type": "string", "maxLength": 5000 },
+        "resourceRightsStatus": { "type": "string", "maxLength": 5000 },
+        "resourceYear": { "type": "number", "minimum": 1900, "maximum": 2200 },
+        "resourceAccess": { "$ref": "#/$defs/shortString" },
+        "resourceOnly": { "type": "boolean" },
+        "fullTextIncluded": { "type": "boolean" },
+        "originalExercise": { "type": "boolean" },
+        "originalMock": { "type": "boolean" },
+        "questionType": { "$ref": "#/$defs/shortString" },
+        "number": { "type": ["string", "number"] },
+        "verifiedAt": { "type": "string", "maxLength": 40 },
+        "rightsEvidenceId": { "$ref": "#/$defs/shortString" },
+        "provenanceStatus": { "$ref": "#/$defs/shortString" },
+        "contentPackId": { "$ref": "#/$defs/shortString" },
+        "contentPackVersion": { "$ref": "#/$defs/shortString" },
+        "contentReviewStatus": { "$ref": "#/$defs/shortString" },
+        "contentReviewedAt": { "type": "string", "maxLength": 40 },
+        "contentReviewedByProfileId": { "$ref": "#/$defs/shortString" },
+        "metadataReviewStatus": { "$ref": "#/$defs/shortString" },
+        "recognitionStatus": { "$ref": "#/$defs/shortString" },
+        "captureReason": { "$ref": "#/$defs/shortString" },
+        "studentOriginalAnswer": { "type": "string", "maxLength": 30000 },
+        "originalFileName": { "$ref": "#/$defs/shortString" },
+        "userEdited": { "type": "boolean" },
+        "mastered": { "type": "boolean" },
+        "wrong": { "type": "boolean" },
+        "wrongAt": { "$ref": "#/$defs/nullableDate" },
+        "wrongCount": { "type": "number", "minimum": 0, "maximum": 100000 },
+        "transferNotes": { "type": "object" },
+        "attachments": { "type": "array", "maxItems": 0 },
+        "attachmentManifest": {
+          "type": "array",
+          "maxItems": 12,
+          "items": { "type": "object" }
+        },
+        "videoType": { "enum": ["none", "url"] },
+        "videoUrl": { "type": "string", "maxLength": 2000 },
+        "videoName": { "$ref": "#/$defs/shortString" },
+        "contentAudit": { "type": ["object", "null"] },
+        "exportNote": { "type": "string", "maxLength": 5000 },
+        "migrationReason": { "type": "string", "maxLength": 5000 },
+        "migratedToSourceAt": { "type": "string", "maxLength": 40 },
+        "createdAt": { "type": "string", "maxLength": 40 },
+        "updatedAt": { "type": "string", "maxLength": 40 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "stage": { "const": "初中" } } },
+          "then": { "properties": { "grade": { "enum": ["八年级", "九年级"] } } },
+          "else": { "properties": { "grade": { "enum": ["高一", "高二", "高三"] } } }
+        }
+      ]
+    }
+  }
+}
