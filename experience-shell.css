@@ -822,6 +822,18 @@ button.continue-card {
   font-style: normal;
 }
 
+.parent-actions > button {
+  min-height: 48px;
+  margin-top: 14px;
+  padding: 0 18px;
+  border: 1px solid var(--experience-line);
+  border-radius: 14px;
+  color: var(--experience-green);
+  background: var(--experience-surface);
+  font: inherit;
+  font-weight: 700;
+}
+
 .student-accessibility {
   align-items: center;
   display: flex;

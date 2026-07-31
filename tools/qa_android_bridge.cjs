@@ -91,7 +91,7 @@ if (!appPath || !outputDirectory) {
     assert.match(androidSource, /isWebUri\(uri\)/);
     assert.match(androidSource, /openWithEdge\(uri\)/);
     assert.match(androidSource, /openWithDefaultHandler\(uri\)/);
-    assert.match(androidSource, /PhysicsStudioAndroid\/2\.5\.0/);
+    assert.match(androidSource, /PhysicsStudioAndroid\/2\.6\.0/);
     assert.match(androidSource, /Manifest\.permission\.CAMERA/);
     assert.match(androidSource, /Manifest\.permission\.RECORD_AUDIO/);
     assert.match(androidSource, /RESOURCE_AUDIO_CAPTURE/);

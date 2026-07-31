@@ -30,7 +30,7 @@ async function waitForReady(page) {
   await page.waitForFunction(() => {
     return !document.body.classList.contains("activation-pending")
       && window.PhysicsStudioApp?.getQuestions?.().length === 2132
-      && window.PHYSICS_LEARNING_ENGINE?.version === "2.5.0";
+      && window.PHYSICS_LEARNING_ENGINE?.version === "2.6.0";
   });
 }
 

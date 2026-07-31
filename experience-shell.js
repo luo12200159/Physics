@@ -1563,6 +1563,7 @@
         <button data-shell-action="open-sensors" type="button"><span>⌁</span><div><strong>手机实验室</strong><small>传感器、数据与探究记录</small></div><i>→</i></button>
         <button data-shell-action="open-diagnostic" type="button"><span>◎</span><div><strong>前概念诊断</strong><small>识别稳定错误观念，不只统计错题</small></div><i>→</i></button>
         <button data-shell-action="open-settings" type="button"><span>⚙</span><div><strong>身份与学习设置</strong><small>修改年级、教材和近期目标</small></div><i>→</i></button>
+        <button data-shell-action="feedback" type="button"><span>✉</span><div><strong>用户反馈</strong><small>打开邮件应用，确认后发送至 luo865265@gmail.com</small></div><i>→</i></button>
       </section>
       <section class="student-accessibility">
         <div><strong>题干字号</strong><span>支持浏览器双指缩放；这里调整默认字号。</span></div>
@@ -1593,6 +1594,7 @@
         <section class="parent-actions">
           <h2>适合家长做的事</h2>
           <ul><li>提供稳定、少干扰的 15 分钟学习时间。</li><li>询问“这道题的关键规律是什么”，不要直接给答案。</li><li>关注到期复习是否完成，不用单次错误评价能力。</li></ul>
+          <button data-shell-action="feedback" type="button">通过邮件反馈使用问题</button>
         </section>
       </main>`;
   }
@@ -1611,6 +1613,7 @@
         <label class="teacher-link-setting"><input id="teacherExternalLinks" type="checkbox"${experience.studentExternalLinks ? " checked" : ""}><span>允许学生访问外部题源</span></label>
         <button data-teacher-action="metrics" type="button">上线验证指标</button>
         <button data-teacher-action="center" type="button">打开教师中心</button>
+        <button data-teacher-action="feedback" type="button">用户反馈</button>
         <button data-teacher-action="switch" type="button">切换身份</button>
       </div>`;
     bar.onclick = handleTeacherBarClick;
@@ -1629,6 +1632,7 @@
     const action = event.target.closest("[data-teacher-action]")?.dataset.teacherAction;
     if (action === "center") openLab("teacher");
     else if (action === "metrics") showMetrics();
+    else if (action === "feedback") openFeedbackEmail();
     else if (action === "switch") showOnboarding(true);
   }
 
@@ -1750,6 +1754,21 @@
     else if (action === "open-sensors") openLab("sensors");
     else if (action === "mastery-help") showMasteryHelp();
     else if (action === "external-search") externalStudentSearch();
+    else if (action === "feedback") openFeedbackEmail();
+  }
+
+  function openFeedbackEmail() {
+    const subject = "物理研习室 v2.6.0 用户反馈";
+    const body = [
+      "请描述遇到的问题或建议：",
+      "",
+      `使用身份：${experience.role}`,
+      `年级：${experience.grade}`,
+      "应用版本：2.6.0",
+      "设备与系统："
+    ].join("\r\n");
+    recordEvent("feedback-email-opened", { role: experience.role });
+    window.location.href = `mailto:luo865265@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
 
   function handleShellInput(event) {
