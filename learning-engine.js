@@ -2086,7 +2086,7 @@
   }
 
   window.PHYSICS_LEARNING_ENGINE = Object.freeze({
-    version: "2.5.0",
+    version: "2.6.0",
     storageKey: STORAGE_KEY,
     masteryRules: MASTERY_RULES,
     misconceptionCatalog: Object.freeze(misconceptionCatalog),

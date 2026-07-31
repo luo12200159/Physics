@@ -21,6 +21,8 @@ describe("login service", () => {
   function fixture() {
     const sessions = new Map<string, string>();
     let storedTokenHash: Buffer | undefined;
+    let storedCredentialVersion: unknown;
+    let familyActive = true;
     const query = vi.fn(async (sql: string, values: readonly unknown[] = []) => {
       if (sql.includes("from password_credentials")) {
         return {
@@ -33,25 +35,27 @@ describe("login service", () => {
             deletion_pending: false,
             password_hash: passwordHash,
             temporary_expires_at: null,
+            credential_version: 1,
           }],
           rowCount: 1,
         };
       }
       if (sql.includes("insert into refresh_sessions")) {
         storedTokenHash = values[5] as Buffer;
+        storedCredentialVersion = values[9];
         return { rows: [{ id: values[0] }], rowCount: 1 };
       }
       if (sql.includes("from users where users.id")) {
         return {
-          rows: [{
+          rows: familyActive ? [{
             id: userId,
             role: "student",
             display_name: "单元测试学生",
             status: "active",
             must_change_password: false,
             deletion_pending: false,
-          }],
-          rowCount: 1,
+          }] : [],
+          rowCount: familyActive ? 1 : 0,
         };
       }
       return { rows: [], rowCount: 0 };
@@ -75,7 +79,15 @@ describe("login service", () => {
       refreshTokenTtlSeconds: 2_592_000,
       now: () => new Date(now),
     });
-    return { service, redis, query, sessions, storedTokenHash: () => storedTokenHash };
+    return {
+      service,
+      redis,
+      query,
+      sessions,
+      storedTokenHash: () => storedTokenHash,
+      storedCredentialVersion: () => storedCredentialVersion,
+      revokeDatabaseFamily: () => { familyActive = false; },
+    };
   }
 
   it("creates an exact response, hashed refresh record, and matching positive session", async () => {
@@ -91,6 +103,7 @@ describe("login service", () => {
       "deletionPending", "displayName", "id", "mustChangePassword", "role", "status",
     ]);
     expect(test.storedTokenHash()).toHaveLength(32);
+    expect(test.storedCredentialVersion()).toBe(1);
     expect(test.storedTokenHash()?.toString("hex")).not.toContain(response.refreshToken);
     expect([...test.sessions.values()].map((value) => JSON.parse(value))).toEqual([{
       userId,
@@ -105,6 +118,61 @@ describe("login service", () => {
     );
     await expect(test.service.authenticateAccessToken(response.accessToken, "GET /v1/account/self"))
       .resolves.toMatchObject({ userId, role: "student" });
+  });
+
+  it("rejects a bearer token when PostgreSQL marks its family inactive even if Redis is stale", async () => {
+    const test = fixture();
+    const response = await test.service.login({
+      login: "student-001",
+      password,
+      deviceId: "a".repeat(64),
+      deviceName: "Android phone",
+    }, { ip: "127.0.0.1" });
+    test.revokeDatabaseFamily();
+    await expect(test.service.authenticateAccessToken(response.accessToken))
+      .rejects.toMatchObject({ statusCode: 401, code: "invalid_access_token" });
+    expect(test.sessions.size).toBe(1);
+  });
+
+  it("rejects short, numeric, and known-compromised replacement passwords before mutation", async () => {
+    const test = fixture();
+    const actor = {
+      userId,
+      role: "student" as const,
+      familyId: "20000000-0000-4000-8000-000000000002",
+      deviceId: "a".repeat(64),
+      sessionStrength: "password" as const,
+      jti: "20000000-0000-4000-8000-000000000003",
+      issuedAt: 1_800_000_000,
+      expiresAt: 1_800_000_900,
+      reauthenticatedUntil: null,
+      user: {
+        id: userId,
+        role: "student" as const,
+        displayName: "Password policy student",
+        status: "active" as const,
+        mustChangePassword: true,
+        deletionPending: false,
+      },
+      positiveSessionStatus: "active" as const,
+      replayOnly: false,
+    };
+    const context = {
+      ip: "127.0.0.1",
+      requestId: "20000000-0000-4000-8000-000000000004",
+      idempotency: {
+        key: "password-policy-test-0001",
+        routeKey: "POST /v1/auth/change-password",
+        requestHash: Buffer.alloc(32),
+      },
+    };
+    for (const newPassword of ["short", "123456789012", "password1234"]) {
+      await expect(test.service.changePassword(actor, {
+        currentPassword: password,
+        newPassword,
+      }, context)).rejects.toMatchObject({ statusCode: 400, code: "weak_password" });
+    }
+    expect(test.query).not.toHaveBeenCalled();
   });
 
   it("fails closed before password work when the shared limiter is unavailable", async () => {

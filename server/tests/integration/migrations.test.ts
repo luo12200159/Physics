@@ -19,6 +19,15 @@ describe("database migrations", () => {
       "select table_name as name from information_schema.tables where table_schema='public'",
     );
     expect(first.rows.map((row) => row.name)).toContain("sync_outbox");
+    const hardeningIndex = await pool.query<{ name: string | null }>(
+      "select to_regclass('public.refresh_sessions_parent_once_idx') as name",
+    );
+    expect(hardeningIndex.rows[0]?.name).toBe("refresh_sessions_parent_once_idx");
+    await runMigrations("down", 1);
+    const removedHardeningIndex = await pool.query<{ name: string | null }>(
+      "select to_regclass('public.refresh_sessions_parent_once_idx') as name",
+    );
+    expect(removedHardeningIndex.rows[0]?.name).toBeNull();
     await runMigrations("down", 1);
     const removed = await pool.query<{ name: string | null }>(
       "select to_regclass('public.account_import_batches') as name",

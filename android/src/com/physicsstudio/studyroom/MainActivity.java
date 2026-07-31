@@ -133,7 +133,7 @@ public final class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             settings.setSafeBrowsingEnabled(true);
         }
-        settings.setUserAgentString(settings.getUserAgentString() + " PhysicsStudioAndroid/2.5.0");
+        settings.setUserAgentString(settings.getUserAgentString() + " PhysicsStudioAndroid/2.6.0");
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);

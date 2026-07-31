@@ -59,4 +59,24 @@ describe("access tokens", () => {
     expect(material.secretHash).toHaveLength(32);
     expect(material.secretHash.toString("hex")).not.toContain(parsed.secret);
   });
+
+  it("limits reauthenticated strength to 600 seconds without extending token lifetime", async () => {
+    const token = await issueAccessToken({
+      ...claims,
+      sessionStrength: "reauthenticated",
+    }, secret);
+    const payload = decodeJwt(token);
+    expect(payload.reauthenticatedUntil).toBe(claims.nowSeconds + 600);
+    expect(payload.exp).toBe(claims.nowSeconds + 900);
+    await expect(verifyAccessToken(
+      token,
+      secret,
+      new Date((claims.nowSeconds + 599) * 1000),
+    )).resolves.toMatchObject({ sessionStrength: "reauthenticated" });
+    await expect(verifyAccessToken(
+      token,
+      secret,
+      new Date((claims.nowSeconds + 600) * 1000),
+    )).resolves.toMatchObject({ sessionStrength: "password" });
+  });
 });

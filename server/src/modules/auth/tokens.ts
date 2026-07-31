@@ -33,6 +33,7 @@ export interface AccessClaims {
   jti: string;
   issuedAt: number;
   expiresAt: number;
+  reauthenticatedUntil: number | null;
 }
 
 export interface RefreshTokenMaterial {
@@ -98,11 +99,15 @@ export async function issueAccessToken(
     throw new TypeError("nowSeconds must be a positive integer");
   }
   const deviceId = normalizeDeviceId(claims.deviceId);
+  const reauthenticatedUntil = claims.sessionStrength === "reauthenticated"
+    ? claims.nowSeconds + 600
+    : undefined;
   return new SignJWT({
     role: claims.role,
     sid: claims.familyId,
     deviceId,
     sessionStrength: claims.sessionStrength,
+    ...(reauthenticatedUntil === undefined ? {} : { reauthenticatedUntil }),
   })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuer(ISSUER)
@@ -147,6 +152,18 @@ export async function verifyAccessToken(
   if (payload.exp !== payload.iat! + ACCESS_TOKEN_TTL_SECONDS) {
     throw new TypeError("JWT lifetime is invalid");
   }
+  let sessionStrength: SessionStrength = payload.sessionStrength;
+  let reauthenticatedUntil: number | null = null;
+  if (payload.sessionStrength === "reauthenticated") {
+    if (!Number.isSafeInteger(payload.reauthenticatedUntil)
+      || payload.reauthenticatedUntil !== payload.iat! + 600) {
+      throw new TypeError("JWT reauthentication lifetime is invalid");
+    }
+    reauthenticatedUntil = payload.reauthenticatedUntil as number;
+    if (Math.floor(currentDate.getTime() / 1000) >= reauthenticatedUntil) sessionStrength = "password";
+  } else if (payload.reauthenticatedUntil !== undefined) {
+    throw new TypeError("Password-strength JWT cannot contain reauthentication state");
+  }
   validateUuid("sub", payload.sub);
   validateUuid("sid", payload.sid);
   validateUuid("jti", payload.jti);
@@ -156,9 +173,10 @@ export async function verifyAccessToken(
     role: payload.role as UserRole,
     familyId: payload.sid,
     deviceId,
-    sessionStrength: payload.sessionStrength,
+    sessionStrength,
     jti: payload.jti,
     issuedAt: payload.iat!,
     expiresAt: payload.exp!,
+    reauthenticatedUntil,
   };
 }

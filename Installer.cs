@@ -10,13 +10,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("物理研习室 Windows 单文件安装程序")]
 [assembly: AssemblyProduct("物理研习室")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 
 internal static class InstallerProgram
 {
     private const string AppName = "物理研习室";
-    private const string AppVersion = "2.5.0";
+    private const string AppVersion = "2.6.0";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PhysicsStudio";
 
     private static readonly PayloadFile[] Payload =
