@@ -171,6 +171,19 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     throw new Error("FEEDBACK_TO_EMAIL must remain luo865265@gmail.com");
   }
 
+  const accessTokenTtlSeconds = parseInteger(
+    "ACCESS_TOKEN_TTL_SECONDS",
+    requireValue(env, "ACCESS_TOKEN_TTL_SECONDS"),
+    900,
+    900,
+  );
+  const refreshTokenTtlSeconds = parseInteger(
+    "REFRESH_TOKEN_TTL_SECONDS",
+    requireValue(env, "REFRESH_TOKEN_TTL_SECONDS"),
+    2_592_000,
+    2_592_000,
+  );
+
   return {
     nodeEnv,
     businessHost: requireValue(env, "BUSINESS_HOST"),
@@ -181,8 +194,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     cursorHmacSecret: parseSecret("CURSOR_HMAC_SECRET", requireValue(env, "CURSOR_HMAC_SECRET"), nodeEnv),
     auditIpKey: parseSecret("AUDIT_IP_KEY", requireValue(env, "AUDIT_IP_KEY"), nodeEnv),
     credentialArtifactKey: parseCredentialArtifactKey(requireValue(env, "CREDENTIAL_ARTIFACT_KEY")),
-    accessTokenTtlSeconds: parseInteger("ACCESS_TOKEN_TTL_SECONDS", requireValue(env, "ACCESS_TOKEN_TTL_SECONDS"), 60, 3_600),
-    refreshTokenTtlSeconds: parseInteger("REFRESH_TOKEN_TTL_SECONDS", requireValue(env, "REFRESH_TOKEN_TTL_SECONDS"), 3_600, 31_536_000),
+    accessTokenTtlSeconds,
+    refreshTokenTtlSeconds,
     corsAllowedOrigins,
     s3Endpoint: parseUrl("S3_ENDPOINT", requireValue(env, "S3_ENDPOINT"), nodeEnv === "production" ? ["https:"] : ["http:", "https:"]),
     s3Region: requireValue(env, "S3_REGION"),

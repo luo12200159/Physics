@@ -44,7 +44,7 @@ export function makeUnitConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
 export function makeUnitDependencies(overrides: UnitDependencyOverrides = {}): AppDependencies {
   const config = makeUnitConfig(overrides.config);
-  return {
+  const dependencies: AppDependencies = {
     config,
     postgres: overrides.postgres ?? {
       query: async () => ({ rows: [] }),
@@ -57,4 +57,6 @@ export function makeUnitDependencies(overrides: UnitDependencyOverrides = {}): A
       healthcheck: async () => undefined,
     },
   };
+  if (overrides.authService) dependencies.authService = overrides.authService;
+  return dependencies;
 }

@@ -11,6 +11,8 @@ import {
   type MutationIdempotency,
 } from "./common/idempotency.js";
 import { StrictObject } from "./common/schema.js";
+import { registerAuthRoutes } from "./modules/auth/routes.js";
+import type { AuthService } from "./modules/auth/service.js";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -27,6 +29,7 @@ export interface AppDependencies {
     healthcheck(): Promise<void>;
     close?(): Promise<void>;
   };
+  authService?: AuthService;
 }
 
 declare module "fastify" {
@@ -62,9 +65,38 @@ function isValidationError(error: unknown): boolean {
 
 export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: deps.config.nodeEnv !== "test",
+    logger: deps.config.nodeEnv === "test" ? false : {
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.body.password",
+          "req.body.currentPassword",
+          "req.body.newPassword",
+          "req.body.accessToken",
+          "req.body.refreshToken",
+          "password",
+          "currentPassword",
+          "newPassword",
+          "accessToken",
+          "refreshToken",
+          "*.password",
+          "*.currentPassword",
+          "*.newPassword",
+          "*.accessToken",
+          "*.refreshToken",
+        ],
+        censor: "[REDACTED]",
+      },
+    },
     bodyLimit: 1_048_576,
     genReqId: () => randomUUID(),
+    ajv: {
+      customOptions: {
+        coerceTypes: false,
+        removeAdditional: false,
+      },
+    },
   }).withTypeProvider<TypeBoxTypeProvider>();
 
   app.decorate("deps", deps);
@@ -73,7 +105,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   app.addHook("preHandler", async (request) => {
     const method = request.method.toUpperCase();
     if (!mutableMethods.has(method)) return;
-    const routeIdentity = `${method} ${request.routeOptions.url}`;
+    const requestPath = new URL(request.url, "https://business.invalid").pathname;
+    const routeIdentity = `${method} ${requestPath}`;
     if (idempotencyExemptRoutes.has(routeIdentity)) return;
     request.mutationIdempotency = requireMutationIdempotency(request);
   });
@@ -113,6 +146,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     service: "physics-studio-business" as const,
     version: "1.0.0" as const,
   }));
+
+  if (deps.authService) registerAuthRoutes(app, deps.authService);
 
   app.addHook("onClose", async () => {
     await Promise.allSettled([
