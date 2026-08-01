@@ -99,6 +99,31 @@ assert.equal(verification.find((item) => item.key === "unit").status, "pass");
 assert.equal(verification.find((item) => item.key === "magnitude").status, "pass");
 assert.equal(verification.find((item) => item.key === "alternative").status, "manual");
 
+const textBlankQuestion = {
+  id: "text-blank-1",
+  title: "物态变化填空",
+  topic: "物态变化",
+  questionType: "填空题",
+  answer: "第一空填“吸热”；第二空填“温度不变”。",
+  solution: "按熔化过程判断能量变化和温度特点。"
+};
+const correctTextBlanks = engine.gradeFinalAnswer(textBlankQuestion, "吸热 温度不变");
+assert.equal(correctTextBlanks.status, "correct");
+assert.equal(correctTextBlanks.score, 1);
+const partialTextBlanks = engine.gradeFinalAnswer(textBlankQuestion, "吸热；温度升高");
+assert.equal(partialTextBlanks.status, "partial");
+assert.equal(partialTextBlanks.issues[0].location, "第 2 空");
+assert.equal(engine.gradeFinalAnswer({
+  ...textBlankQuestion,
+  id: "text-blank-unstructured",
+  answer: "吸热、温度不变。"
+}, "吸热；温度不变").status, "review-required");
+assert.equal(engine.gradeFinalAnswer({
+  ...textBlankQuestion,
+  id: "experiment-blank",
+  questionType: "实验探究题"
+}, "吸热；温度不变").status, "review-required");
+
 const explanationQuestion = {
   id: "explain-1",
   title: "解释惯性",
@@ -131,6 +156,7 @@ const grading = engine.gradeFinalAnswer(choiceQuestion, "A");
 engine.recordAttempt(state, {
   questionId: choiceQuestion.id,
   topic: choiceQuestion.topic,
+  questionType: "单选题",
   stage: "初中",
   durationSeconds: 180,
   confidenceBefore: 3,
@@ -139,8 +165,20 @@ engine.recordAttempt(state, {
   finalAnswer: "A",
   grading,
   model,
-  reflection: "检查了研究对象"
+  reflection: "检查了研究对象",
+  errorType: "公式选错"
 });
+assert.equal(state.attempts[0].questionType, "单项选择题");
+assert.equal(state.attempts[0].errorType, "规律条件错误");
+assert.equal(state.attempts[0].errorTypeCode, "law-condition");
+[
+  ["审题偏差", "审题错误"],
+  ["前概念混淆", "概念错误"],
+  ["研究对象选择不当", "建模错误"],
+  ["公式选错", "规律条件错误"],
+  ["有效数字错误", "计算/单位错误"],
+  ["实验图表读取错误", "图像/实验错误"]
+].forEach(([input, expected]) => assert.equal(engine.normalizeErrorType(input), expected));
 const summary = engine.summarizeLearning(state, [choiceQuestion]);
 assert.equal(summary.completed, 1);
 assert.equal(summary.accuracy, 100);
@@ -256,6 +294,205 @@ engine.recordAttempt(masteryState, {
 });
 assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).status, "薄弱");
 
+const abilityState = engine.defaultState();
+const abilityQuestions = [
+  { ...masteryQuestion, id: "ability-motion", topic: "运动学", questionType: "计算题" },
+  { ...masteryQuestion, id: "ability-circuit", topic: "电路", questionType: "实验探究题" },
+  { ...masteryQuestion, id: "ability-optics", topic: "光学", questionType: "作图题" },
+  { ...masteryQuestion, id: "ability-sound", topic: "声学", questionType: "选择题" }
+];
+function addDatedAttempt(input, completedAt) {
+  const attempt = engine.recordAttempt(abilityState, {
+    stage: "高中",
+    confidenceBefore: 3,
+    confidenceAfter: 4,
+    finalAnswer: input.grading.status === "correct" ? "2 s" : "待订正",
+    selfExplanation: "说明规律、条件和建模过程。",
+    model,
+    ...input
+  });
+  attempt.startedAt = completedAt;
+  attempt.completedAt = completedAt;
+  attempt.createdAt = completedAt;
+  return attempt;
+}
+addDatedAttempt({
+  questionId: "ability-motion",
+  topic: "运动学",
+  questionType: "计算题",
+  hintLevel: 0,
+  grading: correctGrading
+}, "2026-07-01T12:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-motion",
+  topic: "运动学",
+  questionType: "计算题",
+  hintLevel: 1,
+  grading: correctGrading
+}, "2026-07-02T12:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-motion",
+  topic: "运动学",
+  questionType: "条件变式题",
+  hintLevel: 0,
+  transferType: "far",
+  grading: correctGrading
+}, "2026-07-03T12:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-circuit",
+  topic: "电路",
+  questionType: "实验探究题",
+  hintLevel: 2,
+  errorType: "前概念混淆",
+  grading: { status: "incorrect", score: 0, issues: [] }
+}, "2026-07-02T13:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-circuit",
+  topic: "电路",
+  questionType: "实验探究题",
+  hintLevel: 3,
+  errorType: "单位换算失误",
+  grading: { status: "incorrect", score: 0, issues: [] }
+}, "2026-07-03T13:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-optics",
+  topic: "光学",
+  questionType: "作图题",
+  hintLevel: 1,
+  grading: correctGrading
+}, "2026-07-02T14:00:00.000Z");
+addDatedAttempt({
+  questionId: "ability-optics",
+  topic: "光学",
+  questionType: "作图题",
+  hintLevel: 0,
+  grading: correctGrading
+}, "2026-07-02T15:00:00.000Z");
+
+const knowledgePoints = engine.topicEvidenceProfile(
+  abilityState,
+  abilityQuestions,
+  abilityState.activeProfileId,
+  new Date("2026-07-04T12:00:00.000Z").getTime()
+);
+const motionEvidence = knowledgePoints.find((item) => item.topic === "运动学");
+const circuitEvidence = knowledgePoints.find((item) => item.topic === "电路");
+const opticsEvidence = knowledgePoints.find((item) => item.topic === "光学");
+const soundEvidence = knowledgePoints.find((item) => item.topic === "声学");
+assert.equal(motionEvidence.status, "可迁移");
+assert.equal(motionEvidence.sampleSize, 3);
+assert.equal(motionEvidence.latestEvidenceDate, "2026-07-03");
+assert.equal(motionEvidence.transferSuccessCount, 1);
+assert.equal(motionEvidence.questionTypes.find((item) => item.label === "计算题").count, 2);
+assert.equal(circuitEvidence.status, "需巩固");
+assert.deepEqual(
+  Array.from(circuitEvidence.errorTypes, (item) => item.label).sort(),
+  ["概念错误", "计算/单位错误"].sort()
+);
+assert.equal(opticsEvidence.status, "基本掌握");
+assert.equal(opticsEvidence.sampleSize, 2);
+assert.equal(soundEvidence.status, "证据不足");
+assert.equal(soundEvidence.sampleSize, 0);
+
+const abilityAnalysis = engine.studentAnalysis(
+  abilityState,
+  abilityQuestions,
+  abilityState.activeProfileId
+);
+assert.equal(abilityAnalysis.abilityProfile.knowledgePointCounts["可迁移"], 1);
+assert.ok(abilityAnalysis.abilityProfile.questionTypes.some((item) => item.label === "实验探究题"));
+
+const placementTopics = ["惯性", "加速度", "自由落体", "电流", "平面镜成像", "受力分析", "温度", "圆周运动"];
+const placementQuestions = Array.from({ length: 32 }, (_, index) => {
+  const topic = placementTopics[index % placementTopics.length];
+  return {
+    id: `placement-question-${index + 1}`,
+    title: `${topic}摸底题${index + 1}`,
+    stage: "高中",
+    grade: "高一",
+    topic,
+    questionType: index % 3 === 0 ? "单项选择题" : "计算题",
+    difficulty: "基础",
+    content: `${topic}的完整题干与已知条件，要求给出结论。`,
+    solution: `依据${topic}相关规律分步分析并核对条件。`,
+    answer: "结论与题设条件一致。",
+    examPoints: [topic],
+    fullTextIncluded: true
+  };
+});
+const placementState = engine.defaultState();
+placementState.profiles[0].createdAt = "2026-01-01T00:00:00.000Z";
+const placement = engine.generatePlacementDiagnostic(placementState, placementQuestions, {
+  count: 24,
+  seed: "qa-placement"
+});
+assert.equal(placement.questionCount, 24);
+assert.equal(placement.meetsTargetRange, true);
+assert.equal(placement.targetCountMet, true);
+assert.equal(placement.containsMisconceptionDiagnostics, true);
+assert.equal(placement.coverage.complete, true);
+const sourceQuestionIds = new Set(placementQuestions.map((question) => question.id));
+placement.items.filter((item) => item.kind === "bank-question").forEach((item) => {
+  assert.equal(sourceQuestionIds.has(item.id), true, `placement invented question ${item.id}`);
+});
+
+const limitedPlacement = engine.generatePlacementDiagnostic(placementState, placementQuestions.slice(0, 1), {
+  count: 20,
+  seed: "qa-limited-placement"
+});
+assert.equal(limitedPlacement.meetsTargetRange, false);
+assert.ok(limitedPlacement.warnings.some((message) => message.includes("少于目标")));
+
+const beforeBroadCoverage = engine.scheduleBroadCoverageCheck(placementState, placementQuestions, {
+  now: new Date("2026-01-14T00:00:00.000Z"),
+  seed: "qa-broad"
+});
+assert.equal(beforeBroadCoverage.due, false);
+assert.equal(beforeBroadCoverage.paper, null);
+const dueBroadCoverage = engine.scheduleBroadCoverageCheck(placementState, placementQuestions, {
+  now: new Date("2026-01-15T00:00:00.000Z"),
+  seed: "qa-broad"
+});
+assert.equal(dueBroadCoverage.due, true);
+assert.equal(dueBroadCoverage.intervalDays, 14);
+assert.equal(dueBroadCoverage.paper.questionCount, 20);
+engine.recordBroadCoverageCheck(placementState, {
+  id: "broad-coverage-qa-1",
+  questionIds: dueBroadCoverage.paper.items.map((item) => item.id),
+  coveredTopics: dueBroadCoverage.paper.coverage.coveredTopics,
+  coverageComplete: dueBroadCoverage.paper.coverage.complete,
+  completedAt: "2026-01-15T00:00:00.000Z"
+});
+assert.equal(engine.scheduleBroadCoverageCheck(placementState, placementQuestions, {
+  now: new Date("2026-01-28T00:00:00.000Z")
+}).due, false);
+assert.equal(engine.scheduleBroadCoverageCheck(placementState, placementQuestions, {
+  now: new Date("2026-01-29T00:00:00.000Z")
+}).due, true);
+
+const streak = engine.closedLoopStreak(
+  abilityState,
+  abilityState.activeProfileId,
+  new Date("2026-07-04T12:00:00.000Z")
+);
+assert.equal(streak.currentStreak, 3);
+assert.equal(streak.longestStreak, 3);
+assert.equal(streak.badges.find((badge) => badge.requiredDays === 3).earned, true);
+assert.equal(streak.rankingEnabled, false);
+assert.match(streak.feedbackPolicy, /不设置积分、排行榜/);
+
+const migratedState = engine.normalizeState({
+  ...engine.defaultState(),
+  attempts: [{
+    profileId: "student-default",
+    questionId: "legacy-attempt",
+    examQuestionType: "多选题",
+    errorType: "审题偏差"
+  }]
+});
+assert.equal(migratedState.attempts[0].questionType, "多项选择题");
+assert.equal(migratedState.attempts[0].errorType, "审题错误");
+
 const audit = engine.auditQuestion({
   title: "水平面上物体的受力与加速度",
   stage: "初中",
@@ -276,6 +513,8 @@ const report = engine.createReportPayload(state, questions);
 assert.equal(report.format, "physics-learning-profile");
 assert.equal(report.summary.completed, 1);
 assert.equal(report.attempts.length, 1);
+assert.ok(report.summary.closedLoop);
+assert.ok(Array.isArray(report.analysis.knowledgePoints));
 
 const saved = engine.saveState(state);
 assert.equal(engine.loadState().attempts.length, saved.attempts.length);

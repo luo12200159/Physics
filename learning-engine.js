@@ -12,6 +12,21 @@
     weakHintMinimum: 3,
     weakModelingBelow: 50
   });
+  const BROAD_COVERAGE_INTERVAL_DAYS = 14;
+  const ERROR_TYPE_DEFINITIONS = Object.freeze([
+    { code: "reading", label: "审题错误", aliases: /审题|读题|看错|条件遗漏|信息提取/u },
+    { code: "concept", label: "概念错误", aliases: /概念|前概念|认知/u },
+    { code: "modeling", label: "建模错误", aliases: /建模|研究对象|过程划分|受力分析/u },
+    { code: "law-condition", label: "规律条件错误", aliases: /规律|定律|公式|适用条件|条件错误/u },
+    { code: "calculation-unit", label: "计算\/单位错误", aliases: /计算|运算|单位|有效数字|方向|符号|正负/u },
+    { code: "graph-experiment", label: "图像\/实验错误", aliases: /图像|图表|实验|电路图|受力图|光路图/u }
+  ]);
+  const CLOSED_LOOP_BADGES = Object.freeze([
+    { id: "closed-loop-3", days: 3, title: "稳定起步" },
+    { id: "closed-loop-7", days: 7, title: "一周闭环" },
+    { id: "closed-loop-14", days: 14, title: "双周坚持" },
+    { id: "closed-loop-30", days: 30, title: "月度坚持" }
+  ]);
 
   const misconceptionCatalog = [
     {
@@ -323,6 +338,41 @@
     field: { M: 1, L: 1, T: -3, I: -1 }
   };
 
+  function normalizeQuestionType(value) {
+    const normalized = String(value || "").trim().slice(0, 50);
+    if (!normalized) return "未标注";
+    if (/^(?:单选题|单项题)$/u.test(normalized)) return "单项选择题";
+    if (/^(?:多选题|多项题)$/u.test(normalized)) return "多项选择题";
+    return normalized;
+  }
+
+  function normalizeErrorType(value) {
+    const normalized = String(value || "").trim().replaceAll("／", "/").slice(0, 80);
+    if (!normalized) return "";
+    const exact = ERROR_TYPE_DEFINITIONS.find((item) => {
+      return normalized === item.label || normalized === item.label.replace("错误", "");
+    });
+    if (exact) return exact.label;
+    const inferred = ERROR_TYPE_DEFINITIONS.find((item) => item.aliases.test(normalized));
+    return inferred?.label || normalized;
+  }
+
+  function errorTypeCode(value) {
+    const normalized = normalizeErrorType(value);
+    if (!normalized) return "";
+    return ERROR_TYPE_DEFINITIONS.find((item) => item.label === normalized)?.code || "other";
+  }
+
+  function normalizeAttemptEvidence(attempt = {}) {
+    const normalizedErrorType = normalizeErrorType(attempt.errorType);
+    return {
+      ...attempt,
+      questionType: normalizeQuestionType(attempt.questionType || attempt.examQuestionType),
+      errorType: normalizedErrorType,
+      errorTypeCode: normalizedErrorType ? errorTypeCode(normalizedErrorType) : ""
+    };
+  }
+
   function createId(prefix = "record") {
     if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`;
     return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -359,6 +409,7 @@
       reviews: {},
       assignments: [],
       learningPlans: [],
+      broadCoverageChecks: [],
       examRecords: [],
       growthRecords: [],
       importedReports: [],
@@ -384,10 +435,13 @@
         })
         : fallback.profiles,
       diagnosticAttempts: Array.isArray(value.diagnosticAttempts) ? value.diagnosticAttempts : [],
-      attempts: Array.isArray(value.attempts) ? value.attempts : [],
+      attempts: Array.isArray(value.attempts) ? value.attempts.map(normalizeAttemptEvidence) : [],
       reviews: value.reviews && typeof value.reviews === "object" && !Array.isArray(value.reviews) ? value.reviews : {},
       assignments: Array.isArray(value.assignments) ? value.assignments : [],
       learningPlans: Array.isArray(value.learningPlans) ? value.learningPlans.slice(-500) : [],
+      broadCoverageChecks: Array.isArray(value.broadCoverageChecks)
+        ? value.broadCoverageChecks.slice(-500)
+        : [],
       examRecords: Array.isArray(value.examRecords) ? value.examRecords.slice(-2000) : [],
       growthRecords: Array.isArray(value.growthRecords) ? value.growthRecords.slice(-2000) : [],
       importedReports: Array.isArray(value.importedReports) ? value.importedReports : [],
@@ -474,6 +528,8 @@
     state.growthRecords = state.growthRecords.filter((record) => record.profileId !== profileId);
     state.experimentRecords = state.experimentRecords.filter((record) => record.profileId !== profileId);
     state.learningPlans = state.learningPlans.filter((plan) => plan.profileId !== profileId);
+    state.broadCoverageChecks = (Array.isArray(state.broadCoverageChecks) ? state.broadCoverageChecks : [])
+      .filter((record) => record.profileId !== profileId);
     Object.keys(state.reviews).forEach((key) => {
       if (state.reviews[key]?.profileId === profileId) delete state.reviews[key];
     });
@@ -497,6 +553,8 @@
       profileId: state.activeProfileId,
       diagnosticId: input.diagnosticId,
       misconceptionCode: item.code,
+      topics: item.topics.slice(),
+      questionType: "前概念诊断",
       answer: input.answer,
       reason: input.reason,
       confidence,
@@ -661,8 +719,77 @@
     return { value: quantity.value * definition.factor, dimension: definition.dimension };
   }
 
+  function explicitBlankAnswers(value, allowBareMarker = false) {
+    const marker = "第\\s*([一二三四五六七八九十百0-9]+)\\s*空";
+    const connector = allowBareMarker
+      ? "(?:应?填(?:写)?|答案(?:为|是)|为|[:：])?"
+      : "(?:应?填(?:写)?|答案(?:为|是)|为|[:：])";
+    const pattern = new RegExp(
+      `${marker}\\s*${connector}\\s*([\\s\\S]*?)(?=(?:[，,；;。\\n]\\s*)?${marker}|$)`,
+      "gu"
+    );
+    const results = [];
+    let match;
+    while ((match = pattern.exec(String(value || "")))) {
+      const blankAnswer = String(match[2] || "")
+        .trim()
+        .replace(/^[“”‘’"'：:，,；;。]+|[“”‘’"'，,；;。]+$/gu, "")
+        .trim();
+      results.push({ ordinal: match[1], answer: blankAnswer });
+    }
+    return results;
+  }
+
+  function normalizeBlankText(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .trim()
+      .replace(/^[“”‘’"']+|[“”‘’"'。；;，,]+$/gu, "")
+      .replace(/\s+/gu, "")
+      .toLocaleLowerCase("zh-CN");
+  }
+
+  function reliableTextBlankAnswers(question, answer) {
+    const questionType = normalizeQuestionType(question.questionType || question.examQuestionType);
+    if (!/填空/u.test(questionType)) return [];
+    const results = explicitBlankAnswers(answer);
+    if (results.length < 2 || new Set(results.map((item) => item.ordinal)).size !== results.length) return [];
+    const unreliable = results.some((item) => {
+      return !item.answer
+        || item.answer.length > 40
+        || /因为|所以|依据|解析|理由|说明|可知|故而/u.test(item.answer)
+        || extractQuantities(item.answer).length > 0;
+    });
+    return unreliable ? [] : results;
+  }
+
+  function responseBlankAnswers(response, expectedCount) {
+    const explicit = explicitBlankAnswers(response, true);
+    if (explicit.length === expectedCount && explicit.every((item) => item.answer)) {
+      return explicit.map((item) => item.answer);
+    }
+    const text = String(response || "").trim();
+    if (!text) return [];
+    const separators = [/\r?\n+/u, /[；;|]+/u, /[、]+/u, /[，,]+/u, /\s+/u];
+    for (const separator of separators) {
+      const parts = text.split(separator).map((item) => item.trim()).filter(Boolean);
+      if (parts.length === expectedCount && parts.every((item) => item.length <= 40)) return parts;
+    }
+    return expectedCount === 1 && text.length <= 40 ? [text] : [];
+  }
+
   function gradeFinalAnswer(question, response) {
     const answer = String(question.answer || "");
+    const questionType = normalizeQuestionType(question.questionType || question.examQuestionType);
+    if (/实验/u.test(questionType)) {
+      return {
+        status: "review-required",
+        score: null,
+        summary: "实验题涉及操作、现象、图表或论证过程，离线规则不将其自动判为正确，需要按评分要点人工复核。",
+        issues: [{ type: "manual", location: "实验作答", reason: "仅比较关键词不能可靠评价实验过程", next: "逐项核对器材、步骤、变量控制、现象、数据处理和结论。" }],
+        expected: answer
+      };
+    }
     const expected = expectedChoice(answer);
     const actualChoice = normalizeChoice(response);
     if (expected) {
@@ -673,6 +800,47 @@
         summary: correct ? "选项正确。" : `选项不匹配。你填写的是 ${actualChoice || "空白"}，应重新检查题设和规律。`,
         issues: correct ? [] : [{ type: "choice", location: "最终选项", reason: "选项与参考结论不一致", next: "先核对研究对象和公式适用条件，再重新选择。" }],
         expected: expected.split("").join("、")
+      };
+    }
+
+    const expectedTextBlanks = reliableTextBlankAnswers(question, answer);
+    if (expectedTextBlanks.length) {
+      const actualTextBlanks = responseBlankAnswers(response, expectedTextBlanks.length);
+      if (!actualTextBlanks.length) {
+        const hasResponse = Boolean(String(response || "").trim());
+        return {
+          status: hasResponse ? "review-required" : "incorrect",
+          score: hasResponse ? null : 0,
+          summary: hasResponse
+            ? "参考答案可逐空提取，但当前作答无法可靠识别空格顺序，需要人工确认。"
+            : "尚未填写文本空格。",
+          issues: [{ type: "blank-structure", location: "填空答案", reason: "作答数量或分隔方式与参考空格不一致", next: "按第一空、第二空的顺序逐项填写，并用换行或分号分隔。" }],
+          expected: expectedTextBlanks.map((item) => item.answer)
+        };
+      }
+      let matched = 0;
+      const issues = [];
+      expectedTextBlanks.forEach((item, index) => {
+        if (normalizeBlankText(actualTextBlanks[index]) === normalizeBlankText(item.answer)) {
+          matched += 1;
+        } else {
+          issues.push({
+            type: "text-blank",
+            location: `第 ${index + 1} 空`,
+            reason: "文本与明确标注的参考填空不一致",
+            next: "回到题干条件核对该空对应的物理概念、方向或现象。"
+          });
+        }
+      });
+      const ratio = matched / expectedTextBlanks.length;
+      return {
+        status: ratio === 1 ? "correct" : ratio > 0 ? "partial" : "incorrect",
+        score: ratio,
+        summary: ratio === 1
+          ? `逐空匹配 ${matched}/${expectedTextBlanks.length}，文本填空与参考答案一致。`
+          : `逐空匹配 ${matched}/${expectedTextBlanks.length}；请按错误空格修改。`,
+        issues,
+        expected: expectedTextBlanks.map((item) => item.answer)
       };
     }
 
@@ -901,11 +1069,13 @@
 
   function recordAttempt(state, input) {
     const modelScore = scoreModeling(input.model || {});
+    const normalizedErrorType = normalizeErrorType(input.errorType);
     const attempt = {
       id: createId("attempt"),
       profileId: state.activeProfileId,
       questionId: input.questionId,
       topic: input.topic || "待分类",
+      questionType: normalizeQuestionType(input.questionType || input.examQuestionType),
       stage: input.stage || "全部",
       startedAt: input.startedAt || new Date().toISOString(),
       completedAt: new Date().toISOString(),
@@ -915,7 +1085,8 @@
       hintLevel: Math.max(0, Math.min(5, Number(input.hintLevel) || 0)),
       finalAnswer: String(input.finalAnswer || ""),
       grading: input.grading || { status: "review-required", score: null, issues: [] },
-      errorType: input.errorType || "",
+      errorType: normalizedErrorType,
+      errorTypeCode: normalizedErrorType ? errorTypeCode(normalizedErrorType) : "",
       reflection: String(input.reflection || ""),
       selfExplanation: String(input.selfExplanation || ""),
       draftImageData: /^data:image\//.test(String(input.draftImageData || ""))
@@ -1013,6 +1184,161 @@
     const month = String(date.getMonth() + 1).padStart(2, "0");
     const day = String(date.getDate()).padStart(2, "0");
     return `${year}-${month}-${day}`;
+  }
+
+  function evidenceTimestamp(value) {
+    const timestamp = new Date(value || 0).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function countedLabels(values) {
+    const counts = new Map();
+    values.filter(Boolean).forEach((value) => {
+      const label = String(value);
+      counts.set(label, (counts.get(label) || 0) + 1);
+    });
+    return [...counts.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
+  }
+
+  function diagnosticTopics(attempt) {
+    if (Array.isArray(attempt?.topics) && attempt.topics.length) return attempt.topics;
+    return misconceptionCatalog.find((item) => item.code === attempt?.misconceptionCode)?.topics || [];
+  }
+
+  function topicEvidenceProfile(state, questions = [], profileId = state.activeProfileId, now = Date.now()) {
+    const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
+    const questionList = Array.isArray(questions) ? questions : [];
+    const eligibleQuestions = questionList.filter((question) => {
+      return isPublishedQuestion(question)
+        && question.grade !== "七年级"
+        && (!profile?.grade || !question.grade || question.grade === profile.grade);
+    });
+    const questionMap = new Map(questionList.map((question) => [question.id, question]));
+    const attempts = state.attempts.filter((attempt) => attempt.profileId === profileId);
+    const diagnostics = state.diagnosticAttempts.filter((attempt) => attempt.profileId === profileId);
+    const verifiedTransfers = state.experimentRecords.filter((record) => {
+      return record?.profileId === profileId
+        && record.type === "transfer"
+        && String(record.response || "").trim().length >= 10
+        && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
+    });
+    const topics = new Set();
+    eligibleQuestions.forEach((question) => {
+      const topic = String(question.topic || "").trim();
+      if (topic) topics.add(topic);
+    });
+    attempts.forEach((attempt) => topics.add(String(attempt.topic || "待分类").trim() || "待分类"));
+    diagnostics.forEach((attempt) => diagnosticTopics(attempt).forEach((topic) => topics.add(topic)));
+
+    const statusOrder = { "需巩固": 0, "证据不足": 1, "基本掌握": 2, "可迁移": 3 };
+    return [...topics].map((topic) => {
+      const topicAttempts = attempts
+        .filter((attempt) => (attempt.topic || "待分类") === topic)
+        .sort((a, b) => evidenceTimestamp(a.completedAt || a.createdAt) - evidenceTimestamp(b.completedAt || b.createdAt));
+      const topicDiagnostics = diagnostics.filter((attempt) => diagnosticTopics(attempt).includes(topic));
+      const topicTransfers = verifiedTransfers.filter((record) => questionMap.get(record.questionId)?.topic === topic);
+      const correct = topicAttempts.filter((attempt) => attempt.grading?.status === "correct");
+      const independentCorrect = correct.filter((attempt) => {
+        return Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
+      });
+      const independentDates = [...new Set(independentCorrect
+        .map((attempt) => localDateKey(attempt.completedAt || attempt.createdAt))
+        .filter(Boolean))];
+      const successfulTransferAttempts = independentCorrect.filter((attempt) => {
+        return String(attempt.transferType || "").trim().length > 0;
+      });
+      const transferSuccessCount = successfulTransferAttempts.length + topicTransfers.length;
+      const latest = topicAttempts.at(-1) || null;
+      const latestDiagnostic = topicDiagnostics
+        .slice()
+        .sort((a, b) => evidenceTimestamp(a.createdAt) - evidenceTimestamp(b.createdAt))
+        .at(-1) || null;
+      const diagnosticRisk = Boolean(latestDiagnostic
+        && ["stable-misconception", "confident-guess", "not-yet-understood"].includes(latestDiagnostic.classification));
+      const scoreTotal = topicAttempts.reduce((sum, attempt) => sum + (Number(attempt.grading?.score) || 0), 0);
+      const hintTotal = topicAttempts.reduce((sum, attempt) => sum + (Number(attempt.hintLevel) || 0), 0);
+      const modelScores = topicAttempts
+        .map((attempt) => Number(attempt.modelScore?.total))
+        .filter(Number.isFinite);
+      const accuracy = topicAttempts.length ? Math.round(correct.length / topicAttempts.length * 100) : 0;
+      const averageScore = topicAttempts.length ? Math.round(scoreTotal / topicAttempts.length * 100) : 0;
+      const averageHint = topicAttempts.length
+        ? Math.round(hintTotal / topicAttempts.length * 10) / 10
+        : 0;
+      const modeling = modelScores.length
+        ? Math.round(modelScores.reduce((sum, value) => sum + value, 0) / modelScores.length)
+        : null;
+      const evidenceTimes = [
+        ...topicAttempts.map((attempt) => evidenceTimestamp(attempt.completedAt || attempt.createdAt)),
+        ...topicDiagnostics.map((attempt) => evidenceTimestamp(attempt.createdAt)),
+        ...topicTransfers.map((record) => evidenceTimestamp(record.createdAt || record.completedAt))
+      ].filter((value) => value > 0 && value <= Number(now) + DAY);
+      const latestTimestamp = evidenceTimes.length ? Math.max(...evidenceTimes) : 0;
+      const sampleSize = topicAttempts.length + topicDiagnostics.length + topicTransfers.length;
+      const latestWeak = Boolean(latest && (
+        !["correct", "review-required"].includes(latest.grading?.status)
+        || Number(latest.hintLevel || 0) >= MASTERY_RULES.weakHintMinimum
+        || (Number.isFinite(Number(latest.modelScore?.total))
+          && Number(latest.modelScore.total) < MASTERY_RULES.weakModelingBelow)
+      ));
+
+      let code = "insufficient";
+      let status = "证据不足";
+      if ((topicAttempts.length >= 2 || diagnosticRisk) && (
+        diagnosticRisk || latestWeak || accuracy < 60 || averageHint >= 3
+        || (modeling !== null && modeling < MASTERY_RULES.weakModelingBelow)
+      )) {
+        code = "reinforce";
+        status = "需巩固";
+      } else if (independentDates.length >= MASTERY_RULES.masteredIndependentDates
+        && transferSuccessCount >= MASTERY_RULES.masteredTransferEvidence) {
+        code = "transferable";
+        status = "可迁移";
+      } else if (topicAttempts.length >= 2 && independentCorrect.length >= 1
+        && accuracy >= 70 && averageHint <= 2) {
+        code = "basic";
+        status = "基本掌握";
+      }
+
+      const reasons = [];
+      if (!sampleSize) reasons.push("尚无作答、诊断或迁移证据");
+      else reasons.push(`共有 ${sampleSize} 条证据，其中正式作答 ${topicAttempts.length} 次`);
+      if (independentDates.length) reasons.push(`低提示独立正确分布在 ${independentDates.length} 个日期`);
+      if (transferSuccessCount) reasons.push(`有 ${transferSuccessCount} 条迁移成功证据`);
+      if (diagnosticRisk) reasons.push("最近前概念诊断仍显示稳定误解风险");
+      if (latestWeak) reasons.push("最近作答存在错误、高提示依赖或建模不足");
+      if (sampleSize > 0 && sampleSize < 2) reasons.push("样本量不足，不作稳定能力结论");
+
+      return {
+        topic,
+        code,
+        status,
+        sampleSize,
+        attemptCount: topicAttempts.length,
+        diagnosticCount: topicDiagnostics.length,
+        transferSuccessCount,
+        availableQuestionCount: eligibleQuestions.filter((question) => question.topic === topic).length,
+        latestEvidenceAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
+        latestEvidenceDate: latestTimestamp ? localDateKey(latestTimestamp) : null,
+        correct: correct.length,
+        accuracy,
+        averageScore,
+        averageHint,
+        modeling,
+        independentCorrect: independentCorrect.length,
+        independentDates: independentDates.length,
+        questionTypes: countedLabels([
+          ...topicAttempts.map((attempt) => normalizeQuestionType(attempt.questionType || attempt.examQuestionType)),
+          ...topicDiagnostics.map(() => "前概念诊断")
+        ]),
+        errorTypes: countedLabels(topicAttempts.map((attempt) => normalizeErrorType(attempt.errorType))),
+        reasons
+      };
+    }).sort((a, b) => statusOrder[a.status] - statusOrder[b.status]
+      || b.sampleSize - a.sampleSize
+      || a.topic.localeCompare(b.topic, "zh-CN"));
   }
 
   function transferEvidence(state, questionId, profileId = state.activeProfileId) {
@@ -1163,9 +1489,10 @@
       hintLevel: attempt.hintLevel,
       date: attempt.createdAt
     }));
-    const due = dueReviews(state);
+    const due = dueReviews(state, Date.now(), profileId);
     const topics = topicPerformance(state, profileId);
     const mastery = masterySummary(state, questions, profileId);
+    const closedLoop = closedLoopStreak(state, profileId);
     const questionMap = new Map(questions.map((question) => [question.id, question]));
     return {
       completed,
@@ -1180,7 +1507,8 @@
       topics,
       trend,
       misconceptionProfile: misconceptionProfile(state, profileId),
-      mastery
+      mastery,
+      closedLoop
     };
   }
 
@@ -1403,6 +1731,12 @@
     const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
     const summary = summarizeLearning(state, questions, profileId);
     const topics = summary.topics;
+    const knowledgePoints = topicEvidenceProfile(state, questions, profileId);
+    const profileAttempts = state.attempts.filter((attempt) => attempt.profileId === profileId);
+    const knowledgePointCounts = knowledgePoints.reduce((counts, item) => {
+      counts[item.status] = (counts[item.status] || 0) + 1;
+      return counts;
+    }, { "证据不足": 0, "需巩固": 0, "基本掌握": 0, "可迁移": 0 });
     const strongest = topics.slice().sort((a, b) => b.averageScore - a.averageScore || b.attempts - a.attempts).slice(0, 3);
     const exams = state.examRecords
       .filter((record) => record.profileId === profileId)
@@ -1469,6 +1803,16 @@
       trendDelta,
       priorities: priorities.slice(0, 6),
       growthTimeline: growthTimeline(state, profileId, 40),
+      knowledgePoints,
+      abilityProfile: {
+        knowledgePointCounts,
+        questionTypes: countedLabels(profileAttempts.map((attempt) => {
+          return normalizeQuestionType(attempt.questionType || attempt.examQuestionType);
+        })),
+        errorTypes: countedLabels(profileAttempts.map((attempt) => normalizeErrorType(attempt.errorType))),
+        closedLoop: summary.closedLoop,
+        evidenceRule: "知识点结论同时参考样本量、最近证据、正确率、提示依赖、建模表现、跨日独立正确和迁移成功；证据不足时不作掌握结论。"
+      },
       evidenceLevel: summary.completed >= 12 || exams.length >= 3
         ? "较充分"
         : summary.completed >= 4 || exams.length >= 1
@@ -1721,6 +2065,245 @@
       [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
     }
     return result;
+  }
+
+  function diagnosticMatchesQuestion(item, question) {
+    const questionTopic = String(question.topic || "").trim();
+    const searchable = [
+      questionTopic,
+      question.title,
+      ...(Array.isArray(question.examPoints) ? question.examPoints : [])
+    ].filter(Boolean).join(" ");
+    return item.topics.some((topic) => searchable.includes(topic)
+      || (questionTopic && (questionTopic.includes(topic) || topic.includes(questionTopic))));
+  }
+
+  function generatePlacementDiagnostic(state, questions = [], options = {}) {
+    const profileId = options.profileId || state.activeProfileId;
+    const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
+    if (!profile) throw new Error("未找到要生成摸底卷的学生档案。");
+    const requestedCount = Math.max(20, Math.min(30, Number(options.count) || 24));
+    const seed = String(options.seed || `${profileId}|${profile.grade}|placement`);
+    const eligible = (Array.isArray(questions) ? questions : []).filter((question) => {
+      return isPublishedQuestion(question)
+        && question.grade === profile.grade
+        && question.grade !== "七年级"
+        && String(question.content || "").trim()
+        && String(question.answer || "").trim()
+        && String(question.solution || "").trim();
+    });
+    const availableTopics = [...new Set(eligible.map((question) => String(question.topic || "待分类").trim() || "待分类"))]
+      .sort((a, b) => a.localeCompare(b, "zh-CN"));
+    const relevantDiagnostics = misconceptionCatalog.filter((item) => {
+      return eligible.some((question) => diagnosticMatchesQuestion(item, question));
+    });
+    const diagnosticTarget = relevantDiagnostics.length
+      ? Math.min(relevantDiagnostics.length, Math.max(1, Math.min(8, Math.round(requestedCount / 4))))
+      : 0;
+    const selectedDiagnostics = seededShuffle(relevantDiagnostics, `${seed}|misconceptions`)
+      .slice(0, diagnosticTarget);
+    const items = selectedDiagnostics.map((item) => ({
+      id: item.diagnostic.id,
+      kind: "misconception-diagnostic",
+      questionType: "前概念诊断",
+      topic: item.topics[0],
+      topics: item.topics.slice(),
+      misconceptionCode: item.code,
+      diagnostic: item.diagnostic
+    }));
+    const usedQuestionIds = new Set();
+    const coveredTopics = new Set();
+    selectedDiagnostics.forEach((item) => {
+      eligible.filter((question) => diagnosticMatchesQuestion(item, question))
+        .forEach((question) => coveredTopics.add(question.topic));
+    });
+    const addQuestion = (question) => {
+      if (!question || usedQuestionIds.has(question.id) || items.length >= requestedCount) return;
+      usedQuestionIds.add(question.id);
+      coveredTopics.add(question.topic || "待分类");
+      items.push({
+        id: question.id,
+        kind: "bank-question",
+        topic: question.topic || "待分类",
+        questionType: normalizeQuestionType(question.questionType || question.examQuestionType),
+        question
+      });
+    };
+    const topicOrder = seededShuffle(availableTopics, `${seed}|topics`).sort((left, right) => {
+      return Number(coveredTopics.has(left)) - Number(coveredTopics.has(right));
+    });
+    topicOrder.forEach((topic) => {
+      const candidates = seededShuffle(
+        eligible.filter((question) => question.topic === topic),
+        `${seed}|topic|${topic}`
+      );
+      addQuestion(candidates[0]);
+    });
+    seededShuffle(eligible, `${seed}|fill`).forEach(addQuestion);
+
+    const coveredTopicList = availableTopics.filter((topic) => coveredTopics.has(topic));
+    const missingTopics = availableTopics.filter((topic) => !coveredTopics.has(topic));
+    const warnings = [];
+    if (!relevantDiagnostics.length) {
+      warnings.push("现有前概念诊断与该年级题库元数据未形成可核对的知识点匹配，本卷未强行加入不确定的前概念题。");
+    }
+    if (items.length < requestedCount) {
+      warnings.push(`现有已发布完整题与匹配前概念题只能提供 ${items.length} 题，少于目标 ${requestedCount} 题。`);
+    }
+    if (missingTopics.length) {
+      warnings.push(`受题量上限或题库覆盖限制，尚未覆盖：${missingTopics.join("、")}。`);
+    }
+    return {
+      id: `placement-${profileId}-${seed.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 48)}`,
+      profileId,
+      grade: profile.grade,
+      title: String(options.title || `${profile.grade}入学/学期初物理摸底诊断`).slice(0, 120),
+      requestedCount,
+      questionCount: items.length,
+      targetRange: { minimum: 20, maximum: 30 },
+      meetsTargetRange: items.length >= 20 && items.length <= 30,
+      targetCountMet: items.length === requestedCount,
+      containsMisconceptionDiagnostics: selectedDiagnostics.length > 0,
+      misconceptionQuestionCount: selectedDiagnostics.length,
+      bankQuestionCount: items.length - selectedDiagnostics.length,
+      items,
+      coverage: {
+        availableTopics,
+        coveredTopics: coveredTopicList,
+        missingTopics,
+        coverageRate: availableTopics.length
+          ? Math.round(coveredTopicList.length / availableTopics.length * 100)
+          : 0,
+        complete: availableTopics.length > 0 && missingTopics.length === 0
+      },
+      warnings,
+      generationRule: "仅从当前年级已发布且题干、答案、解析完整的现有题目，以及已收录的前概念诊断中选取；优先覆盖不同知识点，再补足题量。",
+      boundary: "摸底结果属于形成性证据；覆盖不足、主观题和前概念判断仍需结合后续作答及教师复核。"
+    };
+  }
+
+  function recordBroadCoverageCheck(state, input = {}) {
+    const profileId = String(input.profileId || state.activeProfileId);
+    const profile = state.profiles.find((item) => item.id === profileId);
+    if (!profile) throw new Error("阶段检测对应的学生档案不存在。");
+    const questionIds = [...new Set((Array.isArray(input.questionIds) ? input.questionIds : [])
+      .map((value) => String(value).trim()).filter(Boolean))].slice(0, 30);
+    if (!questionIds.length) throw new Error("阶段检测至少需要一条已完成题目证据。");
+    const completedAt = new Date(input.completedAt || Date.now());
+    if (Number.isNaN(completedAt.getTime())) throw new Error("阶段检测完成日期无效。");
+    const record = {
+      id: String(input.id || createId("broad-coverage")).slice(0, 160),
+      profileId,
+      grade: profile.grade,
+      title: String(input.title || `${profile.grade}广覆盖阶段检测`).trim().slice(0, 120),
+      questionIds,
+      coveredTopics: [...new Set((Array.isArray(input.coveredTopics) ? input.coveredTopics : [])
+        .map((value) => String(value).trim().slice(0, 100)).filter(Boolean))],
+      coverageComplete: Boolean(input.coverageComplete),
+      completedAt: completedAt.toISOString(),
+      createdAt: new Date().toISOString()
+    };
+    if (!Array.isArray(state.broadCoverageChecks)) state.broadCoverageChecks = [];
+    state.broadCoverageChecks.push(record);
+    if (state.broadCoverageChecks.length > 500) state.broadCoverageChecks.splice(0, state.broadCoverageChecks.length - 500);
+    return record;
+  }
+
+  function scheduleBroadCoverageCheck(state, questions = [], options = {}) {
+    const profileId = options.profileId || state.activeProfileId;
+    const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
+    if (!profile) throw new Error("未找到阶段检测对应的学生档案。");
+    const now = options.now instanceof Date ? options.now.getTime() : Number(options.now ?? Date.now());
+    if (!Number.isFinite(now)) throw new Error("阶段检测调度日期无效。");
+    const records = (Array.isArray(state.broadCoverageChecks) ? state.broadCoverageChecks : [])
+      .filter((record) => record.profileId === profileId && evidenceTimestamp(record.completedAt) > 0)
+      .sort((a, b) => evidenceTimestamp(a.completedAt) - evidenceTimestamp(b.completedAt));
+    const last = records.at(-1) || null;
+    const profileCreatedAt = evidenceTimestamp(profile.createdAt) || now;
+    const anchor = last ? evidenceTimestamp(last.completedAt) : profileCreatedAt;
+    const nextDueTimestamp = anchor + BROAD_COVERAGE_INTERVAL_DAYS * DAY;
+    const due = now >= nextDueTimestamp;
+    const paper = due || options.includePreview
+      ? generatePlacementDiagnostic(state, questions, {
+        profileId,
+        count: options.count || 20,
+        seed: options.seed || `${profileId}|broad|${localDateKey(nextDueTimestamp)}`,
+        title: `${profile.grade}双周广覆盖检测`
+      })
+      : null;
+    return {
+      profileId,
+      intervalDays: BROAD_COVERAGE_INTERVAL_DAYS,
+      due,
+      lastCompletedAt: last?.completedAt || null,
+      nextDueAt: new Date(nextDueTimestamp).toISOString(),
+      daysUntilDue: due ? 0 : Math.ceil((nextDueTimestamp - now) / DAY),
+      overdueDays: due ? Math.floor((now - nextDueTimestamp) / DAY) : 0,
+      paper,
+      rule: "每14天安排一次当前年级广覆盖检测，用于发现尚未进入专项推荐的知识盲区；覆盖不足会在试卷中明确标注。"
+    };
+  }
+
+  function dateKeyOrdinal(key) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(key));
+    if (!match) return null;
+    return Math.floor(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / DAY);
+  }
+
+  function isClosedLoopAttempt(attempt) {
+    const status = attempt?.grading?.status;
+    if (!["correct", "incorrect", "partial", "review-required"].includes(status)) return false;
+    if (!String(attempt.finalAnswer || "").trim()) return false;
+    const hasExplanation = String(attempt.selfExplanation || attempt.reflection || "").trim().length >= 4;
+    if (!hasExplanation) return false;
+    return status === "correct" || Boolean(normalizeErrorType(attempt.errorType));
+  }
+
+  function closedLoopStreak(state, profileId = state.activeProfileId, now = Date.now()) {
+    const nowTimestamp = now instanceof Date ? now.getTime() : Number(now);
+    if (!Number.isFinite(nowTimestamp)) throw new Error("连续学习统计日期无效。");
+    const eligibleAttempts = state.attempts.filter((attempt) => {
+      return attempt.profileId === profileId
+        && evidenceTimestamp(attempt.completedAt || attempt.createdAt) <= nowTimestamp
+        && isClosedLoopAttempt(attempt);
+    });
+    const dayKeys = [...new Set(eligibleAttempts
+      .map((attempt) => localDateKey(attempt.completedAt || attempt.createdAt))
+      .filter(Boolean))]
+      .sort((a, b) => dateKeyOrdinal(a) - dateKeyOrdinal(b));
+    let running = 0;
+    let longestStreak = 0;
+    let previousOrdinal = null;
+    const earnedDates = new Map();
+    dayKeys.forEach((key) => {
+      const ordinal = dateKeyOrdinal(key);
+      running = previousOrdinal !== null && ordinal === previousOrdinal + 1 ? running + 1 : 1;
+      previousOrdinal = ordinal;
+      longestStreak = Math.max(longestStreak, running);
+      CLOSED_LOOP_BADGES.forEach((badge) => {
+        if (running === badge.days && !earnedDates.has(badge.id)) earnedDates.set(badge.id, key);
+      });
+    });
+    const todayOrdinal = dateKeyOrdinal(localDateKey(nowTimestamp));
+    const latestOrdinal = dayKeys.length ? dateKeyOrdinal(dayKeys.at(-1)) : null;
+    const currentStreak = latestOrdinal !== null && todayOrdinal - latestOrdinal <= 1 ? running : 0;
+    return {
+      profileId,
+      currentStreak,
+      longestStreak,
+      totalClosedLoopDays: dayKeys.length,
+      eligibleAttemptCount: eligibleAttempts.length,
+      latestClosedLoopDate: dayKeys.at(-1) || null,
+      badges: CLOSED_LOOP_BADGES.map((badge) => ({
+        id: badge.id,
+        title: badge.title,
+        requiredDays: badge.days,
+        earned: longestStreak >= badge.days,
+        earnedAt: earnedDates.get(badge.id) || null
+      })),
+      rankingEnabled: false,
+      feedbackPolicy: "仅展示本人连续完成闭环学习的记录，不设置积分、排行榜或同伴比较。"
+    };
   }
 
   function transferVariants(question) {
@@ -2043,6 +2626,7 @@
         averageHint: summary.averageHint,
         learningMinutes: summary.learningMinutes,
         dueCount: summary.dueCount,
+        closedLoop: summary.closedLoop,
         mastery: {
           counts: summary.mastery.counts,
           masteryRate: summary.mastery.masteryRate,
@@ -2079,6 +2663,8 @@
         examTrend: analysis.examTrend,
         trendDelta: analysis.trendDelta,
         priorities: analysis.priorities,
+        knowledgePoints: analysis.knowledgePoints,
+        abilityProfile: analysis.abilityProfile,
         conclusion: analysis.conclusion,
         boundary: analysis.boundary
       }
@@ -2090,6 +2676,7 @@
     storageKey: STORAGE_KEY,
     masteryRules: MASTERY_RULES,
     misconceptionCatalog: Object.freeze(misconceptionCatalog),
+    errorTypeDefinitions: ERROR_TYPE_DEFINITIONS,
     formulaCatalog: Object.freeze(formulaCatalog),
     constants: Object.freeze(constants),
     unitDefinitions: Object.freeze(unitDefinitions),
@@ -2105,6 +2692,8 @@
     deleteProfile,
     recordDiagnostic,
     misconceptionProfile,
+    normalizeQuestionType,
+    normalizeErrorType,
     createHintLadder,
     socraticPrompts,
     gradeFinalAnswer,
@@ -2119,6 +2708,7 @@
     masteryProfile,
     masterySummary,
     topicPerformance,
+    topicEvidenceProfile,
     summarizeLearning,
     modelingRadar,
     recommendations,
@@ -2128,6 +2718,10 @@
     growthTimeline,
     studentAnalysis,
     dailyTest,
+    generatePlacementDiagnostic,
+    scheduleBroadCoverageCheck,
+    recordBroadCoverageCheck,
+    closedLoopStreak,
     activeLearningPlan,
     learningPlanProgress,
     buildTargetedLearningPlan,
