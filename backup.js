@@ -78,7 +78,7 @@
       format: FORMAT,
       version: VERSION,
       createdAt: new Date().toISOString(),
-      appVersion: "2.6.0",
+      appVersion: "2.7.0",
       questionCount: questions.length,
       profileCount: learning.profiles.length,
       fileCount: fileDeclarations.length,

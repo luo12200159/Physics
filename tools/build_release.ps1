@@ -1,6 +1,6 @@
 ﻿param(
     [string]$ReleaseDirectory,
-    [string]$Version = '2.6.0',
+    [string]$Version = '2.7.0',
     [string]$CertificateThumbprint = '',
     [string]$TimestampUrl = 'http://timestamp.digicert.com',
     [string]$SignToolPath = '',
@@ -33,6 +33,39 @@ if (-not $compiler) {
 
 New-Item -ItemType Directory -Force -Path $buildDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $ReleaseDirectory | Out-Null
+
+$installGuide = @"
+物理研习室 Windows 版 $Version
+
+适用系统
+Windows 10 或 Windows 11。
+
+安装方法
+1. 核对 SHA256.txt 中的校验值。
+2. 双击“物理研习室-安装程序-v$Version.exe”完成当前用户安装。
+3. 首次启动使用软件所有者签发的设备绑定激活码。
+
+本版内容
+- 八年级至高三完整本地题 1900 道；每题包含题干、答案和分步解析。
+- 学生端包含题库、错题、视频、掌握证据、教材目录、学情分析、学习实验室与建议。
+- 学习记录包含题型、时长、提示、信心、六类错因和迁移表现；掌握依据跨日独立正确、低提示与迁移成功。
+- 新学生可使用 24 题摸底包；前概念诊断共 36 条；每 14 天安排广覆盖检测，并提供非排名式连续完成反馈。
+- 学习实验室和拍题弹窗已采用内部滚动；作答提交后显示判定、参考答案和详细解析。
+- 可连接自行部署的班级服务：教师创建班级、随机生成邀请码、审批学生、分组并查看花名册；学生用邀请码申请加入。
+- 班级成员状态会定时刷新；学生题库、附件和作答证据默认仍保存在本机，不会自动上传。
+- 用户反馈会调用本机邮件应用，收件人为 luo865265@gmail.com；发送动作须由用户确认。
+
+联网与隐私
+班级功能需要先部署并配置 HTTPS 服务端；本机调试可使用 http://127.0.0.1:8787。访问令牌只保存在当前会话，密码不保存。核心题库与本机学习功能可离线使用。
+
+签名提示
+若发布文件未使用商业代码签名证书，Windows 可能显示 SmartScreen 提示；安装前必须核对随包 SHA-256。
+"@
+[IO.File]::WriteAllText(
+    (Join-Path $ReleaseDirectory '安装说明.txt'),
+    $installGuide,
+    (New-Object Text.UTF8Encoding($false))
+)
 
 foreach ($requiredWebViewFile in @(
     $webViewCore,

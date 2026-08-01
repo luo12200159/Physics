@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("物理研习室卸载程序")]
 [assembly: AssemblyProduct("物理研习室")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 
 internal static class UninstallerProgram
 {

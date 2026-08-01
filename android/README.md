@@ -1,6 +1,6 @@
 # 物理研习室 Android 版
 
-这是与 Windows 版并列的 2.6.0 独立 Android 外壳。它把项目根目录的网页、教材目录、题库、应用脚本、离线二维码识别库和图标打包进 APK，并通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口在系统 WebView 中离线运行。
+这是与 Windows 版并列的 2.7.0 独立 Android 外壳。它把项目根目录的网页、教材目录、题库、应用脚本、离线二维码识别库和图标打包进 APK，并通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口在系统 WebView 中离线运行。
 
 ## 平台能力
 
@@ -16,7 +16,7 @@
 - APK 使用项目专用 PKCS#12 证书签名
 - 与 Windows 版共用 1900 道完整本地题：八年级 300 道、九年级 500 道、高一 300 道、高二 300 道、高三 500 道；另保留 2020—2025 年长沙中考及湖南适用高考物理 12 套、232 条题号与考点索引及原卷入口
 - 包含 400 道“物理研习室原创·长沙模拟考结构适配专项”，九年级和高三各 200 道；这些题为应用内原创，并非长沙学校模拟卷原题，未复制第三方试卷题干、图像或答案
-- 共用 2.6.0 学习闭环：学生档案、每日测试、前概念诊断、分步导师、五级提示、同步仿真、迁移训练、透明校验、间隔复习、学习报告、教师本地组卷和物理工具
+- 共用 2.7.0 学习闭环：学生档案、每日测试、前概念诊断、分步导师、五级提示、同步仿真、迁移训练、透明校验、间隔复习、学习报告、教师本地组卷和物理工具
 - 教师可解析 DOCX、PDF、旧版 Word 与扫描图片；离线能力不足时可调用配置好的受控 ChatGPT 服务端，解析结果必须人工审核
 
 ## 已知边界
@@ -29,7 +29,7 @@
 
 ## 构建
 
-运行 `tools/build_android.ps1`。默认输出 `物理研习室-Android-v2.6.0.apk`。脚本使用工作目录同级的 `.android-build-tools` 中的 OpenJDK 17、Android SDK Platform 36 和 Build Tools 36.0.0，不依赖 Gradle 或 Maven。
+运行 `tools/build_android.ps1`。默认输出 `物理研习室-Android-v2.7.0.apk`。脚本使用工作目录同级的 `.android-build-tools` 中的 OpenJDK 17、Android SDK Platform 36 和 Build Tools 36.0.0，不依赖 Gradle 或 Maven。
 
 首次构建会在 `signing` 目录生成签名证书和随机密码配置。该目录决定后续版本能否覆盖升级，必须私下备份，不能随 APK 公开分发。
 

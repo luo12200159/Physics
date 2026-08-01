@@ -1889,13 +1889,13 @@
   }
 
   function openFeedbackEmail() {
-    const subject = "物理研习室 v2.6.0 用户反馈";
+    const subject = "物理研习室 v2.7.0 用户反馈";
     const body = [
       "请描述遇到的问题或建议：",
       "",
       `使用身份：${experience.role}`,
       `年级：${experience.grade}`,
-      "应用版本：2.6.0",
+      "应用版本：2.7.0",
       "设备与系统："
     ].join("\r\n");
     recordEvent("feedback-email-opened", { role: experience.role });

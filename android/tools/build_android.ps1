@@ -1,7 +1,7 @@
 ﻿param(
     [string]$ToolchainRoot = '',
-    [string]$VersionName = '2.6.0',
-    [int]$VersionCode = 20600
+    [string]$VersionName = '2.7.0',
+    [int]$VersionCode = 20700
 )
 
 $ErrorActionPreference = 'Stop'
