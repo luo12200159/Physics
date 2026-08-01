@@ -1,4 +1,5 @@
 .build/
+.worktrees/
 qa-output/
 node_modules/
 发布/
