@@ -34,7 +34,55 @@ vm.runInContext(source, context, { filename: "learning-engine.js" });
 
 const engine = context.PHYSICS_LEARNING_ENGINE;
 assert.ok(engine, "learning engine should be exported");
-assert.equal(engine.misconceptionCatalog.length, 8);
+assert.ok(
+  engine.misconceptionCatalog.length >= 30 && engine.misconceptionCatalog.length <= 45,
+  "misconception catalog should remain a maintainable 30-45 item diagnostic set"
+);
+const requiredMisconceptionCategories = [
+  "声学",
+  "光学",
+  "热学与物态变化",
+  "质量与密度",
+  "力与运动",
+  "压强与浮力",
+  "功与简单机械",
+  "电路与电学",
+  "磁学",
+  "电磁感应",
+  "曲线运动与万有引力",
+  "动量",
+  "振动与波",
+  "电场",
+  "磁场",
+  "交流电",
+  "光电与原子核"
+];
+const misconceptionCodes = new Set();
+const diagnosticIds = new Set();
+const coveredMisconceptionCategories = new Set();
+const supportedGrades = new Set(["八年级", "九年级", "高一", "高二", "高三"]);
+engine.misconceptionCatalog.forEach((item) => {
+  assert.equal(misconceptionCodes.has(item.code), false, `duplicate misconception code: ${item.code}`);
+  misconceptionCodes.add(item.code);
+  assert.equal(diagnosticIds.has(item.diagnostic.id), false, `duplicate diagnostic id: ${item.diagnostic.id}`);
+  diagnosticIds.add(item.diagnostic.id);
+  assert.ok(requiredMisconceptionCategories.includes(item.category), `unknown category: ${item.category}`);
+  coveredMisconceptionCategories.add(item.category);
+  assert.ok(Array.isArray(item.grades) && item.grades.length > 0, `${item.code} should declare grades`);
+  item.grades.forEach((grade) => assert.equal(supportedGrades.has(grade), true, `${item.code} has unsupported grade ${grade}`));
+  assert.ok(Array.isArray(item.topics) && item.topics.length > 0, `${item.code} should declare topics`);
+  assert.ok(String(item.diagnostic.prompt || "").trim(), `${item.code} should have a prompt`);
+  assert.ok(String(item.diagnostic.explanation || "").trim(), `${item.code} should have an explanation`);
+  const choiceKeys = new Set(item.diagnostic.choices.map((choice) => choice[0]));
+  const reasonKeys = new Set(item.diagnostic.reasons.map((reason) => reason[0]));
+  assert.equal(choiceKeys.size, item.diagnostic.choices.length, `${item.code} choice keys should be unique`);
+  assert.equal(reasonKeys.size, item.diagnostic.reasons.length, `${item.code} reason keys should be unique`);
+  assert.equal(choiceKeys.has(item.diagnostic.correctAnswer), true, `${item.code} correctAnswer should name a choice`);
+  assert.equal(reasonKeys.has(item.diagnostic.correctReason), true, `${item.code} correctReason should name a reason`);
+});
+requiredMisconceptionCategories.forEach((category) => {
+  assert.equal(coveredMisconceptionCategories.has(category), true, `missing misconception category: ${category}`);
+});
 assert.ok(engine.formulaCatalog.length >= 20);
 
 const state = engine.defaultState();
@@ -401,6 +449,46 @@ const abilityAnalysis = engine.studentAnalysis(
 );
 assert.equal(abilityAnalysis.abilityProfile.knowledgePointCounts["可迁移"], 1);
 assert.ok(abilityAnalysis.abilityProfile.questionTypes.some((item) => item.label === "实验探究题"));
+
+const gradeDiagnosticCases = [
+  { grade: "八年级", topic: "质量与密度", diagnosticId: "diag-density-property" },
+  { grade: "九年级", topic: "电功率", diagnosticId: "diag-electric-energy-unit" },
+  { grade: "高一", topic: "平抛运动", diagnosticId: "diag-projectile-time" },
+  { grade: "高二", topic: "简谐运动", diagnosticId: "diag-shm-equilibrium" },
+  { grade: "高三", topic: "光电效应", diagnosticId: "diag-photoelectric-frequency" }
+];
+gradeDiagnosticCases.forEach(({ grade, topic, diagnosticId }) => {
+  const gradeState = engine.defaultState();
+  gradeState.profiles[0].grade = grade;
+  const gradeQuestions = Array.from({ length: 24 }, (_, index) => ({
+    id: `grade-diagnostic-${grade}-${index + 1}`,
+    title: `${topic}摸底题${index + 1}`,
+    stage: grade.startsWith("高") ? "高中" : "初中",
+    grade,
+    topic,
+    questionType: "单项选择题",
+    difficulty: "基础",
+    content: `${topic}的完整题干与条件。`,
+    solution: `依据${topic}的基本规律分析。`,
+    answer: "选 A。",
+    examPoints: [topic],
+    fullTextIncluded: true
+  }));
+  const gradePlacement = engine.generatePlacementDiagnostic(gradeState, gradeQuestions, {
+    count: 20,
+    seed: `qa-grade-diagnostic-${grade}`
+  });
+  assert.equal(gradePlacement.containsMisconceptionDiagnostics, true, `${grade} should include a matching diagnostic`);
+  assert.equal(
+    gradePlacement.items.some((item) => item.kind === "misconception-diagnostic" && item.id === diagnosticId),
+    true,
+    `${grade} placement should include ${diagnosticId}`
+  );
+  gradePlacement.items.filter((item) => item.kind === "misconception-diagnostic").forEach((item) => {
+    const catalogItem = engine.misconceptionCatalog.find((candidate) => candidate.diagnostic.id === item.id);
+    assert.ok(catalogItem.grades.includes(grade), `${item.id} should match ${grade}`);
+  });
+});
 
 const placementTopics = ["惯性", "加速度", "自由落体", "电流", "平面镜成像", "受力分析", "温度", "圆周运动"];
 const placementQuestions = Array.from({ length: 32 }, (_, index) => {

@@ -31,6 +31,8 @@
   const misconceptionCatalog = [
     {
       code: "force-maintains-motion",
+      category: "力与运动",
+      grades: ["八年级", "高一"],
       title: "认为运动必须由持续的力维持",
       statement: "物体若不再受到向前的力，就会立刻停止。",
       correction: "力改变运动状态；合力为零时，物体保持静止或匀速直线运动。",
@@ -57,6 +59,8 @@
     },
     {
       code: "zero-velocity-zero-acceleration",
+      category: "力与运动",
+      grades: ["高一"],
       title: "认为速度为零时加速度一定为零",
       statement: "某一时刻速度为零，就说明该时刻没有加速度。",
       correction: "速度描述状态，加速度描述速度变化；二者可在某一时刻分别为零或不为零。",
@@ -83,6 +87,8 @@
     },
     {
       code: "heavy-falls-faster",
+      category: "力与运动",
+      grades: ["高一"],
       title: "认为重物在真空中下落更快",
       statement: "物体越重，自由下落的加速度越大。",
       correction: "忽略空气阻力时，同一地点所有物体的自由落体加速度相同。",
@@ -109,6 +115,8 @@
     },
     {
       code: "current-is-consumed",
+      category: "电路与电学",
+      grades: ["九年级", "高二"],
       title: "认为电流经过用电器后被消耗",
       statement: "电流流过灯泡后会变小，剩余电流再流回电源。",
       correction: "稳恒串联电路中各处电流相等；用电器转化的是电能，不消耗电荷。",
@@ -135,6 +143,8 @@
     },
     {
       code: "virtual-image-is-real-convergence",
+      category: "光学",
+      grades: ["八年级"],
       title: "混淆虚像位置与实际光线会聚位置",
       statement: "看到平面镜中的像，说明光线在镜后真正会聚。",
       correction: "虚像是反射光线反向延长线的交点，实际光线没有到达镜后像的位置。",
@@ -161,6 +171,8 @@
     },
     {
       code: "normal-always-equals-weight",
+      category: "力与运动",
+      grades: ["八年级", "高一"],
       title: "认为支持力总等于重力",
       statement: "只要物体接触支持面，支持力就等于物体重力。",
       correction: "支持力由垂直接触面的动力学条件决定，不一定等于重力。",
@@ -187,6 +199,8 @@
     },
     {
       code: "temperature-equals-heat",
+      category: "热学与物态变化",
+      grades: ["八年级", "九年级", "高三"],
       title: "混淆温度、内能和热量",
       statement: "温度高的物体一定含有更多热量。",
       correction: "热量是传热过程中转移的能量，不是物体含有的状态量；内能还与质量和状态等有关。",
@@ -213,6 +227,8 @@
     },
     {
       code: "acceleration-follows-velocity",
+      category: "曲线运动与万有引力",
+      grades: ["高一"],
       title: "认为加速度方向总与速度方向相同",
       statement: "物体沿某方向运动，其加速度也一定沿该方向。",
       correction: "加速度方向由合力方向决定，可与速度同向、反向或垂直。",
@@ -235,6 +251,790 @@
         ],
         correctReason: "R2",
         explanation: "匀速圆周运动的速度方向持续变化，向心加速度和合力均指向圆心。"
+      }
+    },
+    {
+      code: "sound-can-travel-in-vacuum",
+      category: "声学",
+      grades: ["八年级"],
+      title: "认为声音可以在真空中传播",
+      statement: "只要声源振动足够强，真空中也能听到声音。",
+      correction: "声音是机械波，传播需要介质；真空不能传声。",
+      topics: ["声音的传播", "声学", "机械波"],
+      diagnostic: {
+        id: "diag-sound-medium",
+        prompt: "把正在响铃的闹钟放入密闭玻璃罩并逐渐抽去空气。若不考虑罩体传声，听到的铃声将怎样变化？",
+        choices: [
+          ["A", "越来越响"],
+          ["B", "逐渐减弱，接近真空时听不到"],
+          ["C", "音调升高但响度不变"],
+          ["D", "始终不变"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "真空会增强声源的振动"],
+          ["R2", "声音传播需要介质，空气减少会削弱传声"],
+          ["R3", "声音和光一样都能在真空中传播"],
+          ["R4", "抽气只改变音调，不影响传播"]
+        ],
+        correctReason: "R2",
+        explanation: "声音由介质中的机械振动传播。玻璃罩内空气逐渐减少，空气传声能力减弱；理想真空中不能传声。"
+      }
+    },
+    {
+      code: "pitch-depends-on-amplitude",
+      category: "声学",
+      grades: ["八年级"],
+      title: "混淆音调和响度的决定因素",
+      statement: "振幅越大，声音的音调越高。",
+      correction: "音调主要由频率决定，响度与振幅、距离等因素有关。",
+      topics: ["音调", "响度", "频率", "振幅"],
+      diagnostic: {
+        id: "diag-pitch-frequency",
+        prompt: "同一根琴弦以相同频率振动。增大振幅而频率保持不变，听到的声音主要发生什么变化？",
+        choices: [
+          ["A", "音调升高"],
+          ["B", "音调降低"],
+          ["C", "响度增大，音调基本不变"],
+          ["D", "传播速度增大"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "振幅决定每秒振动次数"],
+          ["R2", "频率决定音调，振幅增大通常使响度增大"],
+          ["R3", "声音越响，传播速度一定越大"],
+          ["R4", "音调和响度是同一个物理量"]
+        ],
+        correctReason: "R2",
+        explanation: "频率未变，所以音调基本不变；振幅增大使声源振动更强，通常表现为响度增大。"
+      }
+    },
+    {
+      code: "convex-lens-always-magnifies",
+      category: "光学",
+      grades: ["八年级"],
+      title: "认为凸透镜成像总是放大",
+      statement: "凸透镜是放大镜，因此形成的像一定比物体大。",
+      correction: "凸透镜成像性质取决于物距与焦距的关系，可成放大、等大或缩小的像。",
+      topics: ["凸透镜成像", "透镜", "光路"],
+      diagnostic: {
+        id: "diag-convex-lens-image",
+        prompt: "物体位于凸透镜二倍焦距以外，光屏上能得到怎样的像？",
+        choices: [
+          ["A", "正立、放大的虚像"],
+          ["B", "倒立、缩小的实像"],
+          ["C", "倒立、放大的实像"],
+          ["D", "正立、缩小的实像"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "凸透镜总有放大作用"],
+          ["R2", "物距大于二倍焦距时，像位于一倍与二倍焦距之间"],
+          ["R3", "能在光屏上成的像一定正立"],
+          ["R4", "像的大小只由透镜口径决定"]
+        ],
+        correctReason: "R2",
+        explanation: "当 u＞2f 时，凸透镜在 f＜v＜2f 的位置形成倒立、缩小的实像。"
+      }
+    },
+    {
+      code: "melting-stops-absorbing-heat",
+      category: "热学与物态变化",
+      grades: ["八年级"],
+      title: "认为晶体熔化时温度不变就不吸热",
+      statement: "冰熔化过程中温度保持不变，所以不再吸收热量。",
+      correction: "晶体在熔点熔化时继续吸热，吸收的能量用于改变物态。",
+      topics: ["物态变化", "熔化", "晶体"],
+      diagnostic: {
+        id: "diag-melting-heat",
+        prompt: "标准大气压下，0 ℃ 的冰水混合物持续从外界吸热且仍有冰存在。其温度和能量变化是怎样的？",
+        choices: [
+          ["A", "温度升高，停止熔化"],
+          ["B", "温度基本不变，冰继续熔化"],
+          ["C", "温度降低，内能不变"],
+          ["D", "温度不变，也不吸收能量"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "温度不变说明没有能量进入系统"],
+          ["R2", "晶体熔化时吸收的能量用于物态变化"],
+          ["R3", "冰只能在高于 0 ℃ 时熔化"],
+          ["R4", "熔化过程一定向外放热"]
+        ],
+        correctReason: "R2",
+        explanation: "在给定压强下，冰熔化时温度保持在熔点附近，但仍吸收熔化潜热，冰的质量逐渐减少。"
+      }
+    },
+    {
+      code: "density-changes-with-size",
+      category: "质量与密度",
+      grades: ["八年级"],
+      title: "认为同种物质的密度随质量或体积改变",
+      statement: "把均匀金属块切去一半，剩余部分的密度也变为原来的一半。",
+      correction: "在状态不变时，密度是物质的特性；同种均匀物质的质量与体积按相同比例改变。",
+      topics: ["质量与密度", "密度", "质量"],
+      diagnostic: {
+        id: "diag-density-property",
+        prompt: "把一块均匀实心铜块切成体积相等的两块，温度不变。每一小块与原铜块相比，密度怎样变化？",
+        choices: [
+          ["A", "变为一半"],
+          ["B", "变为两倍"],
+          ["C", "保持不变"],
+          ["D", "无法判断"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "质量减半，所以密度减半"],
+          ["R2", "质量和体积都减半，m/V 的比值不变"],
+          ["R3", "体积越小，物质排列一定越紧密"],
+          ["R4", "密度只由物体形状决定"]
+        ],
+        correctReason: "R2",
+        explanation: "切割不改变铜的物质种类和状态。每块的质量、体积均减半，因此密度 ρ=m/V 不变。"
+      }
+    },
+    {
+      code: "action-reaction-cancel",
+      category: "力与运动",
+      grades: ["八年级", "高一"],
+      title: "把作用力与反作用力当作平衡力",
+      statement: "作用力和反作用力大小相等、方向相反，所以它们相互抵消。",
+      correction: "作用力与反作用力分别作用在两个物体上，不能在同一物体的受力方程中相互抵消。",
+      topics: ["相互作用力", "牛顿第三定律", "受力分析"],
+      diagnostic: {
+        id: "diag-action-reaction",
+        prompt: "人用手水平推墙。关于手对墙的力与墙对手的力，下列说法正确的是？",
+        choices: [
+          ["A", "前者大于后者"],
+          ["B", "后者大于前者"],
+          ["C", "两力等大反向，分别作用在墙和手上"],
+          ["D", "墙没有运动，所以墙对手没有力"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "运动的物体施力一定更大"],
+          ["R2", "这是一对相互作用力，同时产生并作用于不同物体"],
+          ["R3", "静止物体不能施力"],
+          ["R4", "两力作用在同一物体上并相互抵消"]
+        ],
+        correctReason: "R2",
+        explanation: "依据牛顿第三定律，两力等大、反向、同时存在，但受力物体不同，不能作为同一物体上的平衡力。"
+      }
+    },
+    {
+      code: "pressure-equals-force",
+      category: "压强与浮力",
+      grades: ["八年级"],
+      title: "混淆压力和压强",
+      statement: "压力相同，对接触面的作用效果一定相同。",
+      correction: "压力作用效果还与受力面积有关；压强等于压力与受力面积之比。",
+      topics: ["压强", "压力", "受力面积"],
+      diagnostic: {
+        id: "diag-solid-pressure",
+        prompt: "同一长方体分别平放和竖放在水平桌面上，均保持静止。哪种放法对桌面的压强较大？",
+        choices: [
+          ["A", "平放较大"],
+          ["B", "竖放较大"],
+          ["C", "两者相等"],
+          ["D", "取决于桌面质量"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "两种放法压力相同，所以压强相同"],
+          ["R2", "压力相同，竖放时受力面积更小，p=F/S 更大"],
+          ["R3", "物体越高，重力越大"],
+          ["R4", "压强只与物体体积有关"]
+        ],
+        correctReason: "R2",
+        explanation: "两种放法对水平桌面的压力均等于物体重力；竖放的受力面积较小，因此压强较大。"
+      }
+    },
+    {
+      code: "buoyancy-increases-with-depth",
+      category: "压强与浮力",
+      grades: ["八年级"],
+      title: "认为物体越深浮力一定越大",
+      statement: "物体在液体中所处深度越大，受到的浮力就一定越大。",
+      correction: "液体密度和排开体积不变时，完全浸没物体的浮力不随深度改变。",
+      topics: ["浮力", "阿基米德原理", "液体压强"],
+      diagnostic: {
+        id: "diag-buoyancy-depth",
+        prompt: "一个刚性小球完全浸没在密度均匀的水中，先后静止在不同深度且不接触容器。水的密度不变时，浮力怎样变化？",
+        choices: [
+          ["A", "越深越大"],
+          ["B", "越深越小"],
+          ["C", "保持不变"],
+          ["D", "先增大后减小"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "深度越大，物体各处压强都大，所以合力一定更大"],
+          ["R2", "F浮=ρ液gV排，ρ液和 V排均不变"],
+          ["R3", "浮力只由物体质量决定"],
+          ["R4", "完全浸没后物体不受浮力"]
+        ],
+        correctReason: "R2",
+        explanation: "深度增加会使物体上下表面压强都增大，但压强差对应的浮力仍为 ρ液gV排；在给定条件下浮力不变。"
+      }
+    },
+    {
+      code: "force-always-does-work",
+      category: "功与简单机械",
+      grades: ["八年级", "高一"],
+      title: "认为有力作用就一定做机械功",
+      statement: "只要物体受到力，这个力就一定对物体做功。",
+      correction: "机械功还要求物体沿力的方向具有位移分量。",
+      topics: ["功", "机械功", "功和能"],
+      diagnostic: {
+        id: "diag-work-displacement",
+        prompt: "人用竖直向上的力托住一本书，书相对地面保持静止。此过程中托力对书做的机械功是多少？",
+        choices: [
+          ["A", "正功"],
+          ["B", "负功"],
+          ["C", "零"],
+          ["D", "取决于托举时间"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "人感到疲劳，所以托力一定做了机械功"],
+          ["R2", "书没有发生位移，W=Fs cosθ 中 s=0"],
+          ["R3", "有力就必然有功"],
+          ["R4", "静止物体只可能受到负功"]
+        ],
+        correctReason: "R2",
+        explanation: "机械功由力和物体位移共同决定。书相对地面没有位移，因此托力对书所做机械功为零。"
+      }
+    },
+    {
+      code: "machine-saves-work",
+      category: "功与简单机械",
+      grades: ["八年级"],
+      title: "认为省力机械同时省功",
+      statement: "使用省力的简单机械，可以在提升同一重物时少做机械功。",
+      correction: "理想机械不省功；省力通常要多移动距离，实际机械还需克服额外阻力。",
+      topics: ["简单机械", "机械效率", "功"],
+      diagnostic: {
+        id: "diag-machine-work",
+        prompt: "不计摩擦和机械自重，用省力装置把同一重物提升相同高度。与直接提升相比，人的输入功怎样？",
+        choices: [
+          ["A", "一定更小"],
+          ["B", "一定更大"],
+          ["C", "相等"],
+          ["D", "变为零"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "省力就必然省功"],
+          ["R2", "理想机械中力与距离互相补偿，输入功等于有用功"],
+          ["R3", "机械能凭空增多"],
+          ["R4", "提升高度与功无关"]
+        ],
+        correctReason: "R2",
+        explanation: "理想机械满足功的原理：不能省功。所需力减小时，力的作用点通常移动更长距离。"
+      }
+    },
+    {
+      code: "parallel-current-equals-voltage",
+      category: "电路与电学",
+      grades: ["九年级"],
+      title: "混淆并联电路的电流和电压规律",
+      statement: "并联各支路电流相加，因此各支路电压也相加。",
+      correction: "并联支路两端连接在同一对节点上，支路电压相等；干路电流等于各支路电流之和。",
+      topics: ["并联电路", "电压", "电流"],
+      diagnostic: {
+        id: "diag-parallel-voltage",
+        prompt: "两个电阻并联接在稳定电源两端。忽略导线电阻，两支路电压 U₁、U₂ 与电源电压 U 的关系是什么？",
+        choices: [
+          ["A", "U=U₁+U₂"],
+          ["B", "U₁=U₂=U"],
+          ["C", "U₁、U₂ 都为零"],
+          ["D", "电阻大的支路电压一定更大"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "电流能相加，所以电压也必须相加"],
+          ["R2", "各支路接在同一对节点之间，电势差相同"],
+          ["R3", "电压流经支路后会被消耗"],
+          ["R4", "支路电压只由电阻大小决定"]
+        ],
+        correctReason: "R2",
+        explanation: "并联支路具有相同的两个端点，因此两端电压相等并等于电源两端电压；相加的是支路电流。"
+      }
+    },
+    {
+      code: "resistance-created-by-voltage",
+      category: "电路与电学",
+      grades: ["九年级"],
+      title: "认为导体电阻由所加电压决定",
+      statement: "导体两端电压增大，它的电阻就一定按比例增大。",
+      correction: "给定温度下，欧姆导体的电阻主要由材料、长度和横截面积决定，不由瞬时电压、电流的比值任意改变。",
+      topics: ["电阻", "欧姆定律", "电压"],
+      diagnostic: {
+        id: "diag-resistance-property",
+        prompt: "某金属定值电阻温度保持不变。把它两端电压增大为原来的两倍，在欧姆定律适用范围内，其电阻怎样变化？",
+        choices: [
+          ["A", "变为两倍"],
+          ["B", "变为一半"],
+          ["C", "近似不变"],
+          ["D", "变为零"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "R=U/I 表明 R 由 U 单独决定"],
+          ["R2", "温度和导体本身不变时，定值电阻不因 U、I 同比例变化而改变"],
+          ["R3", "电压越大，材料长度越大"],
+          ["R4", "有电流时导体才有电阻"]
+        ],
+        correctReason: "R2",
+        explanation: "对于温度不变的欧姆导体，电压加倍时电流也加倍，U/I 的比值即电阻近似保持不变。"
+      }
+    },
+    {
+      code: "kilowatt-hour-is-power",
+      category: "电路与电学",
+      grades: ["九年级"],
+      title: "混淆电功率和电能",
+      statement: "千瓦时是电功率的单位。",
+      correction: "瓦特、千瓦是功率单位；千瓦时是能量单位。",
+      topics: ["电功率", "电能", "电功"],
+      diagnostic: {
+        id: "diag-electric-energy-unit",
+        prompt: "家庭电能表读数增加 1 kW·h，表示用电器消耗了什么物理量？",
+        choices: [
+          ["A", "1 kW 的电功率"],
+          ["B", "1 kW·h 的电能"],
+          ["C", "1 A 的电流"],
+          ["D", "1 V 的电压"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "单位中有 kW，所以它只能表示功率"],
+          ["R2", "功率乘时间得到能量，1 kW·h 是能量单位"],
+          ["R3", "电能表直接测量电流"],
+          ["R4", "所有家用电器功率都等于 1 kW"]
+        ],
+        correctReason: "R2",
+        explanation: "由 W=Pt 可知，kW·h 是功率与时间的乘积，属于能量单位；1 kW·h=3.6×10⁶ J。"
+      }
+    },
+    {
+      code: "magnetic-lines-are-material",
+      category: "磁学",
+      grades: ["九年级", "高二"],
+      title: "把磁感线当作真实存在的物质细线",
+      statement: "磁场中存在可被切断、相互碰撞的真实磁感线。",
+      correction: "磁感线是描述磁场方向和强弱的模型，不是客观存在的物质线。",
+      topics: ["磁场", "磁感线", "磁现象"],
+      diagnostic: {
+        id: "diag-magnetic-field-lines",
+        prompt: "关于磁感线，下列说法正确的是？",
+        choices: [
+          ["A", "磁感线是磁场中真实存在的细线"],
+          ["B", "某点磁感线切线方向表示该点磁场方向"],
+          ["C", "磁感线可以在空间任意相交"],
+          ["D", "没有画磁感线的区域一定没有磁场"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "只有看得见的线才能描述磁场"],
+          ["R2", "磁感线是模型，其切线和疏密分别表征方向和相对强弱"],
+          ["R3", "同一点可以同时具有任意多个磁场方向"],
+          ["R4", "图上画线的数量就是实际线的数量"]
+        ],
+        correctReason: "R2",
+        explanation: "磁感线是人为引入的模型。磁场中一点的方向唯一，因此磁感线不相交；图线疏密仅用于表示相对强弱。"
+      }
+    },
+    {
+      code: "motion-in-field-always-induces-current",
+      category: "电磁感应",
+      grades: ["九年级"],
+      title: "认为导体在磁场中运动就一定产生感应电流",
+      statement: "只要导体在磁场中运动，电路中就一定有感应电流。",
+      correction: "产生持续感应电流需要闭合电路，并使穿过电路的磁通量发生变化。",
+      topics: ["电磁感应", "感应电流", "磁生电"],
+      diagnostic: {
+        id: "diag-induction-condition",
+        prompt: "闭合电路的一段导体在磁场中运动。要观察到感应电流，该运动至少应满足什么条件？",
+        choices: [
+          ["A", "导体沿任意方向运动即可"],
+          ["B", "导体使闭合回路所围区域的磁通量发生变化"],
+          ["C", "导体温度升高"],
+          ["D", "导体必须由磁性材料制成"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "运动本身就是电流"],
+          ["R2", "闭合回路磁通量变化时才产生可测的感应电流"],
+          ["R3", "只有磁铁可以导电"],
+          ["R4", "感应电流来自导体受热"]
+        ],
+        correctReason: "R2",
+        explanation: "闭合是形成电流的条件，磁通量变化是产生感应电动势的条件；仅在磁场中平移不必然满足这一条件。"
+      }
+    },
+    {
+      code: "induction-requires-conductor-motion",
+      category: "电磁感应",
+      grades: ["高二"],
+      title: "认为电磁感应必须由导体运动产生",
+      statement: "线圈和磁铁都不运动时，线圈中不可能产生感应电动势。",
+      correction: "只要穿过回路的磁通量随时间变化，就会产生感应电动势；磁场随时间变化也可以实现。",
+      topics: ["电磁感应", "磁通量", "法拉第电磁感应定律"],
+      diagnostic: {
+        id: "diag-changing-flux",
+        prompt: "一个静止闭合线圈放在方向不变但磁感应强度随时间增大的匀强磁场中，磁场垂直线圈平面。线圈中是否有感应电流？",
+        choices: [
+          ["A", "没有，因为线圈没有运动"],
+          ["B", "有，因为穿过线圈的磁通量发生变化"],
+          ["C", "没有，因为磁场方向没有变化"],
+          ["D", "只有线圈面积改变时才有"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "感应电动势只与机械运动有关"],
+          ["R2", "Φ=BS，此处 B 随时间变化，所以磁通量变化"],
+          ["R3", "磁场方向不变就表示磁通量不变"],
+          ["R4", "闭合线圈会屏蔽所有变化磁场"]
+        ],
+        correctReason: "R2",
+        explanation: "法拉第电磁感应定律关注磁通量的变化率。线圈虽静止，但 B 增大使 Φ=BS 增大，因而产生感应电动势和电流。"
+      }
+    },
+    {
+      code: "projectile-components-affect-time",
+      category: "曲线运动与万有引力",
+      grades: ["高一"],
+      title: "认为平抛的水平速度会改变下落时间",
+      statement: "同一高度平抛时，水平初速度越大，物体落地越晚。",
+      correction: "忽略空气阻力时，平抛运动的竖直分运动是自由落体，下落时间由高度和重力加速度决定。",
+      topics: ["平抛运动", "运动的合成与分解", "自由落体"],
+      diagnostic: {
+        id: "diag-projectile-time",
+        prompt: "从同一高度同时释放两个相同小球：甲自由下落，乙以水平初速度平抛。忽略空气阻力，它们何时落地？",
+        choices: [
+          ["A", "甲先落地"],
+          ["B", "乙先落地"],
+          ["C", "同时落地"],
+          ["D", "取决于乙的水平初速度"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "乙路径更长，所以一定更晚"],
+          ["R2", "两球竖直初速度均为零，竖直方向运动完全相同"],
+          ["R3", "水平速度会抵消部分重力"],
+          ["R4", "甲没有水平速度，所以重力更大"]
+        ],
+        correctReason: "R2",
+        explanation: "平抛运动的水平和竖直分运动相互独立。两球竖直方向初始条件及加速度相同，因此同时落地。"
+      }
+    },
+    {
+      code: "weightlessness-means-no-gravity",
+      category: "曲线运动与万有引力",
+      grades: ["高一", "高三"],
+      title: "认为完全失重表示不受万有引力",
+      statement: "航天器中的物体完全失重，说明地球对它没有引力。",
+      correction: "完全失重是支持力或测得的视重为零；轨道运动中的物体仍受地球引力，并由其提供向心加速度。",
+      topics: ["万有引力", "失重", "圆周运动"],
+      diagnostic: {
+        id: "diag-orbit-weightlessness",
+        prompt: "航天员随空间站绕地球做近圆轨道运动时处于完全失重状态。关于航天员受力，下列说法正确的是？",
+        choices: [
+          ["A", "不再受到地球引力"],
+          ["B", "仍受地球引力，且引力提供轨道运动所需的向心作用"],
+          ["C", "所受合力为零"],
+          ["D", "只受沿轨道切线方向的力"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "失重就是重力消失"],
+          ["R2", "航天员和空间站共同自由落体，支持力近似为零但引力仍存在"],
+          ["R3", "圆周运动速度大小不变，所以合力为零"],
+          ["R4", "太空中不存在引力场"]
+        ],
+        correctReason: "R2",
+        explanation: "轨道高度仍处于地球引力场中。失重反映支持力近似为零，不代表万有引力消失。"
+      }
+    },
+    {
+      code: "momentum-always-conserved",
+      category: "动量",
+      grades: ["高一", "高二"],
+      title: "认为任何过程中系统动量都守恒",
+      statement: "只要两个物体发生碰撞，它们的总动量和总动能就都守恒。",
+      correction: "系统总动量守恒要求过程中的合外力冲量可忽略；动能只在弹性碰撞中守恒。",
+      topics: ["动量", "动量守恒", "碰撞"],
+      diagnostic: {
+        id: "diag-momentum-condition",
+        prompt: "研究两小球短时碰撞。若碰撞过程中系统合外力冲量可忽略，下列结论一定成立的是？",
+        choices: [
+          ["A", "系统总动量守恒"],
+          ["B", "系统总动能守恒"],
+          ["C", "每个小球动量均不变"],
+          ["D", "两球碰后一定粘在一起"]
+        ],
+        correctAnswer: "A",
+        reasons: [
+          ["R1", "合外力冲量可忽略时，系统总动量的变化量为零"],
+          ["R2", "所有碰撞都不会产生内能"],
+          ["R3", "总动量守恒意味着各物体动量分别守恒"],
+          ["R4", "碰撞是否弹性与外力冲量是同一条件"]
+        ],
+        correctReason: "R1",
+        explanation: "由系统动量定理，合外力冲量可忽略时总动量守恒；非弹性碰撞中总动能可以减少。"
+      }
+    },
+    {
+      code: "shm-equilibrium-means-rest",
+      category: "振动与波",
+      grades: ["高二"],
+      title: "认为简谐运动经过平衡位置时速度为零",
+      statement: "振子到达平衡位置时位移为零，因此速度也为零。",
+      correction: "简谐运动经过平衡位置时回复力和加速度为零，速度大小最大。",
+      topics: ["简谐运动", "振动", "回复力"],
+      diagnostic: {
+        id: "diag-shm-equilibrium",
+        prompt: "做简谐运动的弹簧振子经过平衡位置的瞬间，下列描述正确的是？",
+        choices: [
+          ["A", "速度为零，加速度最大"],
+          ["B", "速度最大，加速度为零"],
+          ["C", "速度和加速度都为零"],
+          ["D", "速度和加速度都最大"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "位移为零就意味着所有运动学量为零"],
+          ["R2", "平衡位置回复力为零、势能最小，动能和速度达到最大"],
+          ["R3", "速度最大时加速度必定同向最大"],
+          ["R4", "振子在平衡位置会停留一段时间"]
+        ],
+        correctReason: "R2",
+        explanation: "简谐运动中 a=-ω²x。平衡位置 x=0，故 a=0；机械能守恒时该处动能最大，速度大小最大。"
+      }
+    },
+    {
+      code: "wave-transports-matter",
+      category: "振动与波",
+      grades: ["八年级", "高二"],
+      title: "认为机械波把介质质点持续带向远方",
+      statement: "波向前传播时，介质中的质点也随波整体向前迁移。",
+      correction: "机械波传播振动状态和能量，介质质点通常只在平衡位置附近振动。",
+      topics: ["机械波", "波的传播", "振动"],
+      diagnostic: {
+        id: "diag-wave-particles",
+        prompt: "一列水面波向右传播。水面上一片轻小叶子随水面振动且无明显水流时，叶子的主要运动是怎样的？",
+        choices: [
+          ["A", "随波峰一直向右移动"],
+          ["B", "在平衡位置附近振动，波形和能量向右传播"],
+          ["C", "保持绝对静止"],
+          ["D", "以波速持续向左移动"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "波传播就是介质整体搬运"],
+          ["R2", "机械波传递振动状态和能量，质点不随波长距离迁移"],
+          ["R3", "有波时介质质点不能振动"],
+          ["R4", "波速就是每个质点的恒定速度"]
+        ],
+        correctReason: "R2",
+        explanation: "在无明显流动的理想化情形下，介质质点在平衡位置附近振动；向外传播的是相位和能量。"
+      }
+    },
+    {
+      code: "gas-law-uses-celsius",
+      category: "热学与物态变化",
+      grades: ["高三"],
+      title: "在气体定律中直接使用摄氏温度比例",
+      statement: "一定质量气体从 20 ℃ 升到 40 ℃，热力学温度就变为两倍。",
+      correction: "气体状态方程中的温度必须使用热力学温度，T=t+273.15 K。",
+      topics: ["气体", "热力学温度", "理想气体状态方程"],
+      diagnostic: {
+        id: "diag-gas-kelvin",
+        prompt: "一定质量理想气体体积不变，从 27 ℃ 加热到 327 ℃。若初压强为 p，末压强约为多少？",
+        choices: [
+          ["A", "2p"],
+          ["B", "约 12.1p"],
+          ["C", "p/2"],
+          ["D", "仍为 p"]
+        ],
+        correctAnswer: "A",
+        reasons: [
+          ["R1", "定容时 p∝T，300 K 升到 600 K，压强加倍"],
+          ["R2", "应直接用 327/27 计算比例"],
+          ["R3", "摄氏温度与热力学温度的零点相同"],
+          ["R4", "体积不变时压强与温度无关"]
+        ],
+        correctReason: "R1",
+        explanation: "定容、定量理想气体满足 p/T 为常量。27 ℃≈300 K，327 ℃≈600 K，所以末压强约为 2p。"
+      }
+    },
+    {
+      code: "zero-potential-means-zero-field",
+      category: "电场",
+      grades: ["高二"],
+      title: "认为电势为零处电场强度一定为零",
+      statement: "某点电势为零，就说明该点没有电场。",
+      correction: "电势零点可人为选择；电场强度与电势的空间变化有关，电势值为零不代表梯度为零。",
+      topics: ["电场", "电势", "电场强度"],
+      diagnostic: {
+        id: "diag-zero-potential-field",
+        prompt: "等量异种点电荷 +q 和 -q 连线中点处，取无穷远电势为零。该点的电势和电场强度分别怎样？",
+        choices: [
+          ["A", "电势为零，电场强度也为零"],
+          ["B", "电势为零，电场强度不为零"],
+          ["C", "电势不为零，电场强度为零"],
+          ["D", "二者都无法判断"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "电势和电场强度是同一个物理量"],
+          ["R2", "两电荷的电势代数和为零，但电场方向相同而叠加"],
+          ["R3", "电势为零意味着没有电荷"],
+          ["R4", "标量为零时所有矢量都必须为零"]
+        ],
+        correctReason: "R2",
+        explanation: "中点到两电荷距离相等，电势的正负贡献抵消；两电场矢量均由 +q 指向 -q，故合场强不为零。"
+      }
+    },
+    {
+      code: "magnetic-force-changes-speed",
+      category: "磁场",
+      grades: ["高二"],
+      title: "认为洛伦兹力能改变带电粒子的速率",
+      statement: "带电粒子受到磁场力后动能一定改变。",
+      correction: "单独的磁洛伦兹力始终垂直于瞬时速度，不做功，只改变速度方向。",
+      topics: ["磁场", "洛伦兹力", "带电粒子运动"],
+      diagnostic: {
+        id: "diag-magnetic-force-work",
+        prompt: "带电粒子仅受匀强磁场的洛伦兹力作用。忽略其他力，其运动速率和动能怎样变化？",
+        choices: [
+          ["A", "速率增大，动能增大"],
+          ["B", "速率减小，动能减小"],
+          ["C", "速率和动能均不变，速度方向可改变"],
+          ["D", "速率不变，但动能改变"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "只要有力就一定改变速率"],
+          ["R2", "磁场力垂直于速度，功率 F·v 为零"],
+          ["R3", "圆周运动需要不断消耗动能"],
+          ["R4", "方向改变意味着动能必然改变"]
+        ],
+        correctReason: "R2",
+        explanation: "磁洛伦兹力与粒子速度垂直，对粒子不做功，所以动能和速率不变，但速度方向会改变。"
+      }
+    },
+    {
+      code: "transformer-raises-current-and-voltage",
+      category: "交流电",
+      grades: ["高三"],
+      title: "认为理想变压器升高电压时也升高电流",
+      statement: "变压器把电压升高后，输出电流也会按相同比例增大。",
+      correction: "理想变压器近似满足输入功率等于输出功率；升压时，在给定负载状态下输出电流相应较小。",
+      topics: ["交流电", "变压器", "电能输送"],
+      diagnostic: {
+        id: "diag-transformer-current",
+        prompt: "理想变压器原、副线圈匝数满足 N₂＞N₁，接入合适交流负载并正常工作。若 U₂＞U₁，则电流关系怎样？",
+        choices: [
+          ["A", "I₂＞I₁"],
+          ["B", "I₂＜I₁"],
+          ["C", "I₂=I₁"],
+          ["D", "原线圈一定没有电流"]
+        ],
+        correctAnswer: "B",
+        reasons: [
+          ["R1", "电压和电流会同时按匝数比增大"],
+          ["R2", "理想情况下 U₁I₁=U₂I₂，升压对应降流"],
+          ["R3", "副线圈匝数多会产生额外能量"],
+          ["R4", "变压器只能改变直流电压"]
+        ],
+        correctReason: "R2",
+        explanation: "理想变压器满足 U₂/U₁=N₂/N₁，且输入、输出功率近似相等，因此 U₂较大时 I₂较小。"
+      }
+    },
+    {
+      code: "photoelectric-intensity-controls-max-energy",
+      category: "光电与原子核",
+      grades: ["高三"],
+      title: "认为光强决定光电子最大初动能",
+      statement: "用同频率光照射金属时，光越强，逸出光电子的最大初动能越大。",
+      correction: "频率高于截止频率时，最大初动能由单个光子能量与逸出功之差决定；光强主要影响单位时间光子数和光电流。",
+      topics: ["光电效应", "光子", "逸出功"],
+      diagnostic: {
+        id: "diag-photoelectric-frequency",
+        prompt: "频率高于截止频率的单色光照射同一金属。只增大光强而保持频率不变，饱和光电流和光电子最大初动能如何变化？",
+        choices: [
+          ["A", "饱和光电流增大，最大初动能不变"],
+          ["B", "二者都增大"],
+          ["C", "饱和光电流不变，最大初动能增大"],
+          ["D", "二者都不变"]
+        ],
+        correctAnswer: "A",
+        reasons: [
+          ["R1", "光强增大使单位时间入射光子数增加，但单个光子能量 hν 不变"],
+          ["R2", "光强就是单个光子的能量"],
+          ["R3", "最大初动能只由照射时间决定"],
+          ["R4", "只要有光照就与频率无关"]
+        ],
+        correctReason: "R1",
+        explanation: "爱因斯坦光电方程 Kmax=hν-W₀。频率不变时 Kmax 不变；光强增大通常使逸出光电子数和饱和光电流增大。"
+      }
+    },
+    {
+      code: "atom-absorbs-any-photon",
+      category: "光电与原子核",
+      grades: ["高三"],
+      title: "认为原子可吸收任意能量的光子",
+      statement: "只要光子照到原子，原子就能吸收任意大小的光子能量。",
+      correction: "处于束缚态的原子具有分立能级；通常只有光子能量与允许跃迁的能级差匹配时才发生相应吸收。",
+      topics: ["原子结构", "能级", "光谱"],
+      diagnostic: {
+        id: "diag-atomic-transition",
+        prompt: "某原子从能量 E₁ 的定态跃迁到较高的允许定态 E₂。所吸收单个光子的频率应满足什么关系？",
+        choices: [
+          ["A", "hν=E₂-E₁"],
+          ["B", "hν可以小于 E₂-E₁ 的任意值"],
+          ["C", "hν=E₁+E₂"],
+          ["D", "频率与能级差无关"]
+        ],
+        correctAnswer: "A",
+        reasons: [
+          ["R1", "能量守恒且原子能级分立，光子能量需匹配能级差"],
+          ["R2", "原子内部能量可以连续取任意值"],
+          ["R3", "光子的能量只由光强决定"],
+          ["R4", "跃迁不需要交换能量"]
+        ],
+        correctReason: "R1",
+        explanation: "光子能量为 hν。对 E₁→E₂ 的允许吸收跃迁，能量守恒要求 hν=E₂-E₁。"
+      }
+    },
+    {
+      code: "half-life-changes-with-environment",
+      category: "光电与原子核",
+      grades: ["高三"],
+      title: "认为加热或加压能显著改变放射性半衰期",
+      statement: "提高温度或压强可以使放射性核素的半衰期明显缩短。",
+      correction: "在中学讨论的通常条件下，放射性核素的半衰期由原子核自身性质决定，不随温度、压强和化学状态显著改变。",
+      topics: ["原子核", "放射性", "半衰期"],
+      diagnostic: {
+        id: "diag-nuclear-half-life",
+        prompt: "把某放射性核素样品加热并加压，但不发生核反应。其半衰期通常怎样变化？",
+        choices: [
+          ["A", "明显缩短"],
+          ["B", "明显延长"],
+          ["C", "基本不变"],
+          ["D", "变为零"]
+        ],
+        correctAnswer: "C",
+        reasons: [
+          ["R1", "温度越高，所有微观过程都会按相同比例加快"],
+          ["R2", "通常条件下半衰期由原子核内部性质决定"],
+          ["R3", "压强会直接压碎原子核"],
+          ["R4", "半衰期由样品质量决定"]
+        ],
+        correctReason: "R2",
+        explanation: "若不发生核反应，常规温度、压强和化学变化不改变核素本身，半衰期基本不变。"
       }
     }
   ];
@@ -2068,6 +2868,10 @@
   }
 
   function diagnosticMatchesQuestion(item, question) {
+    if (Array.isArray(item.grades) && item.grades.length
+      && question.grade && !item.grades.includes(question.grade)) {
+      return false;
+    }
     const questionTopic = String(question.topic || "").trim();
     const searchable = [
       questionTopic,
