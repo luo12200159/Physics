@@ -11,6 +11,7 @@ function validEnvironment(): NodeJS.ProcessEnv {
     REDIS_URL: "redis://127.0.0.1:6379",
     JWT_SECRET: "unit-jwt-secret-32-characters-minimum",
     CURSOR_HMAC_SECRET: "unit-cursor-secret-32-characters-minimum",
+    INVITE_CODE_KEY: "unit-invite-code-key-32-characters-minimum",
     AUDIT_IP_KEY: "unit-audit-ip-key-32-characters-minimum",
     CREDENTIAL_ARTIFACT_KEY: Buffer.alloc(32, 7).toString("base64"),
     ACCESS_TOKEN_TTL_SECONDS: "900",
@@ -48,5 +49,13 @@ describe("protocol authentication lifetime configuration", () => {
       .toThrow("ACCESS_TOKEN_TTL_SECONDS must be between 900 and 900");
     expect(() => loadConfig({ ...validEnvironment(), REFRESH_TOKEN_TTL_SECONDS: "2591999" }))
       .toThrow("REFRESH_TOKEN_TTL_SECONDS must be between 2592000 and 2592000");
+  });
+
+  it("requires a dedicated stable invitation-code key", () => {
+    expect(loadConfig(validEnvironment()).inviteCodeKey)
+      .toBe("unit-invite-code-key-32-characters-minimum");
+    const missing = validEnvironment();
+    delete missing.INVITE_CODE_KEY;
+    expect(() => loadConfig(missing)).toThrow("Missing required environment variable: INVITE_CODE_KEY");
   });
 });

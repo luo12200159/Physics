@@ -10,6 +10,7 @@ export interface AppConfig {
   redisUrl: string;
   jwtSecret: string;
   cursorHmacSecret: string;
+  inviteCodeKey: string;
   auditIpKey: string;
   credentialArtifactKey: Buffer;
   accessTokenTtlSeconds: number;
@@ -44,6 +45,7 @@ const requiredNames = [
   "REDIS_URL",
   "JWT_SECRET",
   "CURSOR_HMAC_SECRET",
+  "INVITE_CODE_KEY",
   "AUDIT_IP_KEY",
   "CREDENTIAL_ARTIFACT_KEY",
   "ACCESS_TOKEN_TTL_SECONDS",
@@ -192,6 +194,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): AppConfig {
     redisUrl: parseUrl("REDIS_URL", requireValue(env, "REDIS_URL"), ["redis:", "rediss:"]),
     jwtSecret: parseSecret("JWT_SECRET", requireValue(env, "JWT_SECRET"), nodeEnv),
     cursorHmacSecret: parseSecret("CURSOR_HMAC_SECRET", requireValue(env, "CURSOR_HMAC_SECRET"), nodeEnv),
+    inviteCodeKey: parseSecret("INVITE_CODE_KEY", requireValue(env, "INVITE_CODE_KEY"), nodeEnv),
     auditIpKey: parseSecret("AUDIT_IP_KEY", requireValue(env, "AUDIT_IP_KEY"), nodeEnv),
     credentialArtifactKey: parseCredentialArtifactKey(requireValue(env, "CREDENTIAL_ARTIFACT_KEY")),
     accessTokenTtlSeconds,

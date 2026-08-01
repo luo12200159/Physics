@@ -13,6 +13,10 @@ import {
 import { StrictObject } from "./common/schema.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
 import type { AuthService } from "./modules/auth/service.js";
+import { registerClassRoutes } from "./modules/classes/routes.js";
+import type { ClassesService } from "./modules/classes/service.js";
+import { registerInviteRoutes } from "./modules/invites/routes.js";
+import type { InvitesService } from "./modules/invites/service.js";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -30,6 +34,8 @@ export interface AppDependencies {
     close?(): Promise<void>;
   };
   authService?: AuthService;
+  classService?: ClassesService;
+  inviteService?: InvitesService;
 }
 
 declare module "fastify" {
@@ -75,16 +81,19 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           "req.body.newPassword",
           "req.body.accessToken",
           "req.body.refreshToken",
+          "req.body.code",
           "password",
           "currentPassword",
           "newPassword",
           "accessToken",
           "refreshToken",
+          "code",
           "*.password",
           "*.currentPassword",
           "*.newPassword",
           "*.accessToken",
           "*.refreshToken",
+          "*.code",
         ],
         censor: "[REDACTED]",
       },
@@ -147,7 +156,12 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
     version: "1.0.0" as const,
   }));
 
+  if ((deps.classService || deps.inviteService) && !deps.authService) {
+    throw new TypeError("Class and invite routes require an authentication service");
+  }
   if (deps.authService) registerAuthRoutes(app, deps.authService);
+  if (deps.classService) registerClassRoutes(app, deps.classService);
+  if (deps.inviteService) registerInviteRoutes(app, deps.inviteService);
 
   app.addHook("onClose", async () => {
     await Promise.allSettled([

@@ -23,6 +23,23 @@ describe("database migrations", () => {
       "select to_regclass('public.refresh_sessions_parent_once_idx') as name",
     );
     expect(hardeningIndex.rows[0]?.name).toBe("refresh_sessions_parent_once_idx");
+    const membershipRevision = await pool.query<{ name: string | null }>(
+      `select column_name as name from information_schema.columns
+        where table_schema = 'public' and table_name = 'memberships'
+          and column_name = 'revision'`,
+    );
+    expect(membershipRevision.rows[0]?.name).toBe("revision");
+    await runMigrations("down", 1);
+    const removedMembershipRevision = await pool.query<{ name: string | null }>(
+      `select column_name as name from information_schema.columns
+        where table_schema = 'public' and table_name = 'memberships'
+          and column_name = 'revision'`,
+    );
+    expect(removedMembershipRevision.rows[0]?.name).toBeUndefined();
+    const retainedHardeningIndex = await pool.query<{ name: string | null }>(
+      "select to_regclass('public.refresh_sessions_parent_once_idx') as name",
+    );
+    expect(retainedHardeningIndex.rows[0]?.name).toBe("refresh_sessions_parent_once_idx");
     await runMigrations("down", 1);
     const removedHardeningIndex = await pool.query<{ name: string | null }>(
       "select to_regclass('public.refresh_sessions_parent_once_idx') as name",

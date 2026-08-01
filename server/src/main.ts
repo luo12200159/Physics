@@ -5,6 +5,8 @@ import { loadConfig } from "./config.js";
 import { createPool } from "./infrastructure/db.js";
 import { createRedis } from "./infrastructure/redis.js";
 import { createAuthService, type AuthRedis } from "./modules/auth/service.js";
+import { createClassesService } from "./modules/classes/service.js";
+import { createInvitesService, type InviteRedis } from "./modules/invites/service.js";
 
 function unavailable(name: string): never {
   throw new Error(`${name} adapter is not configured until the persistence task is installed`);
@@ -28,6 +30,21 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
     accessTokenTtlSeconds: config.accessTokenTtlSeconds,
     refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
   });
+  const classService = createClassesService({
+    pool,
+    auditIpKey: config.auditIpKey,
+    syncOutboxRetentionDays: config.syncOutboxRetentionDays,
+  });
+  const inviteRedis: InviteRedis = {
+    eval: async (script, numberOfKeys, ...args) => redisClient.eval(script, numberOfKeys, ...args),
+  };
+  const inviteService = createInvitesService({
+    pool,
+    redis: inviteRedis,
+    inviteCodeKey: config.inviteCodeKey,
+    auditIpKey: config.auditIpKey,
+    syncOutboxRetentionDays: config.syncOutboxRetentionDays,
+  });
   return {
     config,
     postgres: {
@@ -45,6 +62,8 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
       healthcheck: async () => unavailable("Object storage"),
     },
     authService,
+    classService,
+    inviteService,
   };
 }
 

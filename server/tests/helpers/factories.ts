@@ -14,6 +14,7 @@ export function makeUnitConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     redisUrl: "redis://127.0.0.1:6379",
     jwtSecret: "unit-jwt-secret-32-characters-minimum",
     cursorHmacSecret: "unit-cursor-secret-32-characters-minimum",
+    inviteCodeKey: "unit-invite-code-key-32-characters-minimum",
     auditIpKey: "unit-audit-ip-key-32-characters-minimum",
     credentialArtifactKey: Buffer.alloc(32, 7),
     accessTokenTtlSeconds: 900,
@@ -58,5 +59,7 @@ export function makeUnitDependencies(overrides: UnitDependencyOverrides = {}): A
     },
   };
   if (overrides.authService) dependencies.authService = overrides.authService;
+  if (overrides.classService) dependencies.classService = overrides.classService;
+  if (overrides.inviteService) dependencies.inviteService = overrides.inviteService;
   return dependencies;
 }
