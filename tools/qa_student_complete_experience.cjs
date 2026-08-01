@@ -1,5 +1,4 @@
 const assert = require("node:assert/strict");
-const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
@@ -8,12 +7,6 @@ const { chromium } = require("playwright-core");
 const project = path.resolve(__dirname, "..");
 const indexPath = path.join(project, "index.html");
 const outputDirectory = path.join(project, "qa-output", "student-complete-experience");
-const managerPath = path.join(
-  project,
-  "发布",
-  "仅限管理员",
-  "物理研习室-激活码管理器-v1.0.0.exe"
-);
 const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const moduleViews = [
   "library",
@@ -50,26 +43,29 @@ async function preparePage(context, suffix) {
   await page.addInitScript((value) => {
     localStorage.setItem("physics-experience-v2", JSON.stringify(value));
   }, experienceInit());
-  await page.goto(pathToFileURL(indexPath).href, { waitUntil: "domcontentloaded" });
-  await page.waitForFunction(() => {
-    return document.getElementById("activationDeviceCode")?.textContent?.startsWith("PSDEV-")
-      || !document.body.classList.contains("activation-pending");
+  await page.route("**/activation.js", async (route) => {
+    await route.fulfill({
+      contentType: "text/javascript; charset=utf-8",
+      body: `(() => {
+        const whenActivated = Promise.resolve({ licenseId: "student-experience-qa", expiresAt: 0 });
+        window.PhysicsStudioActivation = Object.freeze({
+          version: "student-experience-qa",
+          whenActivated,
+          validateCode: async () => true,
+          formatDeviceRequest: (value) => String(value || ""),
+          publicKeyFingerprint: "student-experience-qa"
+        });
+        const unlock = () => {
+          document.body.classList.remove("activation-pending");
+          document.body.classList.add("activation-complete");
+        };
+        document.readyState === "loading"
+          ? document.addEventListener("DOMContentLoaded", unlock, { once: true })
+          : unlock();
+      })();`
+    });
   });
-  if (await page.locator("#activationGate").count()) {
-    const deviceRequest = (await page.locator("#activationDeviceCode").textContent()).trim();
-    const codePath = path.join(outputDirectory, `activation-${suffix}.txt`);
-    const issued = childProcess.spawnSync(
-      managerPath,
-      ["--issue", deviceRequest, codePath],
-      { encoding: "utf8", windowsHide: true, timeout: 15000 }
-    );
-    if (issued.error) throw issued.error;
-    assert.equal(issued.status, 0, issued.stderr || "activation issue command failed");
-    const code = fs.readFileSync(codePath, "utf8").trim();
-    fs.rmSync(codePath, { force: true });
-    await page.locator("#activationCode").fill(code);
-    await page.locator("#activationSubmit").click();
-  }
+  await page.goto(pathToFileURL(indexPath).href, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => {
     return !document.body.classList.contains("activation-pending")
       && window.PhysicsStudioApp?.getQuestions?.().length >= 1900
@@ -112,7 +108,6 @@ async function assertNoHorizontalOverflow(page, label) {
 
 async function run() {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  assert.ok(fs.existsSync(managerPath), "activation manager is missing");
   const browser = await chromium.launch({
     executablePath: edgePath,
     headless: true,
@@ -175,6 +170,13 @@ async function run() {
       })));
     assert.deepEqual(homeModules.map((item) => item.view), moduleViews);
     assert.ok(homeModules.every((item) => item.text.length >= 12));
+    assert.match(await desktop.locator(".diagnostic-prompt-card.primary").innerText(), /24 题[\s\S]*前概念/);
+    await desktop.locator('[data-shell-action="open-placement"]').click();
+    await desktop.locator("#experienceMetricsDialog[open]").waitFor({ state: "visible" });
+    assert.equal(await desktop.locator(".diagnostic-package-list > li").count(), 24);
+    assert.ok(await desktop.locator("[data-diagnostic-concept]").count() > 0);
+    assert.ok(await desktop.locator("[data-diagnostic-question]").count() > 0);
+    await desktop.locator('[data-metrics-action="close"]').click();
     await assertNoHorizontalOverflow(desktop, "desktop home");
     await desktop.screenshot({
       path: path.join(outputDirectory, "desktop-home-modules.png"),
@@ -207,6 +209,107 @@ async function run() {
     });
     await desktop.locator('[data-method-action="close"]').click();
     await assertNoHorizontalOverflow(desktop, "desktop library");
+
+    await desktop.locator("#studentLibraryGrade").selectOption({ label: "全部" });
+    const questionTypeCounts = await desktop.locator(".library-type-summary span").evaluateAll((items) => {
+      return Object.fromEntries(items.map((item) => [
+        item.childNodes[item.childNodes.length - 1]?.textContent?.trim(),
+        Number(item.querySelector("strong")?.textContent || 0)
+      ]));
+    });
+    assert.ok(questionTypeCounts["选择题"] > 0, JSON.stringify(questionTypeCounts));
+    assert.ok(questionTypeCounts["填空题"] > 0, JSON.stringify(questionTypeCounts));
+    assert.ok(questionTypeCounts["实验题"] > 0, JSON.stringify(questionTypeCounts));
+    for (const type of ["选择题", "填空题", "实验题"]) {
+      await desktop.locator("#studentLibraryQuestionType").selectOption({ label: type });
+      assert.ok(await desktop.locator(".library-question-list .student-question-card").count() > 0, `${type} filter is empty`);
+    }
+    await desktop.locator('[data-library-action="clear"]').click();
+    await desktop.locator("#studentLibraryGrade").selectOption({ label: "九年级" });
+    await desktop.locator("#studentLibraryQuestionType").selectOption({ label: "选择题" });
+    await desktop.locator("#studentLibrarySearch").fill("声音的产生与传播");
+    const choiceCard = desktop.locator(".library-question-list .student-question-card").first();
+    assert.match(await choiceCard.innerText(), /单项选择题/);
+    await choiceCard.locator('[data-start-question]').click();
+    await desktop.locator("#learningLabModal[open]").waitFor({ state: "visible" });
+    await desktop.locator(".tutor-choice-response").waitFor({ state: "visible" });
+    const labScrollBefore = await desktop.evaluate(() => ({
+      documentY: window.scrollY,
+      panelTop: document.getElementById("labPanel").scrollTop,
+      panelHeight: document.getElementById("labPanel").clientHeight,
+      panelScrollHeight: document.getElementById("labPanel").scrollHeight,
+      contentHeight: document.getElementById("learningLabContent").clientHeight,
+      modalHeight: document.getElementById("learningLabModal").clientHeight
+    }));
+    assert.ok(labScrollBefore.panelScrollHeight > labScrollBefore.panelHeight, JSON.stringify(labScrollBefore));
+    assert.ok(Math.abs(labScrollBefore.contentHeight - labScrollBefore.modalHeight) <= 2, JSON.stringify(labScrollBefore));
+    await desktop.locator("#labPanel").hover();
+    await desktop.mouse.wheel(0, 900);
+    await desktop.waitForTimeout(120);
+    const labScrollAfter = await desktop.evaluate(() => ({
+      documentY: window.scrollY,
+      panelTop: document.getElementById("labPanel").scrollTop
+    }));
+    assert.ok(labScrollAfter.panelTop > labScrollBefore.panelTop, JSON.stringify({ labScrollBefore, labScrollAfter }));
+    assert.equal(labScrollAfter.documentY, labScrollBefore.documentY);
+    const expectedChoice = await desktop.evaluate(() => {
+      const id = document.querySelector(".tutor-layout")?.closest("#labPanel")
+        ? document.querySelector(".tutor-layout .tutor-question")?.querySelector("[data-view-source-question]")?.dataset.viewSourceQuestion
+        : "";
+      const question = window.PhysicsStudioApp.getQuestions().find((item) => item.id === id)
+        || window.PhysicsStudioApp.getQuestions().find((item) => item.title.includes("声音的产生与传播"));
+      return String(question?.answer || "").match(/\b([A-H])\b/)?.[1] || "A";
+    });
+    await desktop.locator(`[data-lab-choice][value="${expectedChoice}"]`).check();
+    const documentBeforeGrade = await desktop.evaluate(() => window.scrollY);
+    await desktop.locator('[data-lab-action="grade-answer"]').click();
+    await desktop.locator(".grading-result").waitFor({ state: "visible" });
+    assert.match(await desktop.locator(".grading-result").innerText(), /结果通过|参考答案与分步解析/);
+    assert.match(await desktop.locator(".grading-reference").innerText(), /参考答案[\s\S]*分步解析/);
+    const postGradeFit = await desktop.evaluate(() => {
+      const dialogElement = document.getElementById("learningLabModal");
+      const contentElement = document.getElementById("learningLabContent");
+      const shellElement = document.querySelector(".lab-shell");
+      const dialog = dialogElement.getBoundingClientRect();
+      const header = document.querySelector(".lab-header").getBoundingClientRect();
+      return {
+        documentY: window.scrollY,
+        dialogTop: dialog.top,
+        headerTop: header.top,
+        headerHeight: header.height,
+        dialogScrollTop: dialogElement.scrollTop,
+        contentScrollTop: contentElement.scrollTop,
+        shellScrollTop: shellElement.scrollTop,
+        panelScrollTop: document.getElementById("labPanel").scrollTop
+      };
+    });
+    assert.equal(postGradeFit.documentY, documentBeforeGrade);
+    assert.ok(postGradeFit.headerTop >= postGradeFit.dialogTop - 1, JSON.stringify(postGradeFit));
+    assert.ok(postGradeFit.headerHeight >= 70, JSON.stringify(postGradeFit));
+    await desktop.screenshot({ path: path.join(outputDirectory, "desktop-answer-feedback.png"), fullPage: false });
+    await desktop.locator('[data-lab-action="close"]').click();
+    await desktop.locator('[data-library-action="clear"]').click();
+
+    await desktop.locator(".student-scan-fab").click();
+    await desktop.locator("#studentCaptureDialog[open]").waitFor({ state: "visible" });
+    const captureScrollBefore = await desktop.evaluate(() => {
+      const form = document.getElementById("studentCaptureForm");
+      return { documentY: window.scrollY, top: form.scrollTop, height: form.clientHeight, scrollHeight: form.scrollHeight };
+    });
+    assert.ok(captureScrollBefore.scrollHeight > captureScrollBefore.height, JSON.stringify(captureScrollBefore));
+    await desktop.locator("#studentCaptureForm").hover();
+    await desktop.mouse.wheel(0, 900);
+    await desktop.waitForTimeout(120);
+    const captureScrollAfter = await desktop.evaluate(() => ({
+      documentY: window.scrollY,
+      top: document.getElementById("studentCaptureForm").scrollTop,
+      footerVisible: document.querySelector("#studentCaptureForm footer").getBoundingClientRect().top < innerHeight
+    }));
+    assert.ok(captureScrollAfter.top > captureScrollBefore.top, JSON.stringify({ captureScrollBefore, captureScrollAfter }));
+    assert.equal(captureScrollAfter.documentY, captureScrollBefore.documentY);
+    assert.equal(captureScrollAfter.footerVisible, true);
+    await desktop.screenshot({ path: path.join(outputDirectory, "desktop-capture-scroll.png"), fullPage: false });
+    await desktop.locator('[data-capture-action="close"]').click();
 
     const substantiveSelectors = {
       wrong: ".correction-workflow",
@@ -260,6 +363,8 @@ async function run() {
     assert.ok(await desktop.locator(".library-question-list .student-question-card").count() >= 1);
 
     await openStudentView(desktop, "analysis");
+    assert.ok(await desktop.locator(".knowledge-evidence-matrix article").count() >= 10);
+    assert.match(await desktop.locator(".knowledge-evidence-matrix > summary").innerText(), /证据不足[\s\S]*需巩固[\s\S]*基本掌握[\s\S]*可迁移/);
     await desktop.screenshot({
       path: path.join(outputDirectory, "desktop-learning-analysis.png"),
       fullPage: true
@@ -291,6 +396,39 @@ async function run() {
         fullPage: true
       });
 
+      await mobile.locator(".library-question-list [data-start-question]").first().click();
+      await mobile.locator("#learningLabModal[open]").waitFor({ state: "visible" });
+      await mobile.locator("#labPanel").focus();
+      const mobileLabBefore = await mobile.evaluate(() => ({
+        documentY: window.scrollY,
+        top: document.getElementById("labPanel").scrollTop,
+        height: document.getElementById("labPanel").clientHeight,
+        scrollHeight: document.getElementById("labPanel").scrollHeight
+      }));
+      assert.ok(mobileLabBefore.scrollHeight > mobileLabBefore.height, JSON.stringify(mobileLabBefore));
+      await mobile.locator("#labPanel").press("End");
+      await mobile.waitForTimeout(100);
+      const mobileLabAfter = await mobile.evaluate(() => ({
+        documentY: window.scrollY,
+        top: document.getElementById("labPanel").scrollTop,
+        closeTop: document.querySelector('[data-lab-action="close"]').getBoundingClientRect().top
+      }));
+      assert.ok(mobileLabAfter.top > mobileLabBefore.top, JSON.stringify({ mobileLabBefore, mobileLabAfter }));
+      assert.equal(mobileLabAfter.documentY, mobileLabBefore.documentY);
+      assert.ok(mobileLabAfter.closeTop >= 0, JSON.stringify(mobileLabAfter));
+      await mobile.screenshot({ path: path.join(outputDirectory, "mobile-lab-scroll.png"), fullPage: false });
+      await mobile.locator('[data-lab-action="close"]').click();
+
+      await mobile.locator(".student-scan-fab").click();
+      await mobile.locator("#studentCaptureDialog[open]").waitFor({ state: "visible" });
+      await mobile.locator("#studentCaptureForm").focus();
+      const mobileCaptureBefore = await mobile.locator("#studentCaptureForm").evaluate((form) => form.scrollTop);
+      await mobile.locator("#studentCaptureForm").press("End");
+      await mobile.waitForTimeout(100);
+      const mobileCaptureAfter = await mobile.locator("#studentCaptureForm").evaluate((form) => form.scrollTop);
+      assert.ok(mobileCaptureAfter > mobileCaptureBefore, JSON.stringify({ mobileCaptureBefore, mobileCaptureAfter }));
+      await mobile.locator('[data-capture-action="close"]').click();
+
       await openStudentView(mobile, "curriculum");
       await assertNoHorizontalOverflow(mobile, "mobile curriculum");
       assert.ok(await mobile.locator(".curriculum-section-list > article").first().locator("li").count() >= 4);
@@ -319,6 +457,7 @@ async function run() {
     console.log(JSON.stringify({
       status: "passed",
       inventory,
+      questionTypeCounts,
       modules: homeModules.map((item) => item.view),
       screenshots: fs.readdirSync(outputDirectory).filter((name) => name.endsWith(".png")).sort(),
       browserErrors: errors

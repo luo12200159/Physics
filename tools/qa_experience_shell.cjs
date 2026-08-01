@@ -39,6 +39,27 @@ async function run() {
   const page = await desktop.newPage();
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
+  await page.route("**/activation.js", async (route) => {
+    await route.fulfill({
+      contentType: "text/javascript; charset=utf-8",
+      body: `(() => {
+        window.PhysicsStudioActivation = Object.freeze({
+          version: "experience-shell-qa",
+          whenActivated: Promise.resolve({ licenseId: "experience-shell-qa", expiresAt: 0 }),
+          validateCode: async () => true,
+          formatDeviceRequest: (value) => String(value || ""),
+          publicKeyFingerprint: "experience-shell-qa"
+        });
+        const unlock = () => {
+          document.body.classList.remove("activation-pending");
+          document.body.classList.add("activation-complete");
+        };
+        document.readyState === "loading"
+          ? document.addEventListener("DOMContentLoaded", unlock, { once: true })
+          : unlock();
+      })();`
+    });
+  });
 
   try {
     await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
@@ -89,9 +110,10 @@ async function run() {
 
     await page.locator('[data-student-view="practice"]').first().click();
     await page.locator("#studentPracticeSearch").fill("平抛");
+    assert.match(await page.locator(".student-safe-search").innerText(), /外部网站访问已关闭/);
+    await page.locator('.student-search-submit[data-student-view="library"]').click();
     await page.waitForTimeout(120);
     assert.ok(await page.locator(".student-question-card").count() >= 1);
-    assert.match(await page.locator(".student-safe-search").innerText(), /外部网站访问已关闭/);
 
     await page.locator(".student-scan-fab").click();
     await page.locator("#studentCaptureDialog[open]").waitFor({ state: "visible" });
@@ -115,7 +137,7 @@ async function run() {
     await page.locator('[data-lab-action="close"]').click();
 
     await page.locator('[data-student-view="wrong"]').first().click();
-    assert.ok(await page.locator(".student-question-card.wrong").count() >= 1);
+    assert.equal(await page.locator(".wrong-cause-guide").count(), 1);
 
     await page.locator('[data-student-view="profile"]').first().click();
     assert.match(await page.locator(".mastery-status-card").innerText(), /学习中|熟练|已掌握|待复习|薄弱/);
@@ -170,6 +192,27 @@ async function run() {
       }));
     });
     const mobilePage = await mobile.newPage();
+    await mobilePage.route("**/activation.js", async (route) => {
+      await route.fulfill({
+        contentType: "text/javascript; charset=utf-8",
+        body: `(() => {
+          window.PhysicsStudioActivation = Object.freeze({
+            version: "experience-shell-mobile-qa",
+            whenActivated: Promise.resolve({ licenseId: "experience-shell-mobile-qa", expiresAt: 0 }),
+            validateCode: async () => true,
+            formatDeviceRequest: (value) => String(value || ""),
+            publicKeyFingerprint: "experience-shell-mobile-qa"
+          });
+          const unlock = () => {
+            document.body.classList.remove("activation-pending");
+            document.body.classList.add("activation-complete");
+          };
+          document.readyState === "loading"
+            ? document.addEventListener("DOMContentLoaded", unlock, { once: true })
+            : unlock();
+        })();`
+      });
+    });
     await mobilePage.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
     await waitForReady(mobilePage);
     await mobilePage.locator(".continue-card").waitFor({ state: "visible" });

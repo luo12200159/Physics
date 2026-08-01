@@ -1,5 +1,6 @@
 .build/
 qa-output/
+node_modules/
 发布/
 物理研习室.exe
 Microsoft.Web.WebView2.Core.dll

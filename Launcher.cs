@@ -118,6 +118,7 @@ internal static class Program
             "ai-tutor.js",
             "document-import.js",
             "content-catalog.js",
+            "classroom-client.js",
             "learning-engine.js",
             "app.js",
             "learning-lab.js",

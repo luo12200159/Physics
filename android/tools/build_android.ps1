@@ -158,6 +158,7 @@ Copy-Item -LiteralPath (Join-Path $WebRoot 'backup-validator.js') -Destination $
 Copy-Item -LiteralPath (Join-Path $WebRoot 'ai-tutor.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'document-import.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'content-catalog.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'classroom-client.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-engine.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'app.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.js') -Destination $AssetsDirectory -Force

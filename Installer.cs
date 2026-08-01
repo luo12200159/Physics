@@ -53,6 +53,7 @@ internal static class InstallerProgram
         new PayloadFile("PhysicsStudio.Payload.AiTutor", "ai-tutor.js"),
         new PayloadFile("PhysicsStudio.Payload.DocumentImport", "document-import.js"),
         new PayloadFile("PhysicsStudio.Payload.ContentCatalog", "content-catalog.js"),
+        new PayloadFile("PhysicsStudio.Payload.ClassroomClient", "classroom-client.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningEngine", "learning-engine.js"),
         new PayloadFile("PhysicsStudio.Payload.Script", "app.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningLab", "learning-lab.js"),

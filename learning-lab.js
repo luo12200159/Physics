@@ -86,7 +86,7 @@
       openLab("tutor", event.detail?.questionId || "");
     });
     document.addEventListener("physics-studio-open-lab", (event) => {
-      openLab(event.detail?.tab || "dashboard", event.detail?.questionId || "");
+      openLab(event.detail?.tab || "dashboard", event.detail?.questionId || "", event.detail?.diagnosticId || "");
     });
     document.addEventListener("physics-learning-state-changed", (event) => {
       if (!event.detail?.restored) return;
@@ -131,7 +131,7 @@
               <span>${escapeHtml(short)}</span>${escapeHtml(label)}
             </button>`).join("")}
         </nav>
-        <main class="lab-panel" id="labPanel"></main>
+        <main class="lab-panel" id="labPanel" tabindex="0" aria-label="学习实验室内容，使用滚轮或上下方向键浏览"></main>
         <footer class="lab-footer">
           <span><i></i> 离线规则引擎已启用</span>
           <span>自动判定仅覆盖可可靠提取的选项和数值题；解释题会明确要求人工复核。</span>
@@ -148,13 +148,17 @@
     lab.dialog.addEventListener("close", stopAllLiveActivities);
   }
 
-  function openLab(tab = "dashboard", questionId = "") {
+  function openLab(tab = "dashboard", questionId = "", diagnosticId = "") {
     lab.app = window.PhysicsStudioApp || lab.app;
     if (questionId) {
       lab.selectedQuestionId = questionId;
       lab.session = null;
       lab.aiResult = null;
       lab.aiStatusMessage = "";
+    }
+    if (diagnosticId && engine.misconceptionCatalog.some((item) => item.diagnostic.id === diagnosticId)) {
+      lab.diagnosticId = diagnosticId;
+      lab.diagnosticResult = null;
     }
     lab.tab = tab === "teacher" && !isTeacherRole() ? "dashboard" : tab;
     renderPanel();
@@ -192,8 +196,11 @@
       </option>`).join("") + '<option value="__new__">＋ 新建本机档案</option>';
   }
 
-  function renderPanel() {
+  function renderPanel(options = {}) {
     if (!lab.panel) return;
+    const previousScrollTop = lab.panel.scrollTop;
+    if (lab.dialog) lab.dialog.scrollTop = 0;
+    if (lab.content) lab.content.scrollTop = 0;
     if (lab.tab === "teacher" && !isTeacherRole()) lab.tab = "dashboard";
     stopModelAnimation();
     stopSessionTimer();
@@ -217,6 +224,26 @@
     if (lab.tab === "tools") requestAnimationFrame(setupSketchCanvas);
     if (lab.tab === "sensors") requestAnimationFrame(() => renderMotionChart());
     if (lab.tab === "tutor" && lab.session) startSessionTimer();
+    if (options.scrollTo || options.preserveScroll) {
+      requestAnimationFrame(() => {
+        if (!lab.panel) return;
+        if (lab.dialog) lab.dialog.scrollTop = 0;
+        if (lab.content) lab.content.scrollTop = 0;
+        if (options.scrollTo) {
+          const target = lab.panel.querySelector(options.scrollTo);
+          if (target) {
+            const panelBox = lab.panel.getBoundingClientRect();
+            const targetBox = target.getBoundingClientRect();
+            const centeredOffset = Math.max(16, (lab.panel.clientHeight - Math.min(targetBox.height, lab.panel.clientHeight)) / 2);
+            lab.panel.scrollTop = Math.max(0, lab.panel.scrollTop + targetBox.top - panelBox.top - centeredOffset);
+          }
+        } else {
+          lab.panel.scrollTop = previousScrollTop;
+        }
+        if (lab.dialog) lab.dialog.scrollTop = 0;
+        if (lab.content) lab.content.scrollTop = 0;
+      });
+    }
   }
 
   function arrangeTeacherLayout() {
@@ -437,6 +464,58 @@
       </div>`;
   }
 
+  function questionResponseKind(question) {
+    const type = String(question.questionType || question.examQuestionType || "");
+    if (/选择/.test(type)) return /多项|多选/.test(type) ? "multiple-choice" : "single-choice";
+    if (/填空/.test(type)) return "fill";
+    if (/实验|探究/.test(type)) return "experiment";
+    return "written";
+  }
+
+  function extractChoiceOptions(question) {
+    const content = String(question.content || "");
+    const marker = /(?:^|\n|[ \u3000]{2,})([A-H])[.．、]\s*/gm;
+    const matches = [];
+    let match;
+    while ((match = marker.exec(content))) {
+      matches.push({ label: match[1], start: marker.lastIndex, markerStart: match.index });
+    }
+    return matches.map((item, index) => ({
+      label: item.label,
+      text: content.slice(item.start, matches[index + 1]?.markerStart ?? content.length).replace(/\s+/g, " ").trim()
+    })).filter((item) => item.text);
+  }
+
+  function renderResponseInput(question, session) {
+    const kind = questionResponseKind(question);
+    const options = extractChoiceOptions(question);
+    if ((kind === "single-choice" || kind === "multiple-choice") && options.length >= 2) {
+      const selected = new Set(String(session.finalAnswer || "").toUpperCase().match(/[A-H]/g) || []);
+      const inputType = kind === "multiple-choice" ? "checkbox" : "radio";
+      return `
+        <fieldset class="tutor-choice-response">
+          <legend>${kind === "multiple-choice" ? "选择全部正确选项" : "选择一个答案"}</legend>
+          <input id="labFinalAnswer" type="hidden" value="${escapeHtml(session.finalAnswer)}">
+          ${options.map((option) => `
+            <label>
+              <input data-lab-choice type="${inputType}" name="labChoiceAnswer" value="${option.label}"${selected.has(option.label) ? " checked" : ""}>
+              <strong>${option.label}</strong><span>${escapeHtml(option.text)}</span>
+            </label>`).join("")}
+        </fieldset>`;
+    }
+    const labels = {
+      fill: ["按空格顺序填写", "按题目空格顺序填写；多个答案可用顿号或分号分隔。"],
+      experiment: ["实验题作答", "按小问分条填写：实验目的、操作/数据、结论及误差分析。"],
+      written: ["最终答案", "写出数值、单位和必要方向；多问请分行。"]
+    };
+    const [label, placeholder] = labels[kind] || labels.written;
+    return `
+      <label class="tutor-written-response response-${kind}">
+        <span>${label}</span>
+        <textarea id="labFinalAnswer" rows="${kind === "experiment" ? 7 : 3}" placeholder="${placeholder}">${escapeHtml(session.finalAnswer)}</textarea>
+      </label>`;
+  }
+
   function renderTutor() {
     const question = getQuestion(lab.selectedQuestionId);
     if (!question) return renderQuestionPicker("选择一道有完整题干的题目进入分步训练");
@@ -453,7 +532,7 @@
           <div class="tutor-meta">
             <span>${escapeHtml(question.stage)} · ${escapeHtml(question.grade || "")}</span>
             <span>${escapeHtml(question.topic)}</span>
-            <span>${escapeHtml(question.difficulty)}</span>
+            <span>${escapeHtml(question.difficulty)} · ${escapeHtml(question.questionType || question.examQuestionType || "物理题")}</span>
           </div>
           <h3>${escapeHtml(question.title)}</h3>
           <div class="tutor-stem">${escapeHtml(question.content)}</div>
@@ -508,10 +587,7 @@
 
           <section class="lab-card answer-workbench">
             <div class="lab-card-head"><div><span>VERIFIABLE ANSWER</span><h3>作答与反馈</h3></div></div>
-            <label>
-              <span>最终答案</span>
-              <textarea id="labFinalAnswer" rows="3" placeholder="写出数值、单位和必要方向；多问请分行。">${escapeHtml(session.finalAnswer)}</textarea>
-            </label>
+            ${renderResponseInput(question, session)}
             <div class="draft-upload">
               <div>
                 <strong>草稿或过程图</strong>
@@ -526,7 +602,7 @@
               <button class="lab-secondary-button" data-lab-tab="models" type="button">用建模画布验证</button>
               <button class="lab-secondary-button" data-lab-tab="tools" type="button">打开量纲与单位工具</button>
             </div>
-            ${session.grading ? renderGrading(session.grading) : ""}
+            ${session.grading ? renderGrading(question, session.grading) : ""}
             <section class="ai-tutor-card">
               <div>
                 <span>CHATGPT 深度解析</span>
@@ -541,7 +617,7 @@
               <label>
                 <span>错误类型</span>
                 <select id="labErrorType">
-                  ${["", "审题错误", "概念错误", "建模错误", "公式条件错误", "计算错误", "单位错误", "方向/符号错误", "表达错误", "猜测作答"].map((value) => `
+                  ${["", ...engine.errorTypeDefinitions.map((item) => item.label)].map((value) => `
                     <option value="${value}"${session.errorType === value ? " selected" : ""}>${value || "本次无错误或待判断"}</option>`).join("")}
                 </select>
               </label>
@@ -610,7 +686,7 @@
       </article>`;
   }
 
-  function renderGrading(grading) {
+  function renderGrading(question, grading) {
     const labels = {
       correct: "结果通过",
       partial: "部分正确",
@@ -628,7 +704,15 @@
               <span>${escapeHtml(issue.reason)}</span>
               <small>下一步：${escapeHtml(issue.next)}</small>
             </li>`).join("")}</ul>` : ""}
-        ${grading.status === "review-required" ? `<details><summary>展开参考答案供人工复核</summary><pre>${escapeHtml(grading.expected)}</pre></details>` : ""}
+        <details class="grading-reference" open>
+          <summary>参考答案与分步解析（已完成本次作答）</summary>
+          <div>
+            <strong>参考答案</strong>
+            <pre>${escapeHtml(question.answer || grading.expected || "待教师复核")}</pre>
+            <strong>分步解析</strong>
+            <pre>${escapeHtml(question.solution || "本题暂无可核验的分步解析，请交由教师复核。")}</pre>
+          </div>
+        </details>
         ${grading.verification?.length ? `
           <div class="verification-grid">
             ${grading.verification.map((check) => `
@@ -1461,7 +1545,7 @@
           answerAttempted: Boolean(lab.session.finalAnswer.trim())
         }
       }));
-      renderPanel();
+      renderPanel({ scrollTo: `[data-hint-level="${level}"]` });
       return;
     }
     const diagnostic = event.target.closest("[data-diagnostic-id]");
@@ -1577,7 +1661,16 @@
   }
 
   function handleInput(event) {
-    if (event.target.id === "diagnosticConfidence") {
+    if (event.target.id === "labFinalAnswer") {
+      if (!lab.session) return;
+      lab.session.finalAnswer = event.target.value;
+      if (lab.session.grading) {
+        lab.session.grading = null;
+        lab.content.querySelector(".grading-result")?.remove();
+        const complete = lab.content.querySelector('[data-lab-action="complete-attempt"]');
+        if (complete) complete.disabled = true;
+      }
+    } else if (event.target.id === "diagnosticConfidence") {
       const value = document.getElementById("diagnosticConfidenceValue");
       if (value) value.textContent = `${event.target.value}/5`;
     } else if (event.target.id === "confidenceBefore") {
@@ -1602,7 +1695,16 @@
   }
 
   function handleChange(event) {
-    if (event.target.id === "labProfileSelect") {
+    if (event.target.matches("[data-lab-choice]")) {
+      if (!lab.session) return;
+      const values = [...lab.content.querySelectorAll("[data-lab-choice]:checked")]
+        .map((input) => input.value)
+        .sort();
+      lab.session.finalAnswer = values.join("");
+      lab.session.grading = null;
+      const hidden = document.getElementById("labFinalAnswer");
+      if (hidden) hidden.value = lab.session.finalAnswer;
+    } else if (event.target.id === "labProfileSelect") {
       if (event.target.value === "__new__") {
         const name = window.prompt("请输入本机档案名称（不要填写敏感身份信息）", "新学生");
         if (name?.trim()) {
@@ -1667,7 +1769,7 @@
     });
     lab.diagnosticResult = { ...result, diagnosticId: lab.diagnosticId };
     saveLearningState();
-    renderPanel();
+    renderPanel({ scrollTo: ".diagnostic-result" });
   }
 
   function newSession(question) {
@@ -1760,7 +1862,7 @@
       if (data.length > 900000) throw new Error("草稿压缩后仍过大");
       lab.session.draftImageData = data;
       lab.session.draftImageName = String(file.name || "作答草稿.jpg").slice(0, 120);
-      renderPanel();
+      renderPanel({ scrollTo: ".draft-upload" });
     } catch (error) {
       console.error("Draft image import failed", error);
       showLabMessage("草稿图片无法安全保存，请裁切后重试。", true);
@@ -1786,7 +1888,7 @@
       grading
     );
     lab.session.grading = grading;
-    renderPanel();
+    renderPanel({ scrollTo: ".grading-result" });
   }
 
   async function completeAttempt() {
