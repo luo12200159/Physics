@@ -26,7 +26,23 @@ const question = {
   variantRole: "near",
   transferGroupId: "transfer-1",
   misconceptionTags: ["misconception"],
-  recommendationTags: ["recommendation"]
+  recommendationTags: ["recommendation"],
+  knowledgePointId: "kp:test",
+  cognitiveDemand: "模型识别",
+  representationType: "图像",
+  independenceGroupId: "independence-1",
+  assessmentPurpose: "practice",
+  evidenceTier: "practice-variant",
+  modelDefinitionId: "model-1",
+  retestGroupId: "retest-1",
+  diagnosticEligible: true,
+  autoScorable: false,
+  visualSpec: {
+    type: "force",
+    model: "newton",
+    task: "根据受力图建立方程",
+    parameters: { forces: [{ label: "F", x: 2, y: 0 }] }
+  }
 };
 const payload = {
   format: "physics-studio-backup",

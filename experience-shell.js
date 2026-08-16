@@ -3,17 +3,13 @@
 
   const STORAGE_KEY = "physics-experience-v2";
   const MAX_EVENTS = 600;
+  const CLASSROOM_INVITE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
   const engine = window.PHYSICS_LEARNING_ENGINE;
   const STUDENT_MODULES = Object.freeze([
-    { view: "library", icon: "▤", label: "题库", detail: "按年级、章节、知识点和难度检索完整题目" },
+    { view: "library", icon: "▤", label: "练习筛选", detail: "按年级、章节、知识点和难度进入练习" },
     { view: "wrong", icon: "!", label: "错题集", detail: "订正、错误归因、自我解释和同类迁移" },
-    { view: "videos", icon: "▶", label: "方法视频", detail: "播放已关联视频或逐步动态方法讲解" },
-    { view: "mastered", icon: "✓", label: "已掌握", detail: "只展示达到行为证据标准的题目" },
-    { view: "progress", icon: "◴", label: "掌握进度", detail: "查看六类状态、章节覆盖和待复习内容" },
     { view: "curriculum", icon: "目", label: "教材知识点", detail: "八年级至高三完整册、章、节和核心要点" },
-    { view: "analysis", icon: "◎", label: "本人学情分析", detail: "正确率、提示依赖、建模证据和成长记录" },
-    { view: "lab", icon: "⌬", label: "学习实验室", detail: "诊断、导师、仿真、迁移、复习和实验工具" },
-    { view: "advice", icon: "→", label: "学习建议", detail: "依据薄弱证据形成练习顺序和七日计划" }
+    { view: "lab", icon: "⌬", label: "物理工具", detail: "诊断、导师、仿真、迁移、复习和实验工具" }
   ]);
   const KNOWLEDGE_GUIDES = Object.freeze([
     [/长度和时间|测量平均速度|基本仪器|图像与误差/, ["国际单位制与常用单位换算", "刻度尺、停表等仪器的量程、分度值和读数", "多次测量、平均值与误差分析", "实验数据记录、图像处理和有效数字"]],
@@ -83,7 +79,11 @@
       selectedClassId: "",
       roster: [],
       groups: [],
-      lastInvite: null
+      lastInvite: null,
+      assignments: [],
+      assignmentSubmissions: {},
+      learningSummary: [],
+      reviewCases: []
     },
     capture: null,
     openedAt: Date.now(),
@@ -93,12 +93,17 @@
   let experience = loadExperience();
   let app = null;
   let shell = null;
+  let studentDataWarmupToken = "";
   let onboarding = null;
   let captureDialog = null;
   let metricsDialog = null;
   let methodDialog = null;
   let classroomDialog = null;
   let classroomSyncTimer = 0;
+  let studentDataCache = null;
+  let studentViewRenderTimer = 0;
+  let classroomQrStream = null;
+  let classroomQrTimer = 0;
 
   document.addEventListener("DOMContentLoaded", () => {
     const activation = window.PhysicsStudioActivation;
@@ -117,7 +122,7 @@
       goal: "日常巩固",
       examDate: "",
       weeklyGoal: 12,
-      studentExternalLinks: false,
+      studentExternalLinks: true,
       fontScale: 1,
       events: [],
       activeDates: [],
@@ -129,7 +134,9 @@
   function loadExperience() {
     const fallback = defaultExperience();
     try {
-      const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+    const storage = window.PhysicsStudioStorageRepository;
+    if (!storage) return fallback;
+    const value = JSON.parse(storage.getItem(STORAGE_KEY) || "null");
       if (!value || typeof value !== "object") return fallback;
       const normalized = {
         ...fallback,
@@ -137,6 +144,7 @@
         events: Array.isArray(value.events) ? value.events.slice(-MAX_EVENTS) : [],
         activeDates: Array.isArray(value.activeDates) ? value.activeDates.slice(-60) : []
       };
+      if (normalized.role === "parent") normalized.role = "student";
       if (normalized.grade === "七年级") normalized.grade = "八年级";
       return normalized;
     } catch (error) {
@@ -147,7 +155,9 @@
 
   function saveExperience() {
     experience.updatedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(experience));
+    const storage = window.PhysicsStudioStorageRepository;
+    if (!storage) return;
+    storage.setItem(STORAGE_KEY, JSON.stringify(experience));
   }
 
   function initialize() {
@@ -161,6 +171,17 @@
     bindGlobalEvents();
     applyFontScale();
     applyRole();
+    if (experience.role === "teacher" && window.PhysicsStudioTeacherLock && !window.PhysicsStudioTeacherLock.isUnlocked()) {
+      // Keep the role choice visible, but never expose local teacher controls
+      // until the session has been explicitly unlocked.
+      ensureTeacherUnlocked().then((ok) => {
+        if (!ok) {
+          experience.role = "student";
+          saveExperience();
+        }
+        applyRole();
+      });
+    }
     if (!experience.onboarded) showOnboarding(false);
   }
 
@@ -180,7 +201,7 @@
       <form id="experienceOnboardingForm">
         <header>
           <span class="experience-mark" aria-hidden="true">φ</span>
-          <div><strong>物理研习室</strong><h1>先选择你的使用方式</h1><p>只需最少信息，之后可在“我的”中修改。</p></div>
+          <div><strong>费曼物理</strong><h1>先选择你的使用方式</h1><p>只需最少信息，之后可在“我的”中修改。</p></div>
         </header>
         <fieldset class="role-choice">
           <legend>使用身份</legend>
@@ -188,7 +209,7 @@
             ["student", "学生", "作答、错题、复习、实验和学习报告"],
             ["teacher", "教师", "内容导入、审核、组卷和班级证据"],
             ["parent", "家长", "只看学习摘要和可支持的知识模块"]
-          ].map(([value, label, detail]) => `
+          ].filter(([value]) => value !== "parent").map(([value, label, detail]) => `
             <label>
               <input type="radio" name="experienceRole" value="${value}">
               <span><strong>${label}</strong><small>${detail}</small></span>
@@ -254,9 +275,9 @@
           <section class="capture-confirmation">
             <div class="capture-recognition">
               <div><strong>题目文字</strong><span id="studentRecognitionBadge">等待图片</span></div>
-              <button data-capture-action="recognize" type="button">尝试设备文字识别</button>
+              <button data-capture-action="recognize" type="button">尝试本机文字识别</button>
             </div>
-            <p class="capture-boundary" id="studentRecognitionStatus">离线版只在设备提供文字检测能力时尝试识别。公式、上下标、矢量符号和图示语义必须人工确认，不会伪装成可靠识别结果。</p>
+            <p class="capture-boundary" id="studentRecognitionStatus">依次尝试 Android 原生离线 OCR、设备 TextDetector，再回退到人工输入。公式、上下标、矢量符号和图示语义必须人工确认，不会自动补全。</p>
             <label><span>确认后的题干 <i>*</i></span><textarea id="studentCaptureText" rows="8" placeholder="请粘贴、输入或核对题干；不确定字符用“□”标记。"></textarea></label>
             <div class="capture-mini-grid">
               <label><span>年级</span><select id="studentCaptureGrade">${["八年级", "九年级", "高一", "高二", "高三"].map((grade) => `<option>${grade}</option>`).join("")}</select></label>
@@ -305,12 +326,20 @@
   function bindGlobalEvents() {
     document.addEventListener("physics-studio-ready", () => {
       app = window.PhysicsStudioApp;
+      studentDataCache = null;
       renderRoleExperience();
     });
-    document.addEventListener("physics-studio-questions-changed", renderRoleExperience);
-    document.addEventListener("physics-learning-state-changed", renderRoleExperience);
+    document.addEventListener("physics-studio-questions-changed", () => {
+      studentDataCache = null;
+      renderRoleExperience();
+    });
+    document.addEventListener("physics-learning-state-changed", () => {
+      studentDataCache = null;
+      renderRoleExperience();
+    });
     document.addEventListener("physics-learning-event", (event) => {
       recordEvent(event.detail?.type || "learning-event", event.detail || {});
+      studentDataCache = null;
       renderRoleExperience();
     });
     onboarding.querySelector("form").addEventListener("submit", saveOnboarding);
@@ -332,11 +361,24 @@
       ui.capture.contrast = Number(event.target.value);
       captureDialog.querySelector("#studentCaptureContrastValue").textContent = `${ui.capture.contrast}%`;
       renderCaptureCanvas();
+      invalidateCaptureConfirmation("图像增强参数已变化，请重新识别并确认题干。", "需重新识别");
     });
     captureDialog.querySelector("#studentCaptureText").addEventListener("input", (event) => {
       const topic = inferTopic(event.target.value);
       const topicInput = captureDialog.querySelector("#studentCaptureTopic");
       if (!topicInput.dataset.userEdited) topicInput.value = topic;
+      invalidateCaptureConfirmation("题干文字已变化，请重新逐字检查并确认。", "文字已修改");
+    });
+    captureDialog.querySelector("#studentCaptureConfirmed").addEventListener("change", (event) => {
+      if (!ui.capture) return;
+      ui.capture.confirmedText = event.target.checked
+        ? captureDialog.querySelector("#studentCaptureText").value.trim()
+        : "";
+      if (event.target.checked) {
+        ui.capture.recognitionStatus = ui.capture.recognitionEngine === "manual"
+          ? "学生已人工输入并逐字确认题目文字"
+          : `${ui.capture.recognitionEngine} 识别草稿；学生已逐字人工确认`;
+      }
     });
     captureDialog.querySelector("#studentCaptureTopic").addEventListener("input", (event) => {
       event.target.dataset.userEdited = "true";
@@ -360,6 +402,7 @@
     methodDialog.addEventListener("close", stopMethodPlayback);
     classroomDialog.addEventListener("click", handleClassroomClick);
     classroomDialog.addEventListener("submit", handleClassroomSubmit);
+    classroomDialog.addEventListener("change", handleClassroomChange);
     window.addEventListener("online", syncClassroomSilently);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") syncClassroomSilently();
@@ -386,10 +429,37 @@
     onboarding.querySelector("#experienceExamDateField").classList.toggle("hidden", role !== "student");
   }
 
-  function saveOnboarding(event) {
+  async function ensureTeacherUnlocked() {
+    const lock = window.PhysicsStudioTeacherLock;
+    if (!lock || lock.isUnlocked()) return true;
+    if (!lock.hasPin()) {
+      const first = window.prompt("首次进入教师管理，请设置6至12位数字PIN（不会明文保存）");
+      if (first == null) return false;
+      const confirm = window.prompt("请再次输入教师PIN");
+      if (first !== confirm) {
+        window.alert("两次PIN不一致，未进入教师管理。");
+        return false;
+      }
+      try {
+        await lock.setup(first);
+        return true;
+      } catch (error) {
+        window.alert(error.message || "PIN设置失败。");
+        return false;
+      }
+    }
+    const pin = window.prompt("请输入教师PIN以解锁管理功能");
+    if (pin == null) return false;
+    const ok = await lock.unlock(pin);
+    if (!ok) window.alert("PIN错误，教师管理功能保持锁定。");
+    return ok;
+  }
+
+  async function saveOnboarding(event) {
     event.preventDefault();
     const role = onboarding.querySelector('input[name="experienceRole"]:checked')?.value || "student";
-    experience.role = ["student", "teacher", "parent"].includes(role) ? role : "student";
+    if (role === "teacher" && !(await ensureTeacherUnlocked())) return;
+    experience.role = ["student", "teacher"].includes(role) ? role : "student";
     experience.displayName = onboarding.querySelector("#experienceName").value.trim().slice(0, 12) || "同学";
     experience.grade = onboarding.querySelector("#experienceGrade").value;
     experience.textbook = onboarding.querySelector("#experienceTextbook").value;
@@ -428,8 +498,11 @@
 
   function applyRole() {
     document.body.classList.remove("role-student", "role-teacher", "role-parent");
+    if (experience.role === "parent") experience.role = "student";
     document.body.classList.add(`role-${experience.role}`, "experience-ready");
     applyFontScale();
+    studentDataCache = null;
+    studentDataWarmupToken = "";
     renderRoleExperience();
     document.dispatchEvent(new CustomEvent("physics-experience-role-changed", {
       detail: { role: experience.role }
@@ -441,22 +514,79 @@
     app = window.PhysicsStudioApp || app;
     if (experience.role === "teacher") {
       shell.innerHTML = "";
-      renderTeacherBar();
+      if (window.PhysicsStudioTeacherLock && !window.PhysicsStudioTeacherLock.isUnlocked()) {
+        renderLockedTeacherBar();
+      } else {
+        renderTeacherBar();
+      }
       return;
     }
     removeTeacherBar();
-    shell.innerHTML = experience.role === "parent" ? renderParent() : renderStudent();
+    shell.innerHTML = renderStudent();
+    scheduleStudentAnalysisWarmup();
+  }
+
+  function studentDerivedOptions() {
+    return {
+      includeAnalysis: Boolean(studentDataCache?.data?.analysis)
+        && ["analysis", "advice"].includes(ui.view),
+      includeCoverage: Boolean(studentDataCache?.data?.knowledgePointEvidence)
+        && ["profile", "analysis"].includes(ui.view)
+    };
+  }
+
+  function updateStudentNavigation() {
+    const primaryView = primaryStudentView(ui.view);
+    shell?.querySelectorAll(".student-bottom-nav [data-student-view]").forEach((button) => {
+      const active = button.dataset.studentView === primaryView;
+      button.classList.toggle("active", active);
+      button.setAttribute("aria-current", active ? "page" : "false");
+    });
+  }
+
+  function renderStudentViewOnly(options = {}) {
+    if (!shell || experience.role !== "student") return;
+    const main = shell.querySelector(".student-main");
+    if (!main) {
+      renderRoleExperience();
+      return;
+    }
+    const previousScrollTop = window.scrollY;
+    const data = getStudentData(studentDerivedOptions());
+    main.setAttribute("aria-busy", "true");
+    main.dataset.currentStudentView = ui.view;
+    delete main.dataset.studentView;
+    main.innerHTML = renderStudentView(data);
+    main.removeAttribute("aria-busy");
+    updateStudentNavigation();
+    scheduleStudentAnalysisWarmup();
+    if (options.preserveScroll) window.scrollTo({ top: previousScrollTop, behavior: "auto" });
+    if (options.focusInputId) {
+      requestAnimationFrame(() => {
+        const input = document.getElementById(options.focusInputId);
+        input?.focus({ preventScroll: true });
+        input?.setSelectionRange?.(ui.search.length, ui.search.length);
+      });
+    }
+  }
+
+  function scheduleStudentViewRender(options = {}) {
+    if (studentViewRenderTimer) window.clearTimeout(studentViewRenderTimer);
+    studentViewRenderTimer = window.setTimeout(() => {
+      studentViewRenderTimer = 0;
+      renderStudentViewOnly(options);
+    }, 80);
   }
 
   function renderStudent() {
-    const data = getStudentData();
+    const data = getStudentData(studentDerivedOptions());
     const primaryView = primaryStudentView(ui.view);
     return `
       <header class="student-header">
         <div><span>${greeting()}，${escapeHtml(experience.displayName)}</span><strong>${escapeHtml(experience.grade)} · 物理 · ${data.gradeQuestions.length} 道完整题</strong></div>
         <button data-shell-action="open-settings" type="button" aria-label="打开个人设置">⚙</button>
       </header>
-      <main class="student-main">
+      <main class="student-main" data-current-student-view="${escapeHtml(ui.view)}">
         ${renderStudentView(data)}
       </main>
       <nav class="student-bottom-nav" aria-label="学生主导航">
@@ -506,23 +636,99 @@
     );
   }
 
-  function getStudentData() {
-    const questions = (app?.getQuestions?.() || []).filter(isCompleteStudentQuestion);
-    const gradeQuestions = questions.filter((question) => question.grade === experience.grade);
+  function scheduleStudentAnalysisWarmup() {
+    if (experience.role !== "student" || !["profile", "analysis", "advice"].includes(ui.view)) return;
+    if (studentDataCache?.data?.analysis) return;
+    const token = `${experience.updatedAt}|${experience.grade}|${ui.view}`;
+    if (studentDataWarmupToken === token) return;
+    studentDataWarmupToken = token;
+    const run = () => {
+      if (studentDataWarmupToken !== token) return;
+      if (experience.role !== "student" || !["profile", "analysis", "advice"].includes(ui.view)) {
+        studentDataWarmupToken = "";
+        return;
+      }
+      getStudentData({ includeAnalysis: true, includeCoverage: true });
+      studentDataWarmupToken = "";
+      renderStudentViewOnly({ preserveScroll: true });
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(run, { timeout: 1200 });
+    } else {
+      window.setTimeout(run, 120);
+    }
+  }
+
+  function hydrateStudentDataDerived(data, options = {}) {
+    if (!data?.learning) return data;
+    const learning = data.learning;
+    if (options.includeAnalysis && !data.analysis && engine?.studentAnalysis) {
+      data.analysis = engine.studentAnalysis(learning, data.gradeQuestions, learning.activeProfileId, {
+        summary: data.summary
+      });
+      if (options.includeCoverage && !data.knowledgePointEvidence && data.analysis?.evidenceCoverage) {
+        data.knowledgePointEvidence = data.analysis.evidenceCoverage;
+      }
+    }
+    if (options.includeCoverage && !data.knowledgePointEvidence && engine?.knowledgePointEvidenceSummary) {
+      data.knowledgePointEvidence = engine.knowledgePointEvidenceSummary(learning, data.gradeQuestions);
+    }
+    if (options.includePlacement && (data.placement?.summaryOnly || !data.placement) && engine?.generatePlacementDiagnostic) {
+      data.placement = engine.generatePlacementDiagnostic(learning, data.gradeQuestions, {
+        profileId: learning.activeProfileId,
+        count: 24,
+        seed: `${learning.activeProfileId}|${experience.grade}|placement`
+      });
+    }
+    if (options.includeBroadCoverage && data.broadCoverage?.due && !data.broadCoverage.paper && engine?.scheduleBroadCoverageCheck) {
+      data.broadCoverage = engine.scheduleBroadCoverageCheck(learning, data.gradeQuestions, {
+        profileId: learning.activeProfileId,
+        count: 20,
+        includePreview: true,
+        deferPreview: true
+      });
+    }
+    return data;
+  }
+
+  function getStudentData(options = {}) {
+    const questionSource = app?.getQuestions?.() || [];
+    const questionSignature = [
+      questionSource.length,
+      questionSource[0]?.id || "",
+      questionSource.at(-1)?.id || ""
+    ].join("|");
     const learning = engine?.loadState?.() || null;
+    const cache = studentDataCache;
+    if (cache
+      && cache.questionSignature === questionSignature
+      && cache.learningUpdatedAt === String(learning?.updatedAt || "")
+      && cache.activeProfileId === String(learning?.activeProfileId || "")
+      && cache.role === experience.role
+      && cache.grade === experience.grade
+      && cache.experienceUpdatedAt === String(experience.updatedAt || "")) {
+      return hydrateStudentDataDerived(cache.data, options);
+    }
+    const questions = questionSource.filter(isCompleteStudentQuestion);
+    const gradeQuestions = questions.filter((question) => question.grade === experience.grade);
     const summary = learning ? engine.summarizeLearning(learning, gradeQuestions) : emptyLearningSummary();
+    const knowledgePointEvidence = learning && options.includeCoverage && engine.knowledgePointEvidenceSummary
+      ? engine.knowledgePointEvidenceSummary(learning, gradeQuestions)
+      : null;
     const recommendations = learning
       ? engine.recommendations(learning, gradeQuestions, 40, { profileId: learning.activeProfileId })
       : [];
     const activePlan = learning ? engine.activeLearningPlan(learning, learning.activeProfileId) : null;
     const planProgress = learning ? engine.learningPlanProgress(learning, activePlan) : null;
     const planCompleted = new Set(planProgress?.completedQuestionIds || []);
-    const planItems = (activePlan?.items || []).map((item) => ({
+    const currentPlanQuestionIds = new Set(planProgress?.currentQuestionIds || []);
+    const planItems = (activePlan?.items || []).filter((item) => currentPlanQuestionIds.has(item.questionId)).map((item) => ({
       ...item,
       question: gradeQuestions.find((question) => question.id === item.questionId) || null,
-      completed: planCompleted.has(item.questionId)
+      completed: planCompleted.has(item.questionId),
+      available: Boolean(planProgress?.currentSessionAvailable)
     })).filter((item) => item.question);
-    const nextPlanItem = planItems.find((item) => !item.completed);
+    const nextPlanItem = planItems.find((item) => !item.completed && item.available);
     const next = nextPlanItem
       ? { question: nextPlanItem.question, reasons: [`教师专项：${nextPlanItem.purpose}`, nextPlanItem.reason] }
       : recommendations[0]
@@ -553,21 +759,33 @@
     });
     const dailyTest = learning ? engine.dailyTest(learning, questions, {
       count: 5,
-      date: new Date().toISOString().slice(0, 10)
+      date: window.PHYSICS_LEARNING_ENGINE.localCalendarDateKey()
     }) : null;
-    const analysis = learning ? engine.studentAnalysis(learning, gradeQuestions) : null;
-    const placement = learning && engine?.generatePlacementDiagnostic
+    const analysis = options.includeAnalysis && learning ? engine.studentAnalysis(learning, gradeQuestions) : null;
+    const placement = options.includePlacement && learning && engine?.generatePlacementDiagnostic
       ? engine.generatePlacementDiagnostic(learning, gradeQuestions, {
         profileId: learning.activeProfileId,
         count: 24,
         seed: `${learning.activeProfileId}|${experience.grade}|placement`
       })
-      : null;
+      : learning ? {
+        summaryOnly: true,
+        title: `${experience.grade}学期初物理摸底诊断`,
+        questionCount: "20–30",
+        misconceptionQuestionCount: 0,
+        blueprintCoverage: { coveredCount: 0, targetCount: 0 },
+        capabilityCoverage: { coveredCount: 0, targetCount: 8 },
+        coverage: { coveredTopics: [], availableTopics: [] }
+      } : null;
+    const placementState = learning && engine?.placementStatus
+      ? engine.placementStatus(learning, learning.activeProfileId)
+      : { status: "not-started", label: "开始摸底", actionable: true };
     const broadCoverage = learning && engine?.scheduleBroadCoverageCheck
       ? engine.scheduleBroadCoverageCheck(learning, gradeQuestions, {
         profileId: learning.activeProfileId,
         count: 20,
-        includePreview: true
+        includePreview: options.includeBroadCoverage === true,
+        deferPreview: true
       })
       : null;
     const closedLoop = summary.closedLoop
@@ -585,11 +803,12 @@
     const curriculumSectionCount = curriculumBooks.reduce((sum, book) => {
       return sum + book.chapters.reduce((chapterSum, chapter) => chapterSum + chapter.sections.length, 0);
     }, 0);
-    return {
+    const data = {
       questions,
       gradeQuestions,
       learning,
       summary,
+      knowledgePointEvidence,
       recommendations,
       activePlan,
       planProgress,
@@ -602,6 +821,7 @@
       dailyTest,
       analysis,
       placement,
+      placementState,
       broadCoverage,
       closedLoop,
       evidence,
@@ -611,6 +831,16 @@
       allCurriculumBooks,
       curriculumSectionCount
     };
+    studentDataCache = {
+      data,
+      questionSignature,
+      learningUpdatedAt: String(learning?.updatedAt || ""),
+      activeProfileId: String(learning?.activeProfileId || ""),
+      role: experience.role,
+      grade: experience.grade,
+      experienceUpdatedAt: String(experience.updatedAt || "")
+    };
+    return data;
   }
 
   function getCurriculumBooks(grade = experience.grade) {
@@ -625,20 +855,21 @@
 
   function moduleMetric(module, data) {
     const counts = data.summary.mastery?.counts || {};
-    const evidenced = data.evidence.filter((item) => item.evidence.code !== "not-started").length;
+    const evidenced = data.knowledgePointEvidence?.evidencedKnowledgePoints || 0;
+    const denominator = data.knowledgePointEvidence?.totalKnowledgePoints || 0;
     const metrics = {
       library: `${data.gradeQuestions.length} 道`,
       wrong: `${data.wrongQuestions.length} 道`,
       videos: data.videoQuestions.length ? `${data.videoQuestions.length} 个视频` : `${data.gradeQuestions.length} 个动态讲解`,
       mastered: `${data.masteredQuestions.length} 道`,
-      progress: `${evidenced}/${data.gradeQuestions.length}`,
+      progress: `${evidenced}/${denominator}`,
       curriculum: `${data.curriculumBooks.length} 册 · ${data.curriculumSectionCount} 节`,
       analysis: `${data.summary.completed} 次作答`,
       lab: "8 个学习工具",
       advice: `${Math.max(1, data.recommendations.length)} 项建议`
     };
     if (module.view === "progress" && counts["待复习"]) {
-      return `${evidenced}/${data.gradeQuestions.length} · ${counts["待复习"]} 待复习`;
+      return `${evidenced}/${denominator} · ${counts["待复习"]} 待复习`;
     }
     return metrics[module.view] || "";
   }
@@ -659,7 +890,7 @@
               <i aria-hidden="true">→</i>
             </button>`).join("")}
         </div>
-      </section>`;
+       </section>`;
   }
 
   function renderModuleHeader(kicker, title, description, backView = "practice") {
@@ -714,8 +945,8 @@
   }
 
   function renderDiagnosticPrompt(data) {
-    const evidenceLevel = data.analysis?.evidenceLevel || "不足";
-    const placementNeeded = evidenceLevel === "不足";
+    const placementStatus = data.placementState?.status || "not-started";
+    const placementNeeded = ["not-started", "in-progress", "legacy-unknown"].includes(placementStatus);
     const broad = data.broadCoverage;
     const streak = data.closedLoop;
     const earnedBadge = streak?.badges?.filter((badge) => badge.earned).at(-1);
@@ -724,10 +955,10 @@
       <section class="diagnostic-prompt-grid">
         ${placementNeeded && data.placement ? `
           <article class="diagnostic-prompt-card primary">
-            <span>新学生起步</span>
+            <span>${placementStatus === "in-progress" ? "继续摸底" : placementStatus === "legacy-unknown" ? "历史档案需补做摸底" : "新学生起步"}</span>
             <h2>${escapeHtml(data.placement.title)}</h2>
-            <p>${data.placement.questionCount} 题 · ${data.placement.misconceptionQuestionCount} 道前概念辨析 · 已覆盖 ${data.placement.coverage.coverageRate}% 当前题库知识点。</p>
-            <button data-shell-action="open-placement" type="button">查看并开始摸底</button>
+            <p>${data.placement.questionCount} 题 · ${data.placement.misconceptionQuestionCount} 道前概念辨析 · 本次蓝图覆盖 ${data.placement.blueprintCoverage?.coveredCount ?? data.placement.coverage.coveredTopics.length}/${data.placement.blueprintCoverage?.targetCount ?? data.placement.coverage.availableTopics.length} 个目标知识点、${data.placement.capabilityCoverage?.coveredCount ?? 0}/${data.placement.capabilityCoverage?.targetCount ?? 8} 个认知维度。</p>
+            <button data-shell-action="open-placement" type="button">${placementStatus === "in-progress" ? "继续摸底" : placementStatus === "legacy-unknown" ? "补全摸底" : "开始摸底"}</button>
           </article>` : ""}
         ${broad?.due && broad.paper ? `
           <article class="diagnostic-prompt-card">
@@ -749,23 +980,29 @@
     const plan = data.activePlan;
     if (!plan || !data.planItems.length) return "";
     const progress = data.planProgress || { completed: 0, total: data.planItems.length, percent: 0 };
+    const currentSession = progress.currentSession;
+    const sessionWaiting = currentSession && !currentSession.available;
+    const dueLabel = currentSession?.dueAt
+      ? new Date(currentSession.dueAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })
+      : "待前一阶段完成";
     return `
       <section class="assigned-plan-card">
         <header>
-          <div><span>教师已确认的专项方案</span><h2>${escapeHtml(plan.title)}</h2></div>
+          <div><span>当前学习时段 · ${escapeHtml(currentSession?.title || "专项训练")}</span><h2>${escapeHtml(plan.title)}</h2></div>
           <strong>${progress.completed}/${progress.total}</strong>
         </header>
-        <p>${escapeHtml(plan.evidenceReason)}${plan.teacherNote ? ` · 教师说明：${escapeHtml(plan.teacherNote)}` : ""}</p>
+        <p>${escapeHtml(plan.evidenceReason)}${plan.teacherNote ? ` · 教师说明：${escapeHtml(plan.teacherNote)}` : ""} · 本次约 ${Number(currentSession?.expectedMinutes || plan.expectedMinutes || 15)} 分钟</p>
+        ${sessionWaiting ? `<p class="tool-help">本时段尚未开放：${escapeHtml(currentSession.status === "scheduled" ? `延迟复测安排在 ${dueLabel}` : "请先完成上一时段")}。为避免即时重复记忆影响复测，暂不提前开放题目。</p>` : ""}
         <div class="assigned-plan-track" role="progressbar" aria-valuemin="0" aria-valuemax="${progress.total}" aria-valuenow="${progress.completed}"><i style="width:${progress.percent}%"></i></div>
         <ol>
           ${data.planItems.map((item, index) => `
             <li class="${item.completed ? "completed" : ""}">
               <i>${item.completed ? "✓" : index + 1}</i>
               <div><strong>${escapeHtml(item.purpose)}</strong><span>${escapeHtml(item.question.title)} · ${escapeHtml(item.reason)}</span></div>
-              <button data-start-question="${escapeHtml(item.question.id)}" type="button">${item.completed ? "复盘" : "开始"}</button>
+              <button data-start-question="${escapeHtml(item.question.id)}" type="button"${item.available ? "" : " disabled"}>${item.completed ? "复盘" : item.available ? "开始" : "未开放"}</button>
             </li>`).join("")}
         </ol>
-        <small>${escapeHtml(plan.selectionRule)}</small>
+        <small>${escapeHtml(plan.selectionRule)}；完整方案分 ${progress.sessions?.filter((session) => session.status !== "not-required").length || 1} 个时段，学生首页一次只显示当前时段。</small>
       </section>`;
   }
 
@@ -820,9 +1057,9 @@
       </div>
       ${experience.studentExternalLinks ? `
         <div class="student-external-search">
-          <span>外部题源访问已由教师/家长设置开启</span>
-          <button data-shell-action="external-search" type="button">用 Edge/Bing 搜外部网站 ↗</button>
-        </div>` : '<p class="student-safe-search">学生模式默认只搜索站内试题；外部网站访问已关闭。</p>'}
+          <span>联网检索默认开启；离开应用前仍会提示，外部结果不直接写入学情证据</span>
+          <button data-shell-action="external-search" type="button">用 Edge/Bing 查解题线索 ↗</button>
+        </div>` : '<p class="student-safe-search">外部网站访问已由教师/家长关闭；站内题库和学习分析仍可离线使用。</p>'}
       ${renderDailyTest(data.dailyTest)}`;
   }
 
@@ -910,6 +1147,7 @@
   function studentQuestionCard(question, data, options = {}) {
     const evidence = evidenceFor(data, question.id);
     const actualVideo = hasQuestionVideo(question);
+    const hasModel = Boolean(window.PHYSICS_VISUALS?.modelForQuestion?.(question));
     const showDetail = options.showDetail !== false;
     const showMethod = options.showMethod !== false;
     return `
@@ -917,7 +1155,7 @@
         <div class="student-question-body">
           <div class="question-meta-row">
             <span>${escapeHtml(question.grade || question.stage)} · ${escapeHtml(question.difficulty)} · ${escapeHtml(question.questionType || "物理题")}</span>
-            <small class="evidence-${escapeHtml(evidence.code || "not-started")}">${escapeHtml(evidence.status || "未开始")}</small>
+            <small class="evidence-${escapeHtml(evidence.code || "not-started")}">${escapeHtml(engine?.masteryDisplayLabel?.(evidence) || evidence.status || "未开始")}</small>
           </div>
           <h2>${escapeHtml(question.title)}</h2>
           <p class="question-excerpt">${escapeHtml(shortText(question.content, options.compact ? 80 : 150))}</p>
@@ -929,6 +1167,7 @@
         </div>
         <div class="student-question-actions">
           <button class="primary" data-start-question="${escapeHtml(question.id)}" type="button">独立作答</button>
+          ${hasModel ? `<button data-open-question-model="${escapeHtml(question.id)}" type="button">关联模型</button>` : ""}
           ${showDetail ? `<button data-question-detail="${escapeHtml(question.id)}" type="button">详细解析</button>` : ""}
           ${showMethod ? `<button data-method-question="${escapeHtml(question.id)}" type="button">${actualVideo ? "视频与方法" : "方法讲解"}</button>` : ""}
         </div>
@@ -937,10 +1176,12 @@
 
   function questionTypeGroup(question) {
     const type = String(question.questionType || question.examQuestionType || "");
+    if (!type || type === "未标注") return "未标注";
     if (/选择|判断/.test(type)) return "选择题";
     if (/填空/.test(type)) return "填空题";
     if (/实验|探究/.test(type)) return "实验题";
-    return "计算与综合";
+    if (/计算/.test(type)) return "计算与综合";
+    return "未标注";
   }
 
   function renderLibrary(data) {
@@ -952,7 +1193,7 @@
       .sort((a, b) => a.localeCompare(b, "zh-CN"));
     const topics = uniqueValues(available.map((question) => question.topic))
       .sort((a, b) => a.localeCompare(b, "zh-CN"));
-    const questionTypes = ["选择题", "填空题", "实验题", "计算与综合"];
+    const questionTypes = ["选择题", "填空题", "实验题", "计算与综合", "未标注"];
     const typeCounts = Object.fromEntries(questionTypes.map((type) => [
       type,
       available.filter((question) => questionTypeGroup(question) === type).length
@@ -1057,27 +1298,29 @@
         ${wrongQuestions.length ? wrongQuestions.map((question) => {
           const evidence = evidenceFor(data, question.id);
           const latest = evidence.latest;
+          const hasModel = Boolean(window.PHYSICS_VISUALS?.modelForQuestion?.(question));
           return `
             <article class="student-question-card wrong">
               <div class="student-question-body">
-                <div class="question-meta-row"><span>${escapeHtml(question.topic)} · ${escapeHtml(evidence.status || "待订正")}</span><small>${evidence.attempts || 0} 次作答</small></div>
+                <div class="question-meta-row"><span>${escapeHtml(question.topic)} · ${escapeHtml(engine?.masteryDisplayLabel?.(evidence) || evidence.status || "待订正")}</span><small>${evidence.attempts || 0} 次作答</small></div>
                 <h2>${escapeHtml(question.title)}</h2>
                 <p>${latest?.errorType ? `上次归因：${escapeHtml(latest.errorType)}` : "尚未完成结构化错误归因"}${Number(latest?.hintLevel) >= 3 ? ` · 使用过第 ${latest.hintLevel} 级提示` : ""}</p>
                 <div class="question-point-row">${(question.examPoints || [question.topic]).slice(0, 3).map((point) => `<span>${escapeHtml(point)}</span>`).join("")}</div>
               </div>
               <div class="student-question-actions">
                 <button class="primary" data-start-question="${escapeHtml(question.id)}" type="button">重新订正</button>
+                ${hasModel ? `<button data-open-question-model="${escapeHtml(question.id)}" type="button">关联模型</button>` : ""}
                 <button data-question-detail="${escapeHtml(question.id)}" type="button">核对解析</button>
                 <button data-similar-topic="${escapeHtml(question.topic)}" type="button">同类迁移</button>
               </div>
             </article>`;
-        }).join("") : '<div class="student-empty"><strong>当前没有待订正或薄弱题</strong><span>正式作答中的错误、高提示依赖或低建模评分会进入这里；你也可以用右下角“拍题”收录纸面错题。</span></div>'}
+        }).join("") : '<div class="student-empty"><strong>当前没有待订正或薄弱题</strong><span>正式作答中的错误或高提示依赖会进入这里；需要检查的建模记录只作为复核线索，不单独判定知识点薄弱。你也可以用右下角“拍题”收录纸面错题。</span></div>'}
       </div>
       <section class="wrong-history">
         <header><div><span>RECENT EVIDENCE</span><h2>近期订正证据</h2></div><button data-student-view="progress" type="button">查看掌握进度 →</button></header>
         ${recentCorrections.length ? recentCorrections.map((item) => `
           <article>
-            <div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(item.evidence.status)} · ${escapeHtml(item.evidence.reasons.slice(0, 2).join("；"))}</span></div>
+             <div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(engine?.masteryDisplayLabel?.(item.evidence) || item.evidence.status)} · ${escapeHtml(item.evidence.reasons.slice(0, 2).join("；"))}</span></div>
             <button data-start-question="${escapeHtml(item.question.id)}" type="button">继续</button>
           </article>`).join("") : "<p>尚无正式作答记录。完成订正后，这里会显示状态变化所依据的证据。</p>"}
       </section>`;
@@ -1172,14 +1415,14 @@
       <section class="mastered-summary-grid">
         <article><strong>${mastered.filter((item) => item.evidence.code === "mastered").length}</strong><span>已掌握</span></article>
         <article><strong>${mastered.filter((item) => item.evidence.code === "due").length}</strong><span>已掌握但待复习</span></article>
-        <article><strong>${data.summary.mastery.masteryRate}%</strong><span>当前题库掌握率</span></article>
+         <article><strong>${data.knowledgePointEvidence?.coverageLabel || "0/0"}</strong><span>知识点已有证据（已有证据/可评估）</span></article>
       </section>
       <section class="mastery-evidence-guide">
         <header><span>MASTERY PATH</span><h2>从“做过”到“掌握”的证据路径</h2></header>
         <div>
           ${[
             ["1", "首次独立尝试", "先作答再看提示；即使答错，也能形成真实起点证据。"],
-            ["2", "低提示正确", "提示等级不高于1且结论正确，状态可进入“熟练”。"],
+             ["2", "低提示正确", "提示等级不高于1且结论正确，只记录为“已有独立正确证据”。"],
             ["3", "跨日期再现", "在不同日期重新独立完成，排除短时记住答案的影响。"],
             ["4", "跨情境迁移", "完成结构相同、表面不同的变式，并写出关键规律。"],
             ["5", "到期主动提取", "达到掌握后仍按复习时间重做；到期未复习显示为“待复习”。"]
@@ -1191,7 +1434,7 @@
         ${mastered.length ? mastered.map((item) => `
           <article class="student-question-card mastered">
             <div class="student-question-body">
-              <div class="question-meta-row"><span>${escapeHtml(item.question.topic)}</span><small class="evidence-${escapeHtml(item.evidence.code)}">${escapeHtml(item.evidence.status)}</small></div>
+               <div class="question-meta-row"><span>${escapeHtml(item.question.topic)}</span><small class="evidence-${escapeHtml(item.evidence.code)}">${escapeHtml(engine?.masteryDisplayLabel?.(item.evidence) || item.evidence.status)}</small></div>
               <h2>${escapeHtml(item.question.title)}</h2>
               <p>${escapeHtml(item.evidence.reasons.join("；"))}</p>
             </div>
@@ -1210,20 +1453,23 @@
       <section class="near-mastery">
         <header><div><span>NEXT MILESTONE</span><h2>接近掌握</h2></div><button data-student-view="progress" type="button">查看全部状态 →</button></header>
         ${near.length ? near.map((item) => `
-          <article><div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(item.evidence.status)} · ${escapeHtml(item.evidence.reasons.join("；"))}</span></div><button data-start-question="${escapeHtml(item.question.id)}" type="button">继续取证</button></article>`).join("")
+          <article><div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(engine?.masteryDisplayLabel?.(item.evidence) || item.evidence.status)} · ${escapeHtml(item.evidence.reasons.join("；"))}</span></div><button data-start-question="${escapeHtml(item.question.id)}" type="button">继续取证</button></article>`).join("")
           : "<p>先完成正式作答，系统才会计算接近掌握的证据。</p>"}
       </section>`;
   }
 
   function renderProgress(data) {
-    const counts = data.summary.mastery?.counts || {};
+    const counts = data.evidence.reduce((result, item) => {
+      result[item.evidence.code] = (result[item.evidence.code] || 0) + 1;
+      return result;
+    }, {});
     const statusMap = {
       "未开始": "not-started",
       "学习中": "learning",
-      "熟练": "proficient",
+      "已有独立正确证据": "proficient",
       "已掌握": "mastered",
       "待复习": "due",
-      "薄弱": "weak"
+      "需巩固": "weak"
     };
     const selectedCode = statusMap[ui.progressState] || "";
     const selected = data.evidence.filter((item) => !selectedCode || item.evidence.code === selectedCode);
@@ -1233,15 +1479,15 @@
       <section class="progress-state-grid">
         ${Object.entries(statusMap).map(([label, code]) => `
           <button class="${ui.progressState === label ? "active" : ""}" data-progress-state="${escapeHtml(label)}" type="button">
-            <strong>${counts[label] || 0}</strong><span>${label}</span><small>${progressStateDescription(code)}</small>
+            <strong>${counts[code] || 0}</strong><span>${label}</span><small>${progressStateDescription(code)}</small>
           </button>`).join("")}
       </section>
       <section class="progress-overview">
         <div>
-          <span>题库掌握率</span><strong>${data.summary.mastery?.masteryRate || 0}%</strong>
-          <i><b style="width:${data.summary.mastery?.masteryRate || 0}%"></b></i>
+          <span>知识点证据覆盖</span><strong>${data.knowledgePointEvidence?.coverageLabel || "0/0"}</strong>
+          <i><b style="width:${data.knowledgePointEvidence?.coverageRate || 0}%"></b></i>
         </div>
-        <p>分母为当前 ${escapeHtml(experience.grade)} 的 ${data.gradeQuestions.length} 道完整题。未开始题保留在分母中，避免只练少数题造成虚高。</p>
+        <p>分母为当前 ${escapeHtml(experience.grade)} 的 ${data.knowledgePointEvidence?.totalKnowledgePoints || 0} 个可评估知识点；重复练习同一知识点不会单独提高覆盖结论。</p>
       </section>
       <section class="chapter-progress-section">
         <header><div><span>CHAPTER COVERAGE</span><h2>章节学习覆盖</h2></div><button data-student-view="curriculum" type="button">打开教材目录 →</button></header>
@@ -1448,7 +1694,7 @@
     const analysis = data.analysis || {};
     const radar = data.learning ? engine?.modelingRadar?.(data.learning) || [] : [];
     const errors = learningErrorCounts(data.learning);
-    const misconceptions = (data.summary.misconceptionProfile || []).filter((item) => item.evidenceCount || item.risk).slice(0, 6);
+    const misconceptions = (data.summary.misconceptionProfile || []).filter((item) => item.evidenceCount > 0).slice(0, 6);
     const weakest = analysis.weakest || [];
     const strongest = analysis.strongest || [];
     const knowledgePoints = analysis.knowledgePoints || [];
@@ -1457,7 +1703,8 @@
       ${renderModuleHeader("PERSONAL LEARNING EVIDENCE", "本人学情分析", "结合正确率、独立完成、提示依赖、建模步骤、错因、复习和试卷记录形成可解释分析。", "profile")}
       <section class="analysis-evidence-note">
         <strong>${escapeHtml(analysis.conclusion || "当前尚无正式作答证据，不能形成可靠薄弱判断。")}</strong>
-        <p>${escapeHtml(analysis.boundary || "本报告是形成性分析，不是标准化能力诊断。")}</p>
+         <p>${escapeHtml(analysis.evidenceCoverage?.reason || "证据不足：尚未覆盖足够的可评估知识点。")}</p>
+         <p>${escapeHtml(analysis.boundary || "本报告是形成性分析，不是标准化能力诊断。")}</p>
       </section>
       <details class="knowledge-evidence-matrix" open>
         <summary>
@@ -1470,19 +1717,19 @@
             <article class="evidence-${escapeHtml(item.code)}">
               <header><strong>${escapeHtml(item.topic)}</strong><span>${escapeHtml(item.status)}</span></header>
               <p>${item.sampleSize} 条证据 · 正式作答 ${item.attemptCount} 次 · 迁移成功 ${item.transferSuccessCount} 次</p>
-              <small>最近证据：${item.latestEvidenceDate ? escapeHtml(item.latestEvidenceDate) : "无"}${item.attemptCount ? ` · 正确率 ${item.accuracy}% · 平均提示 ${item.averageHint}` : ""}</small>
+              <small>最近证据：${item.latestEvidenceDate ? escapeHtml(item.latestEvidenceDate) : "无"}${item.attemptCount ? ` · ${item.accuracy == null ? "暂无可评分证据" : `正确率 ${item.accuracy}%`} · 待复核 ${item.pendingReviewCount || 0} · 平均提示 ${item.averageHint}` : ""}</small>
               <button data-topic-filter="${escapeHtml(item.topic)}" type="button">打开对应练习</button>
             </article>`).join("") || "<p>当前年级题库尚未形成可核对的知识点目录。</p>"}
         </div>
         <small>${escapeHtml(analysis.abilityProfile?.evidenceRule || "结论依据样本量、最近证据、提示依赖、跨日正确与迁移表现。")}</small>
       </details>
       <section class="analysis-metric-grid">
-        <article><strong>${data.summary.accuracy || 0}%</strong><span>作答正确率</span><small>${data.summary.correct || 0}/${data.summary.completed || 0} 次</small></article>
-        <article><strong>${data.summary.independenceRate || 0}%</strong><span>独立完成率</span><small>正确且提示等级≤1</small></article>
+        <article><strong>${data.summary.accuracy == null ? "暂无" : `${data.summary.accuracy}%`}</strong><span>作答正确率</span><small>${data.summary.correct || 0}/${data.summary.completed || 0} 次 · 待复核 ${data.summary.pendingReviewCount || 0}</small></article>
+        <article><strong>${data.summary.independenceRate == null ? "暂无" : `${data.summary.independenceRate}%`}</strong><span>独立完成率</span><small>正确且提示等级≤1</small></article>
         <article><strong>${data.summary.averageHint || 0}</strong><span>平均提示等级</span><small>越低表示依赖越少</small></article>
         <article><strong>${data.summary.learningMinutes || 0}</strong><span>累计学习分钟</span><small>来自正式作答计时</small></article>
         <article><strong>${data.summary.dueCount || 0}</strong><span>到期复习</span><small>按间隔复习调度</small></article>
-        <article><strong>${data.summary.mastery?.masteryRate || 0}%</strong><span>题库掌握率</span><small>按行为证据判定</small></article>
+         <article><strong>${data.knowledgePointEvidence?.coverageLabel || "0/0"}</strong><span>知识点证据覆盖</span><small>已有证据知识点 / 可评估知识点</small></article>
       </section>
       <section class="ability-evidence-strip">
         <div><span>作答题型证据</span>${(analysis.abilityProfile?.questionTypes || []).map((item) => `<strong>${escapeHtml(item.label)} <b>${item.count}</b></strong>`).join("") || "<small>尚无题型作答证据</small>"}</div>
@@ -1494,7 +1741,7 @@
           ${weakest.length ? weakest.map((topic) => `
             <article>
               <div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts
-                ? `${topic.attempts} 次作答 · 正确率 ${topic.accuracy}% · 提示 ${topic.averageHint}`
+                ? `${topic.attempts} 次作答 · ${topic.accuracy == null ? "暂无可评分证据" : `正确率 ${topic.accuracy}%`} · 待复核 ${topic.pendingReviewCount || 0} · 提示 ${topic.averageHint}`
                 : `试卷薄弱项记录 ${topic.examMentions || 0} 次 · 尚无专项作答`}</span></div>
               <i><b style="width:${topic.attempts ? topic.averageScore : Math.min(100, 25 + (topic.examMentions || 0) * 15)}%"></b></i>
               <button data-topic-filter="${escapeHtml(topic.topic)}" type="button">专项练习</button>
@@ -1503,12 +1750,12 @@
         <section class="analysis-topic-card strong">
           <header><span>RELATIVE STRENGTH</span><h2>当前相对稳定</h2></header>
           ${strongest.length ? strongest.map((topic) => `
-            <article><div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts} 次记录 · 平均得分 ${topic.averageScore}%</span></div><i><b style="width:${topic.averageScore}%"></b></i></article>`).join("")
+            <article><div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts} 次记录 · 平均得分 ${topic.averageScore == null ? "暂无可评分证据" : `${topic.averageScore}%`}</span></div><i><b style="width:${topic.averageScore == null ? 0 : topic.averageScore}%"></b></i></article>`).join("")
             : "<p>记录不足，暂不标记优势模块。</p>"}
         </section>
       </div>
       <section class="modeling-analysis-card">
-        <header><div><span>MODELING RADAR</span><h2>物理建模能力证据</h2></div><button data-student-view="lab" type="button">进入建模训练 →</button></header>
+         <header><div><span>MODELING RECORD</span><h2>建模记录完整度（规则值）</h2></div><button data-student-view="lab" type="button">进入建模训练 →</button></header>
         <div class="modeling-axis-list">
           ${radar.map((axis) => `<article><span>${escapeHtml(axis.label)}</span><i><b style="width:${axis.value}%"></b></i><strong>${axis.value}%</strong></article>`).join("")
             || "<p>尚无建模步骤评分，不能绘制雷达证据。</p>"}
@@ -1522,7 +1769,7 @@
         </section>
         <section class="misconception-analysis-card">
           <header><span>MISCONCEPTION</span><h2>前概念诊断</h2></header>
-          ${misconceptions.length ? misconceptions.map((item) => `<article><div><strong>${escapeHtml(item.title || item.label || item.code)}</strong><span>${escapeHtml(item.status)}</span></div><small>${item.evidenceCount} 次诊断证据 · 风险 ${item.risk}/5</small></article>`).join("")
+          ${misconceptions.length ? misconceptions.map((item) => `<article><div><strong>${escapeHtml(item.title || item.label || item.code)}</strong><span>${escapeHtml(item.status)}</span></div><small>${item.evidenceCount} 次诊断证据 · 单次结果不会自动升级为稳定误概念</small></article>`).join("")
             : '<p>还没有“答案＋理由＋置信度”诊断记录。可在学习实验室完成前概念诊断。</p>'}
           <button data-shell-action="open-diagnostic" type="button">开始概念诊断</button>
         </section>
@@ -1539,7 +1786,7 @@
 
   function renderStudentLab(data) {
     const tools = [
-      ["diagnostic", "◎", "前概念诊断", "用答案、理由和置信度区分不会、猜对与稳定误概念。"],
+       ["diagnostic", "◎", "前概念诊断", "用答案、理由和置信度区分不会、猜对与待验证误概念；稳定风险需独立证据确认。"],
       ["tutor", "?", "苏格拉底导师", "按研究对象、过程、规律和条件逐级追问，不立即泄露答案。"],
       ["models", "⌬", "模型与可视化", "联动物理量、方程、受力图、运动图像和动态过程。"],
       ["transfer", "⇄", "迁移训练", "练结构相同但情境不同的题，并加入不适用规律的反例。"],
@@ -1659,19 +1906,23 @@
       ${renderStudentModuleDirectory(data, "我的学习档案与工具")}
       <section class="student-report-card">
         <div class="report-metrics">
-          <article><strong>${data.summary.independenceRate}%</strong><span>独立完成率</span></article>
+          <article><strong>${data.summary.independenceRate == null ? "暂无" : `${data.summary.independenceRate}%`}</strong><span>独立完成率</span></article>
           <article><strong>${data.summary.averageHint}</strong><span>平均提示等级</span></article>
           <article><strong>${data.summary.learningMinutes}</strong><span>学习分钟</span></article>
         </div>
-        <button data-shell-action="open-review" type="button">查看完整学习报告 →</button>
+       <button data-shell-action="open-review" type="button">查看完整学习报告 →</button>
+      </section>
+      <section class="my-learning-subareas">
+        <header><span>MY LEARNING</span><h2>我的学习</h2><p>掌握证据、学习进度、本人学情和学习建议集中在这里。</p></header>
+        <div><button data-student-view="mastered" type="button">已有掌握证据</button><button data-student-view="progress" type="button">学习进度</button><button data-student-view="analysis" type="button">本人学情分析</button><button data-student-view="advice" type="button">学习建议</button></div>
       </section>
       <section class="mastery-status-card">
-        <header><div><span>知识掌握证据</span><h2>${mastery.masteryRate}% 达到掌握标准</h2></div><button data-shell-action="mastery-help" type="button">规则说明</button></header>
-        <div>${Object.entries(mastery.counts).map(([label, count]) => `<article><strong>${count}</strong><span>${escapeHtml(label)}</span></article>`).join("")}</div>
+         <header><div><span>知识点证据覆盖</span><h2>${data.knowledgePointEvidence?.coverageLabel || "0/0"} 已有证据</h2></div><button data-shell-action="mastery-help" type="button">规则说明</button></header>
+        <div>${Object.entries(mastery.counts).map(([label, count]) => `<article><strong>${count}</strong><span>${escapeHtml(engine?.masteryDisplayLabel?.(label) || label)}</span></article>`).join("")}</div>
       </section>
       <section class="topic-evidence-card">
         <h2>知识点表现</h2>
-        ${topics.length ? topics.map((topic) => `<article><div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts} 次记录 · 提示 ${topic.averageHint}</span></div><i><b style="width:${topic.averageScore}%"></b></i><small>${topic.averageScore}%</small></article>`).join("") : "<p>完成正式作答后，这里才会生成知识点证据。</p>"}
+        ${topics.length ? topics.map((topic) => `<article><div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts} 次记录 · 提示 ${topic.averageHint}</span></div><i><b style="width:${topic.averageScore == null ? 0 : topic.averageScore}%"></b></i><small>${topic.averageScore == null ? "暂无可评分证据" : `${topic.averageScore}%`}</small></article>`).join("") : "<p>完成正式作答后，这里才会生成知识点证据。</p>"}
       </section>
       <section class="student-growth-card">
         <header><div><span>成长档案</span><h2>近期学习证据</h2></div><strong>${data.analysis?.growthTimeline?.length || 0} 条</strong></header>
@@ -1685,7 +1936,7 @@
       <section class="student-tool-list">
         <button data-shell-action="open-sensors" type="button"><span>⌁</span><div><strong>手机实验室</strong><small>传感器、数据与探究记录</small></div><i>→</i></button>
         <button data-shell-action="open-diagnostic" type="button"><span>◎</span><div><strong>前概念诊断</strong><small>识别稳定错误观念，不只统计错题</small></div><i>→</i></button>
-        <button data-shell-action="classroom" type="button"><span>班</span><div><strong>加入老师班级</strong><small>登录班级账号并用邀请码加入；本机档案不会自动上传</small></div><i>→</i></button>
+        <button data-shell-action="classroom" type="button"><span>班</span><div><strong>加入老师班级</strong><small>联网时自动同步班级；Edge 优先打开外部链接，离线仍保留本机档案</small></div><i>→</i></button>
         <button data-shell-action="open-settings" type="button"><span>⚙</span><div><strong>身份与学习设置</strong><small>修改年级、教材和近期目标</small></div><i>→</i></button>
         <button data-shell-action="feedback" type="button"><span>✉</span><div><strong>用户反馈</strong><small>打开邮件应用，确认后发送至 luo865265@gmail.com</small></div><i>→</i></button>
       </section>
@@ -1693,7 +1944,7 @@
         <div><strong>题干字号</strong><span>支持浏览器双指缩放；这里调整默认字号。</span></div>
         <div><button data-font-scale="-0.1" type="button" aria-label="缩小字号">A−</button><strong>${Math.round(experience.fontScale * 100)}%</strong><button data-font-scale="0.1" type="button" aria-label="放大字号">A＋</button></div>
       </section>
-      <p class="student-safety-note">外部网站访问：${experience.studentExternalLinks ? "已由教师/家长设置开启" : "默认关闭"}。学习状态来自行为证据，不允许手动勾选“已掌握”。</p>`;
+        <p class="student-safety-note">外部网站访问：${experience.studentExternalLinks ? "默认开启，离站前仍需确认" : "已由教师/家长关闭"}。外部搜索结果不直接进入学情证据；学习状态来自行为证据，不允许手动勾选“已掌握”。</p>`;
   }
 
   function renderParent() {
@@ -1709,7 +1960,7 @@
         <div class="parent-metrics">
           <article><strong>${data.summary.learningMinutes}</strong><span>累计学习分钟</span><small>${data.summary.completed} 次正式作答</small></article>
           <article><strong>${weekReviewed}</strong><span>本周完成复习</span><small>当前待复习 ${data.summary.dueCount} 道</small></article>
-          <article><strong>${data.summary.independenceRate}%</strong><span>独立完成率</span><small>低提示正确占比</small></article>
+          <article><strong>${data.summary.independenceRate == null ? "暂无" : `${data.summary.independenceRate}%`}</strong><span>独立完成率</span><small>低提示正确占比</small></article>
         </div>
         <section class="parent-support">
           <h2>近期可支持的知识模块</h2>
@@ -1734,19 +1985,24 @@
     bar.innerHTML = `
       <div><span>教师模式</span><strong>内容管理、审核、组卷与学习证据</strong></div>
       <div>
-        <label class="teacher-link-setting"><input id="teacherExternalLinks" type="checkbox"${experience.studentExternalLinks ? " checked" : ""}><span>允许学生访问外部题源</span></label>
-        <button data-teacher-action="metrics" type="button">上线验证指标</button>
-        <button data-teacher-action="classroom" type="button">班级管理</button>
         <button data-teacher-action="center" type="button">打开教师中心</button>
-        <button data-teacher-action="feedback" type="button">用户反馈</button>
+        <button data-teacher-action="classroom" type="button">打开班级</button>
+        <button data-teacher-action="lock" type="button">锁定教师模式</button>
         <button data-teacher-action="switch" type="button">切换身份</button>
       </div>`;
     bar.onclick = handleTeacherBarClick;
-    bar.querySelector("#teacherExternalLinks").onchange = (event) => {
-      experience.studentExternalLinks = event.target.checked;
-      saveExperience();
-      recordEvent("student-external-links-setting", { enabled: experience.studentExternalLinks });
-    };
+  }
+
+  function renderLockedTeacherBar() {
+    let bar = document.getElementById("teacherExperienceBar");
+    if (!bar) {
+      bar = document.createElement("section");
+      bar.id = "teacherExperienceBar";
+      bar.className = "teacher-experience-bar teacher-mode-locked";
+      document.querySelector(".main")?.prepend(bar);
+    }
+    bar.innerHTML = `<div><span>教师模式已锁定</span><strong>本地教师管理需要 PIN 解锁；学生体验不能通过普通角色切换取得教师权限。</strong></div><div><button data-teacher-action="unlock" type="button">解锁教师管理</button><button data-teacher-action="switch" type="button">切换身份</button></div>`;
+    bar.onclick = handleTeacherBarClick;
   }
 
   function removeTeacherBar() {
@@ -1759,6 +2015,12 @@
     else if (action === "metrics") showMetrics();
     else if (action === "classroom") openClassroom();
     else if (action === "feedback") openFeedbackEmail();
+    else if (action === "unlock") ensureTeacherUnlocked().then(() => renderRoleExperience());
+    else if (action === "lock") {
+      window.PhysicsStudioTeacherLock?.lock();
+      renderRoleExperience();
+      document.dispatchEvent(new CustomEvent("physics-experience-role-changed", { detail: { role: experience.role, locked: true } }));
+    }
     else if (action === "switch") showOnboarding(true);
   }
 
@@ -1766,8 +2028,15 @@
     const nav = event.target.closest("[data-student-view]");
     if (nav) {
       ui.view = nav.dataset.studentView;
-      renderRoleExperience();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      if (studentViewRenderTimer) window.clearTimeout(studentViewRenderTimer);
+      studentViewRenderTimer = 0;
+      renderStudentViewOnly();
+      window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    const questionModel = event.target.closest("[data-open-question-model]");
+    if (questionModel) {
+      openLab("models", questionModel.dataset.openQuestionModel);
       return;
     }
     const detail = event.target.closest("[data-question-detail]");
@@ -1784,8 +2053,8 @@
     const page = event.target.closest("[data-page-direction]");
     if (page) {
       ui.libraryPage = Math.max(1, ui.libraryPage + Number(page.dataset.pageDirection || 0));
-      renderRoleExperience();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      renderStudentViewOnly();
+      window.scrollTo({ top: 0, behavior: "auto" });
       return;
     }
     const topicFilter = event.target.closest("[data-topic-filter], [data-similar-topic]");
@@ -1796,21 +2065,21 @@
       ui.curriculumTarget = null;
       ui.libraryPage = 1;
       ui.view = "library";
-      renderRoleExperience();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      renderStudentViewOnly();
+      window.scrollTo({ top: 0, behavior: "auto" });
       return;
     }
     const progressState = event.target.closest("[data-progress-state]");
     if (progressState) {
       ui.progressState = progressState.dataset.progressState;
-      renderRoleExperience();
+      renderStudentViewOnly();
       return;
     }
     const curriculumBook = event.target.closest("[data-curriculum-book]");
     if (curriculumBook) {
       ui.curriculumBookId = curriculumBook.dataset.curriculumBook;
-      renderRoleExperience();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      renderStudentViewOnly();
+      window.scrollTo({ top: 0, behavior: "auto" });
       return;
     }
     const curriculumTarget = event.target.closest("[data-curriculum-target]");
@@ -1828,8 +2097,8 @@
         ui.search = "";
         ui.libraryPage = 1;
         ui.view = "library";
-        renderRoleExperience();
-        window.scrollTo({ top: 0, behavior: "smooth" });
+        renderStudentViewOnly();
+        window.scrollTo({ top: 0, behavior: "auto" });
       }
       return;
     }
@@ -1855,7 +2124,7 @@
         ui.curriculumTarget = null;
       }
       ui.libraryPage = 1;
-      renderRoleExperience();
+      renderStudentViewOnly();
       return;
     }
     const question = event.target.closest("[data-start-question]");
@@ -1868,7 +2137,7 @@
       experience.fontScale = clamp(experience.fontScale + Number(font.dataset.fontScale), 0.9, 1.4);
       saveExperience();
       applyFontScale();
-      renderRoleExperience();
+      renderStudentViewOnly();
       return;
     }
     const action = event.target.closest("[data-shell-action]")?.dataset.shellAction;
@@ -1889,13 +2158,13 @@
   }
 
   function openFeedbackEmail() {
-    const subject = "物理研习室 v2.7.0 用户反馈";
+    const subject = `费曼物理 v${engine?.version || "3.2.0"} 用户反馈`;
     const body = [
       "请描述遇到的问题或建议：",
       "",
       `使用身份：${experience.role}`,
       `年级：${experience.grade}`,
-      "应用版本：2.7.0",
+      `应用版本：${engine?.version || "3.2.0"}`,
       "设备与系统："
     ].join("\r\n");
     recordEvent("feedback-email-opened", { role: experience.role });
@@ -1907,19 +2176,14 @@
       ui.search = event.target.value;
       ui.libraryPage = 1;
       const inputId = event.target.id;
-      renderRoleExperience();
-      requestAnimationFrame(() => {
-        const input = document.getElementById(inputId);
-        input?.focus();
-        input?.setSelectionRange(ui.search.length, ui.search.length);
-      });
+      scheduleStudentViewRender({ focusInputId: inputId, preserveScroll: true });
     }
   }
 
   function handleShellChange(event) {
     if (event.target.id === "studentPracticeGrade") {
       ui.practiceGrade = event.target.value;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentLibraryGrade") {
       ui.libraryGrade = event.target.value;
       ui.libraryDifficulty = "全部";
@@ -1927,25 +2191,25 @@
       ui.libraryQuestionType = "全部";
       ui.curriculumTarget = null;
       ui.libraryPage = 1;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentLibraryDifficulty") {
       ui.libraryDifficulty = event.target.value;
       ui.libraryPage = 1;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentLibraryTopic") {
       ui.libraryTopic = event.target.value;
       ui.libraryPage = 1;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentLibraryQuestionType") {
       ui.libraryQuestionType = event.target.value;
       ui.libraryPage = 1;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentMethodGrade") {
       ui.methodGrade = event.target.value;
-      renderRoleExperience();
+      renderStudentViewOnly();
     } else if (event.target.id === "studentCurriculumBook") {
       ui.curriculumBookId = event.target.value;
-      renderRoleExperience();
+      renderStudentViewOnly();
     }
   }
 
@@ -2114,12 +2378,342 @@
     }));
   }
 
+  function qrMultiply(left, right) {
+    let a = left;
+    let b = right;
+    let result = 0;
+    while (b > 0) {
+      if (b & 1) result ^= a;
+      b >>>= 1;
+      a <<= 1;
+      if (a & 0x100) a ^= 0x11d;
+    }
+    return result & 0xff;
+  }
+
+  function qrPower(exponent) {
+    let value = 1;
+    for (let index = 0; index < exponent; index += 1) value = qrMultiply(value, 2);
+    return value;
+  }
+
+  function qrGeneratorPolynomial(degree) {
+    let polynomial = [1];
+    for (let exponent = 0; exponent < degree; exponent += 1) {
+      const next = new Array(polynomial.length + 1).fill(0);
+      polynomial.forEach((coefficient, index) => {
+        next[index] ^= coefficient;
+        next[index + 1] ^= qrMultiply(coefficient, qrPower(exponent));
+      });
+      polynomial = next;
+    }
+    return polynomial;
+  }
+
+  function qrErrorCorrection(data, degree) {
+    const generator = qrGeneratorPolynomial(degree);
+    const message = [...data, ...new Array(degree).fill(0)];
+    for (let offset = 0; offset < data.length; offset += 1) {
+      const factor = message[offset];
+      if (!factor) continue;
+      generator.forEach((coefficient, index) => {
+        message[offset + index] ^= qrMultiply(coefficient, factor);
+      });
+    }
+    return message.slice(-degree);
+  }
+
+  function qrAppendBits(target, value, length) {
+    for (let bit = length - 1; bit >= 0; bit -= 1) target.push(Boolean((value >>> bit) & 1));
+  }
+
+  function qrBchDigit(value) {
+    let digit = 0;
+    let current = value;
+    while (current !== 0) {
+      digit += 1;
+      current >>>= 1;
+    }
+    return digit;
+  }
+
+  function qrFormatBits(maskPattern) {
+    const formatData = (1 << 3) | maskPattern; // Error correction level L.
+    let remainder = formatData << 10;
+    const generator = 0x537;
+    while (qrBchDigit(remainder) - qrBchDigit(generator) >= 0) {
+      remainder ^= generator << (qrBchDigit(remainder) - qrBchDigit(generator));
+    }
+    return ((formatData << 10) | remainder) ^ 0x5412;
+  }
+
+  function buildInviteQrMatrix(payload) {
+    const code = String(payload || "");
+     // Version 5-L is needed for the full structured join URL (UUID + invite
+     // code).  Keeping the payload intact makes QR scans independently
+     // verifiable instead of encoding only a bare class name or code.
+     if (!code || code.length > 108) throw new Error("二维码内容过长或为空。");
+     const version = code.length <= 22 ? 2 : code.length <= 80 ? 4 : 5;
+     const size = 17 + version * 4;
+     const dataCodewordCount = version === 2 ? 34 : version === 4 ? 80 : 108;
+     const correctionCodewordCount = version === 2 ? 10 : version === 4 ? 20 : 26;
+    const bits = [];
+    qrAppendBits(bits, 0b0100, 4);
+    qrAppendBits(bits, code.length, 8);
+    for (let index = 0; index < code.length; index += 1) qrAppendBits(bits, code.charCodeAt(index), 8);
+    const maximumBits = dataCodewordCount * 8;
+    for (let index = 0; index < 4 && bits.length < maximumBits; index += 1) bits.push(false);
+    while (bits.length % 8) bits.push(false);
+    const data = [];
+    for (let offset = 0; offset < bits.length; offset += 8) {
+      let value = 0;
+      for (let bit = 0; bit < 8; bit += 1) value = (value << 1) | Number(bits[offset + bit]);
+      data.push(value);
+    }
+    let pad = 0;
+    while (data.length < dataCodewordCount) {
+      data.push(pad % 2 === 0 ? 0xec : 0x11);
+      pad += 1;
+    }
+    const codewords = [...data, ...qrErrorCorrection(data, correctionCodewordCount)];
+    const dataBits = [];
+    codewords.forEach((value) => qrAppendBits(dataBits, value, 8));
+    const matrix = Array.from({ length: size }, () => new Array(size).fill(null));
+
+    const setupFinder = (row, column) => {
+      for (let rowOffset = -1; rowOffset <= 7; rowOffset += 1) {
+        for (let columnOffset = -1; columnOffset <= 7; columnOffset += 1) {
+          const targetRow = row + rowOffset;
+          const targetColumn = column + columnOffset;
+          if (targetRow < 0 || targetRow >= size || targetColumn < 0 || targetColumn >= size) continue;
+          matrix[targetRow][targetColumn] = rowOffset >= 0 && rowOffset <= 6
+            && columnOffset >= 0 && columnOffset <= 6
+            && (rowOffset === 0 || rowOffset === 6 || columnOffset === 0 || columnOffset === 6
+              || (rowOffset >= 2 && rowOffset <= 4 && columnOffset >= 2 && columnOffset <= 4));
+        }
+      }
+    };
+    setupFinder(0, 0);
+    setupFinder(size - 7, 0);
+    setupFinder(0, size - 7);
+
+     const alignment = version === 2 ? 18 : version === 4 ? 26 : 30;
+    [6, alignment].forEach((row) => [6, alignment].forEach((column) => {
+      if (matrix[row][column] !== null) return;
+      for (let rowOffset = -2; rowOffset <= 2; rowOffset += 1) {
+        for (let columnOffset = -2; columnOffset <= 2; columnOffset += 1) {
+          matrix[row + rowOffset][column + columnOffset] = Math.abs(rowOffset) === 2
+            || Math.abs(columnOffset) === 2
+            || (rowOffset === 0 && columnOffset === 0);
+        }
+      }
+    }));
+
+    for (let index = 8; index < size - 8; index += 1) {
+      if (matrix[index][6] === null) matrix[index][6] = index % 2 === 0;
+      if (matrix[6][index] === null) matrix[6][index] = index % 2 === 0;
+    }
+
+    const setFormatInfo = (value) => {
+      for (let index = 0; index < 15; index += 1) {
+        const dark = Boolean((value >>> index) & 1);
+        if (index < 6) matrix[index][8] = dark;
+        else if (index < 8) matrix[index + 1][8] = dark;
+        else matrix[size - 15 + index][8] = dark;
+        if (index < 8) matrix[8][size - index - 1] = dark;
+        else if (index === 8) matrix[8][7] = dark;
+        else matrix[8][15 - index - 1] = dark;
+      }
+      matrix[size - 8][8] = true;
+    };
+    setFormatInfo(0);
+
+    let row = size - 1;
+    let direction = -1;
+    let bitIndex = 0;
+    for (let rightColumn = size - 1; rightColumn > 0; rightColumn -= 2) {
+      if (rightColumn === 6) rightColumn -= 1;
+      while (true) {
+        for (let offset = 0; offset < 2; offset += 1) {
+          const column = rightColumn - offset;
+          if (matrix[row][column] !== null) continue;
+          let dark = bitIndex < dataBits.length ? dataBits[bitIndex] : false;
+          if ((row + column) % 2 === 0) dark = !dark;
+          matrix[row][column] = dark;
+          bitIndex += 1;
+        }
+        row += direction;
+        if (row >= 0 && row < size) continue;
+        row -= direction;
+        direction = -direction;
+        break;
+      }
+    }
+    setFormatInfo(qrFormatBits(0));
+    return matrix;
+  }
+
+  function renderClassroomInviteQr(payload) {
+    const canvas = classroomDialog?.querySelector("#classroomInviteQr");
+    if (!canvas || !String(payload || "").trim()) return;
+    const matrix = buildInviteQrMatrix(payload);
+    const quietZone = 4;
+    const moduleSize = 6;
+    const pixelSize = (matrix.length + quietZone * 2) * moduleSize;
+    canvas.width = pixelSize;
+    canvas.height = pixelSize;
+    const context = canvas.getContext("2d", { alpha: false });
+    context.imageSmoothingEnabled = false;
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, pixelSize, pixelSize);
+    context.fillStyle = "#111111";
+    matrix.forEach((modules, row) => modules.forEach((dark, column) => {
+      if (dark) context.fillRect((column + quietZone) * moduleSize, (row + quietZone) * moduleSize, moduleSize, moduleSize);
+    }));
+  }
+
+  function invitePayloadFromQr(payload) {
+    const value = String(payload || "").trim();
+    try {
+      const parsed = window.PhysicsStudioClassroom?.parseInvitePayload?.(value);
+      return parsed?.serverUrl || parsed?.classId ? value : parsed?.code || "";
+    } catch {
+      // Invalid QR content is reported by the scan caller.
+    }
+    return "";
+  }
+
+  async function joinClassByInviteCode(rawPayload, displayName = "") {
+    const client = window.PhysicsStudioClassroom;
+    if (!client) throw new Error("班级客户端尚未加载。");
+    const form = classroomDialog?.querySelector("#classroomStudentJoinForm, #classroomJoinForm");
+    const serverInput = form?.querySelector('input[name="serverUrl"]');
+    const configuredUrl = String(serverInput?.value || "").trim();
+    if (configuredUrl && configuredUrl !== client.status().serverUrl) {
+      client.configure({ serverUrl: configuredUrl });
+    }
+    const parsed = client.parseInvitePayload(rawPayload);
+    const nextDisplayName = String(
+      displayName
+        || form?.querySelector('input[name="displayName"]')?.value
+        || experience.displayName
+        || "同学",
+    ).trim().slice(0, 80) || "同学";
+    experience.displayName = nextDisplayName;
+    saveExperience();
+    const joined = await client.joinInvite({ code: rawPayload, displayName: nextDisplayName });
+    const response = await client.listClasses();
+    ui.classroom.classes = Array.isArray(response?.items) ? response.items : [];
+    ui.classroom.selectedClassId = joined?.classId && ui.classroom.classes.some((item) => item.id === joined.classId)
+      ? joined.classId
+      : ui.classroom.classes[0]?.id || "";
+    if (ui.classroom.selectedClassId) {
+      await syncStudentLearningData(client, ui.classroom.selectedClassId);
+      await loadStudentAssignments(ui.classroom.selectedClassId);
+    } else {
+      ui.classroom.assignments = [];
+      ui.classroom.assignmentSubmissions = {};
+    }
+    return joined;
+  }
+
+  async function imageSourceForClassroomQr(file) {
+    if (typeof createImageBitmap === "function") return createImageBitmap(file);
+    const url = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = url;
+      await image.decode();
+      return image;
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function decodeClassroomInviteQr(file) {
+    if (!(file instanceof Blob) || !String(file.type || "").toLowerCase().startsWith("image/")) {
+      throw new Error("请选择二维码图片。");
+    }
+    if (file.size > 12 * 1024 * 1024) throw new Error("二维码图片不能超过 12 MB。");
+    if (typeof window.jsQR !== "function") throw new Error("二维码识别模块未加载。");
+    const source = await imageSourceForClassroomQr(file);
+    try {
+      const sourceWidth = source.width || source.naturalWidth;
+      const sourceHeight = source.height || source.naturalHeight;
+      if (!sourceWidth || !sourceHeight) throw new Error("二维码图片尺寸无效。");
+      const scale = Math.min(1, 1600 / Math.max(sourceWidth, sourceHeight));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+      canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+      const context = canvas.getContext("2d", { willReadFrequently: true });
+      context.drawImage(source, 0, 0, canvas.width, canvas.height);
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      const decoded = window.jsQR(pixels.data, pixels.width, pixels.height, { inversionAttempts: "attemptBoth" });
+      const invitePayload = invitePayloadFromQr(decoded?.data);
+      if (!invitePayload) throw new Error("图片中没有识别到有效的班级邀请码。");
+      return invitePayload;
+    } finally {
+      if (typeof source.close === "function") source.close();
+    }
+  }
+
+  function stopClassroomQrCamera() {
+    if (classroomQrTimer) window.clearTimeout(classroomQrTimer);
+    classroomQrTimer = 0;
+    classroomQrStream?.getTracks?.().forEach((track) => track.stop());
+    classroomQrStream = null;
+    classroomDialog?.querySelector(".classroom-qr-camera-panel")?.remove();
+  }
+
+  async function startClassroomQrCamera() {
+    stopClassroomQrCamera();
+    if (!navigator.mediaDevices?.getUserMedia || typeof window.jsQR !== "function") {
+      throw new Error("当前设备不支持摄像头二维码扫描，请拍照或选择二维码图片。");
+    }
+    classroomQrStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+    const panel = document.createElement("section");
+    panel.className = "classroom-qr-camera-panel";
+    panel.innerHTML = '<video autoplay muted playsinline aria-label="二维码摄像头预览"></video><canvas hidden></canvas><p>将二维码放入取景框内</p><button type="button" data-classroom-qr-camera-close>关闭扫描</button>';
+    classroomDialog.querySelector("#classroomContent")?.append(panel);
+    const video = panel.querySelector("video");
+    const canvas = panel.querySelector("canvas");
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    video.srcObject = classroomQrStream;
+    const scan = async () => {
+      if (!classroomQrStream || !video.videoWidth) {
+        classroomQrTimer = window.setTimeout(scan, 120);
+        return;
+      }
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const frame = context.getImageData(0, 0, canvas.width, canvas.height);
+      const decoded = window.jsQR(frame.data, frame.width, frame.height, { inversionAttempts: "attemptBoth" });
+      const invitePayload = invitePayloadFromQr(decoded?.data);
+      if (invitePayload) {
+        stopClassroomQrCamera();
+        await runClassroomAction(
+          () => joinClassByInviteCode(invitePayload),
+          "二维码已识别，已加入班级。",
+          true,
+        );
+        return;
+      }
+      classroomQrTimer = window.setTimeout(scan, 120);
+    };
+    video.addEventListener("loadedmetadata", scan, { once: true });
+    scan();
+  }
+
   function openClassroom() {
     ui.classroom.message = "";
     ui.classroom.error = false;
     renderClassroom();
     if (!classroomDialog.open) classroomDialog.showModal();
-    if (window.PhysicsStudioClassroom?.status?.().authenticated) refreshClassroomData(false);
+    if (window.PhysicsStudioClassroom?.status?.().authenticated || window.PhysicsStudioClassroom?.status?.().ownerAuthenticated) refreshClassroomData(false);
   }
 
   function classroomRoleLabel(role) {
@@ -2137,37 +2731,35 @@
       return;
     }
     const status = client.status();
+    const learningSync = client.syncStatus?.() || { label: "本机已保存", detail: "当前只写入本机学习记录。" };
     const selected = ui.classroom.classes.find((item) => item.id === ui.classroom.selectedClassId) || null;
     const disabled = ui.classroom.busy ? " disabled" : "";
+    // The local experience role is the UI boundary. A previous teacher
+    // session may still exist in sessionStorage on the same device, but it
+    // must not make a student see teacher-only class management controls.
+    const serverRole = status.authenticated ? status.user?.role : status.ownerAuthenticated ? "teacher" : "";
+    const roleMatchesSession = experience.role === "student"
+      ? serverRole === "student"
+      : experience.role === "teacher"
+        ? ["teacher", "administrator"].includes(serverRole)
+        : false;
+    const showAuthenticatedClassroom = Boolean((status.authenticated || status.ownerAuthenticated) && roleMatchesSession);
     content.innerHTML = `
       <header class="classroom-head">
-        <div><span>ACCOUNT · CLASS · PERMISSION AUDIT</span><h2>班级与邀请码</h2><p>${status.authenticated ? `${escapeHtml(status.user.displayName)} · 服务端身份：${escapeHtml(classroomRoleLabel(status.user.role))}` : "默认离线；登录后才访问已配置的班级服务"}</p></div>
+         <div><span>ACCOUNT · CLASS · PERMISSION AUDIT</span><h2>班级与邀请码</h2><p>${status.authenticated ? `${escapeHtml(status.user.displayName)} · 服务端身份：${escapeHtml(classroomRoleLabel(status.user.role))}` : experience.role === "teacher" ? "联网优先；教师可直接创建班级，网络不可用时保留本机数据" : "联网优先；加入班级需验证学生账号，网络不可用时保留本机数据"}</p><p class="classroom-sync-status" data-sync-state="${escapeHtml(learningSync.state)}">学习数据：${escapeHtml(learningSync.label)} · ${escapeHtml(learningSync.detail)}</p></div>
         <button data-classroom-action="close" type="button" aria-label="关闭">×</button>
       </header>
       ${ui.classroom.message ? `<p class="classroom-message ${ui.classroom.error ? "error" : ""}" role="status">${escapeHtml(ui.classroom.message)}</p>` : ""}
-      ${status.authenticated ? renderAuthenticatedClassroom(status, selected, disabled) : renderClassroomLogin(status, disabled)}
-      <p class="classroom-boundary">${escapeHtml(status.boundary)} 本机切换“学生/教师”界面不会改变服务端权限；服务端账号角色才是授权依据。账号由部署管理员创建，本应用不提供公开注册。</p>`;
+      ${showAuthenticatedClassroom ? renderAuthenticatedClassroom(status, selected, disabled, learningSync) : renderClassroomLogin(status, disabled)}
+      <p class="classroom-boundary">${escapeHtml(status.boundary)} 学生只能通过有效邀请码加入并获得 student 权限；教师 owner 能力仅限自己创建的班级。</p>`;
+    if (ui.classroom.lastInvite?.code) renderClassroomInviteQr(ui.classroom.lastInvite.joinUrl || ui.classroom.lastInvite.code);
   }
 
-  function renderClassroomLogin(status, disabled) {
-    return `
-      <form class="classroom-login-form" id="classroomLoginForm">
-        <div><span>班级服务地址</span><input name="serverUrl" type="url" required value="${escapeHtml(status.serverUrl)}" autocomplete="url"><small>生产部署必须使用 HTTPS；HTTP 仅允许本机 127.0.0.1 或 localhost。</small></div>
-        <div class="classroom-form-grid">
-          <label><span>登录名</span><input name="login" required maxlength="120" autocomplete="username"></label>
-          <label><span>密码</span><input name="password" type="password" required maxlength="1024" autocomplete="current-password"></label>
-          <label><span>设备名称</span><input name="deviceName" required maxlength="80" value="${escapeHtml((navigator.platform || "物理研习室设备").slice(0, 80))}" autocomplete="off"></label>
-        </div>
-        <button type="submit"${disabled}>${ui.classroom.busy ? "正在连接…" : "登录班级服务"}</button>
-        <p>密码不会保存；访问令牌只保留在本次应用会话中。未登录时，原有题库和本机学习档案照常离线使用。</p>
-      </form>`;
-  }
-
-  function renderAuthenticatedClassroom(status, selected, disabled) {
+  function renderAuthenticatedClassroom(status, selected, disabled, learningSync) {
     const role = status.user.role;
     return `
       <section class="classroom-session-bar">
-        <div><strong>${escapeHtml(status.user.displayName)}</strong><span>${escapeHtml(classroomRoleLabel(role))}账号 · ${escapeHtml(status.serverUrl)}</span><small>每 60 秒及恢复联网时自动刷新班级成员；本机学习档案不会自动上传。</small></div>
+        <div><strong>${escapeHtml(status.user.displayName)}</strong><span>${escapeHtml(classroomRoleLabel(role))}账号 · ${escapeHtml(status.serverUrl)}</span><small>每 60 秒及恢复联网时自动刷新班级成员；学习数据状态：${escapeHtml(learningSync.label)}。</small></div>
         <div><button data-classroom-action="refresh" type="button"${disabled}>刷新</button><button data-classroom-action="logout" type="button"${disabled}>退出登录</button></div>
       </section>
       ${role === "teacher" || role === "administrator" ? renderTeacherClassroom(selected, disabled) : ""}
@@ -2182,9 +2774,8 @@
           <form id="classroomCreateClassForm" class="classroom-compact-form">
             <h3>新建物理班级</h3>
             <label><span>班级名称</span><input name="name" required maxlength="120" placeholder="例如：高三物理一班"></label>
-            <label><span>年级</span><select name="grade">${["八年级", "九年级", "高一", "高二", "高三"].map((grade) => `<option${grade === experience.grade ? " selected" : ""}>${grade}</option>`).join("")}</select></label>
-            <label><span>学校（可选）</span><input name="schoolLabel" maxlength="120"></label>
-            <button type="submit"${disabled}>创建班级</button>
+            <small>创建后可直接进入班级；年级和学校信息可在管理中补充。</small>
+            <button type="submit"${disabled}>${ui.classroom.busy ? "正在创建…" : "创建班级"}</button>
           </form>
           <div class="classroom-list">
             <header><h3>我的班级</h3><strong>${ui.classroom.classes.length}</strong></header>
@@ -2199,17 +2790,15 @@
 
   function renderSelectedClass(selected, disabled) {
     const invite = ui.classroom.lastInvite?.classId === selected.id ? ui.classroom.lastInvite : null;
-    const defaultExpiry = new Date(Date.now() + 7 * 86400000);
-    defaultExpiry.setMinutes(defaultExpiry.getMinutes() - defaultExpiry.getTimezoneOffset());
     return `
       <header class="classroom-class-head"><div><span>${escapeHtml(selected.grade)} · ${escapeHtml(selected.subject)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.schoolLabel || "未填写学校")}</p></div><strong>${escapeHtml(selected.status)}</strong></header>
+      <div class="classroom-class-meta"><span>班级 ID：${escapeHtml(selected.id)}</span><span>当前学生：${ui.classroom.roster.length} 人</span><button class="danger" data-classroom-action="delete-class" type="button"${disabled}>删除班级</button></div>
       <div class="classroom-action-grid">
         <form id="classroomInviteForm" class="classroom-compact-form">
-          <h3>生成随机邀请码</h3>
-          <label><span>有效期</span><input name="expiresAt" type="datetime-local" required value="${defaultExpiry.toISOString().slice(0, 16)}"></label>
-          <label><span>最多使用</span><input name="maxUses" type="number" min="1" max="1000" value="40" required></label>
-          <button type="submit"${disabled}>生成邀请码</button>
-          ${invite ? `<div class="classroom-invite-code"><span>只在本次生成后显示</span><strong>${escapeHtml(invite.code)}</strong><small>到期：${escapeHtml(new Date(invite.expiresAt).toLocaleString("zh-CN"))} · 最多 ${invite.maxUses} 次</small><button data-classroom-action="copy-invite" type="button">复制邀请码</button></div>` : ""}
+          <h3>邀请学生加入</h3>
+          <p>无需填写有效期或使用人数；点击后同时生成邀请码和二维码。</p>
+          <button type="submit"${disabled}>生成邀请码与二维码</button>
+           ${invite ? `<div class="classroom-invite-code"><span>本次生成后显示，请发送给本班学生</span><canvas id="classroomInviteQr" width="198" height="198" role="img" aria-label="班级邀请码二维码"></canvas><strong>${escapeHtml(invite.code)}</strong><small>安全有效期与防滥用上限由班级服务自动管理，教师无需填写。</small><div><button data-classroom-action="copy-invite" type="button">复制邀请码</button><button data-classroom-action="share-invite" type="button">分享邀请</button><button data-classroom-action="refresh-invite" type="button">刷新邀请码</button></div></div>` : ""}
         </form>
         <form id="classroomGroupForm" class="classroom-compact-form">
           <h3>新建分组</h3>
@@ -2218,6 +2807,20 @@
           <div class="classroom-group-list">${ui.classroom.groups.map((group) => `<span>${escapeHtml(group.name)}</span>`).join("") || "<small>尚无分组。</small>"}</div>
         </form>
       </div>
+      <section class="classroom-teaching-actions">
+        <form id="classroomAssignmentForm" class="classroom-compact-form">
+          <h3>下发专项作业</h3>
+          <p>教师确认后才发布；题目编号和知识点编号均可留空，但达标条件必须明确。</p>
+          <label><span>作业标题</span><input name="title" required maxlength="160" placeholder="例如：受力分析专项复测"></label>
+          <label><span>作业说明</span><textarea name="instructions" rows="2" maxlength="30000" placeholder="说明完成顺序、迁移题或复测要求"></textarea></label>
+          <label><span>截止时间（可选）</span><input name="dueAt" type="datetime-local"></label>
+          <label><span>题目编号（可选，逗号分隔）</span><input name="questionIds" maxlength="8000" placeholder="题目ID1,题目ID2"></label>
+          <label><span>知识点编号（可选，逗号分隔）</span><input name="knowledgePointKeys" maxlength="8000" placeholder="topic:niu-dun-yun-dong-ding-lv"></label>
+          <label><span>预定达标条件</span><textarea name="target" rows="2" required maxlength="1000" placeholder="例如：3题中至少2题低提示独立正确，并完成1条迁移记录"></textarea></label>
+          <label><span><input name="publish" type="checkbox" checked> 教师确认后立即发布</span></label>
+          <button type="submit"${disabled}>创建并${ui.classroom.busy ? "处理" : "发布"}</button>
+        </form>
+      </section>
       <section class="classroom-roster">
         <header><div><span>逐级管理</span><h3>学生花名册</h3></div><strong>${ui.classroom.roster.length} 人</strong></header>
         ${ui.classroom.roster.map((member) => `
@@ -2229,28 +2832,60 @@
               ${member.status !== "removed" ? `<button data-classroom-assign="${escapeHtml(member.id)}" type="button"${disabled}>保存分组</button><button class="danger" data-classroom-member="${escapeHtml(member.id)}" data-classroom-status="removed" type="button"${disabled}>移出</button>` : ""}
             </div>
           </article>`).join("") || '<div class="classroom-empty"><strong>暂无学生</strong><p>生成邀请码后，学生提交加入申请；教师批准后才成为有效成员。</p></div>'}
+      </section>
+      <section class="classroom-learning-summary">
+        <header><div><span>CLASS LEARNING EVIDENCE</span><h3>班级学情摘要</h3></div><strong>${ui.classroom.learningSummary.length} 名已同步学生</strong></header>
+        <p>仅显示同步到服务端的证据摘要，不做学生排名；空值表示尚未同步或证据不足。</p>
+        <div class="classroom-summary-grid">${ui.classroom.learningSummary.map((item) => `<article><strong>${escapeHtml(item.displayName)}</strong><span>正式作答 ${item.attemptCount || 0} 次 · 试卷 ${item.examCount || 0} 份</span><small>待人工复核 ${item.pendingReviewCount || 0} 项 · 最近证据 ${escapeHtml(item.lastEvidenceAt ? new Date(item.lastEvidenceAt).toLocaleString("zh-CN") : "无")}</small></article>`).join("") || "<p>当前班级没有可读取的学习摘要。</p>"}</div>
+      </section>
+      <section class="classroom-review-cases">
+        <header><div><span>TEACHER REVIEW</span><h3>待教师复核</h3></div><strong>${ui.classroom.reviewCases.length} 项</strong></header>
+        <p>自动分析只提供待判断线索；提交复核决定后才会写入服务端审核状态。</p>
+        ${ui.classroom.reviewCases.map((item) => `<form class="classroom-review-form" data-classroom-review-form="${escapeHtml(item.id)}">
+          <div><strong>${escapeHtml(item.id)}</strong><span>作业 ${escapeHtml(item.assignmentId)} · 当前状态 ${escapeHtml(item.status)}</span></div>
+          <label><span>决定</span><select name="decision"><option value="approve">通过</option><option value="return">退回订正</option><option value="rejudge">重新判定</option></select></label>
+          <label><span>分数</span><input name="score" type="number" min="0" max="100" step="0.5" value="${item.currentScore == null ? "" : escapeHtml(item.currentScore)}" required></label>
+          <label><span>教师理由</span><input name="reason" maxlength="1000" required placeholder="记录依据或订正要求"></label>
+          <button type="submit"${disabled}>提交复核</button>
+        </form>`).join("") || "<p>当前没有待教师复核的提交。</p>"}
       </section>`;
   }
 
   function renderStudentClassroom(disabled) {
     return `
       <section class="student-classroom-panel">
+        <form id="classroomStudentNameForm" class="classroom-compact-form">
+          <label><span>班级内备注名</span><input name="displayName" maxlength="80" value="${escapeHtml(window.PhysicsStudioClassroom?.status?.().user?.displayName || experience.displayName || "同学")}" autocomplete="nickname"></label>
+          <button type="submit"${disabled}>保存备注名</button>
+        </form>
         <form id="classroomJoinForm" class="classroom-compact-form">
           <span>JOIN WITH INVITE</span><h3>通过老师的邀请码加入班级</h3>
-          <label><span>22 位邀请码</span><input name="code" required minlength="22" maxlength="22" autocomplete="off" placeholder="输入老师提供的邀请码"></label>
+          <label><span>22 位邀请码</span><input name="code" data-classroom-join-code required minlength="22" maxlength="22" autocomplete="off" placeholder="输入老师提供的邀请码"></label>
+          <label class="classroom-qr-scan"><span>扫描老师的二维码</span><input id="classroomInviteQrInput" type="file" accept="image/*" capture="environment"><small class="classroom-qr-status">可拍照或选择二维码图片，识别结果只用于填写邀请码。</small></label>
           <button type="submit"${disabled}>申请加入</button>
-          <p>加入后状态默认为“待审核”；老师批准后，班级才会出现在可访问列表中。</p>
+          <button type="button" data-classroom-qr-camera${disabled}>打开摄像头扫描</button>
+          <p>邀请码由服务端验证；加入成功后立即显示班级，断网时不会伪造加入状态。</p>
         </form>
         <div class="classroom-list student">
           <header><h3>已加入班级</h3><strong>${ui.classroom.classes.length}</strong></header>
           ${ui.classroom.classes.map((item) => `<article><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.grade)} · ${escapeHtml(item.subject)} · ${escapeHtml(item.status)}</span></article>`).join("") || '<p>当前账号还没有已激活班级。</p>'}
         </div>
+        <section class="student-assignment-list">
+          <header><div><span>TEACHER PLANS</span><h3>教师专项方案</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
+          ${ui.classroom.assignments.map((assignment) => {
+            const submitted = Boolean(ui.classroom.assignmentSubmissions[assignment.id]);
+            return `<article>
+              <div><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.target || "按教师确认条件完成")} · ${assignment.dueAt ? escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN")) : "无截止时间"}</span><small>${escapeHtml(assignment.instructions || "")}</small></div>
+              <button data-classroom-submit-assignment="${escapeHtml(assignment.id)}" type="button"${disabled || submitted ? " disabled" : ""}>${submitted ? "已提交完成状态" : "提交完成状态"}</button>
+            </article>`;
+          }).join("") || '<p class="classroom-empty">当前没有已下发的专项方案。</p>'}
+        </section>
       </section>`;
   }
 
   async function refreshClassroomData(showMessage = true) {
     const client = window.PhysicsStudioClassroom;
-    if (!client?.status?.().authenticated) return;
+    if (!client?.status?.().authenticated && !client?.status?.().ownerAuthenticated) return;
     await runClassroomAction(async () => {
       const response = await client.listClasses();
       ui.classroom.classes = Array.isArray(response?.items) ? response.items : [];
@@ -2260,16 +2895,23 @@
       const role = client.status().user?.role;
       if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
         await loadClassroomDetail(ui.classroom.selectedClassId);
+      } else if (role === "student" && ui.classroom.selectedClassId) {
+        await syncStudentLearningData(client, ui.classroom.selectedClassId);
+        await loadStudentAssignments(ui.classroom.selectedClassId);
       } else {
         ui.classroom.roster = [];
         ui.classroom.groups = [];
+        ui.classroom.learningSummary = [];
+        ui.classroom.reviewCases = [];
+        ui.classroom.assignments = [];
+        ui.classroom.assignmentSubmissions = {};
       }
     }, showMessage ? "班级数据已刷新。" : "", false);
   }
 
   async function syncClassroomSilently() {
     const client = window.PhysicsStudioClassroom;
-    if (ui.classroom.busy || !client?.status?.().authenticated || navigator.onLine === false) return;
+    if (ui.classroom.busy || (!client?.status?.().authenticated && !client?.status?.().ownerAuthenticated) || navigator.onLine === false) return;
     ui.classroom.busy = true;
     try {
       const response = await client.listClasses();
@@ -2280,6 +2922,9 @@
       const role = client.status().user?.role;
       if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
         await loadClassroomDetail(ui.classroom.selectedClassId);
+      } else if (role === "student" && ui.classroom.selectedClassId) {
+        await syncStudentLearningData(client, ui.classroom.selectedClassId);
+        await loadStudentAssignments(ui.classroom.selectedClassId);
       }
       ui.classroom.error = false;
       ui.classroom.message = "班级状态已自动同步。";
@@ -2296,12 +2941,47 @@
 
   async function loadClassroomDetail(classId) {
     const client = window.PhysicsStudioClassroom;
-    const [roster, groups] = await Promise.all([
+    const optionalClassCall = (call, label) => Promise.resolve()
+      .then(call)
+      .catch((error) => {
+        console.warn(`${label}读取失败；保留已有班级功能。`, error);
+        return { items: [] };
+      });
+    const [roster, groups, summary, reviews] = await Promise.all([
       client.listRoster(classId),
-      client.listGroups(classId)
+      client.listGroups(classId),
+      typeof client.getClassLearningSummary === "function"
+        ? optionalClassCall(() => client.getClassLearningSummary(classId), "班级学情摘要")
+        : Promise.resolve({ items: [] }),
+      typeof client.listReviewCases === "function"
+        ? optionalClassCall(() => client.listReviewCases(classId), "教师复核队列")
+        : Promise.resolve({ items: [] })
     ]);
     ui.classroom.roster = Array.isArray(roster?.items) ? roster.items : [];
     ui.classroom.groups = Array.isArray(groups?.items) ? groups.items : [];
+    ui.classroom.learningSummary = Array.isArray(summary?.items) ? summary.items : [];
+    ui.classroom.reviewCases = Array.isArray(reviews?.items) ? reviews.items : [];
+  }
+
+  async function loadStudentAssignments(classId) {
+    const client = window.PhysicsStudioClassroom;
+    if (!client?.listAssignments || !classId) return;
+    const response = await client.listAssignments(classId);
+    ui.classroom.assignments = Array.isArray(response?.items) ? response.items : [];
+  }
+
+  async function syncStudentLearningData(client, classId) {
+    if (!engine?.buildLearningSyncPayload || !client?.syncLearning) return;
+    const state = engine.loadState();
+    const questions = window.PhysicsStudioApp?.getQuestions?.() || [];
+    const payload = engine.buildLearningSyncPayload(state, questions, state.activeProfileId, { limit: 100 });
+    const result = await client.syncLearning(classId, payload);
+    if (engine.buildExamSyncPayload && state.examRecords?.some((item) => item.profileId === state.activeProfileId)) {
+      const examPayload = engine.buildExamSyncPayload(state, state.activeProfileId, { limit: 100 });
+      await client.syncExamRecords(classId, examPayload);
+    }
+    const sync = client.syncStatus?.();
+    if (sync) ui.classroom.message = result?.queued ? `学习数据：${sync.label}。${sync.detail}` : `学习数据：${sync.label}。`;
   }
 
   async function runClassroomAction(task, successMessage = "", clearInvite = false) {
@@ -2330,6 +3010,15 @@
     const client = window.PhysicsStudioClassroom;
     if (!client || ui.classroom.busy) return;
     const values = new FormData(form);
+    if (form.id === "classroomStudentNameForm") {
+      await runClassroomAction(async () => {
+        const user = await client.updateDisplayName(values.get("displayName"));
+        experience.displayName = String(user?.displayName || values.get("displayName") || "同学").trim().slice(0, 80) || "同学";
+        saveExperience();
+        ui.classroom.message = "班级内备注名已保存";
+      }, "班级内备注名已保存", false);
+      return;
+    }
     if (form.id === "classroomLoginForm") {
       await runClassroomAction(async () => {
         client.configure({ serverUrl: values.get("serverUrl") });
@@ -2346,44 +3035,98 @@
         const role = client.status().user?.role;
         if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
           await loadClassroomDetail(ui.classroom.selectedClassId);
+        } else if (role === "student" && ui.classroom.selectedClassId) {
+          await syncStudentLearningData(client, ui.classroom.selectedClassId);
+          await loadStudentAssignments(ui.classroom.selectedClassId);
         }
       }, "登录成功。服务端权限已生效。", true);
+    } else if (form.id === "classroomServerConfigForm") {
+      await runClassroomAction(async () => {
+        client.configure({ serverUrl: values.get("serverUrl") });
+      }, "联网服务地址已保存。", false);
     } else if (form.id === "classroomCreateClassForm") {
       await runClassroomAction(async () => {
         const created = await client.createClass({
-          name: values.get("name"),
-          grade: values.get("grade"),
-          schoolLabel: values.get("schoolLabel") || null
+          name: values.get("name")
         });
         ui.classroom.classes.unshift(created);
         ui.classroom.selectedClassId = created.id;
+        const invite = await client.createInvite(created.id);
+        ui.classroom.lastInvite = { ...invite, classId: created.id };
         await loadClassroomDetail(created.id);
       }, "班级已创建。", true);
+    } else if (form.id === "classroomStudentJoinForm") {
+      await runClassroomAction(async () => {
+        await joinClassByInviteCode(values.get("code"), values.get("displayName"));
+      }, "已加入班级，备注名可随时修改。", true);
     } else if (form.id === "classroomJoinForm") {
       await runClassroomAction(async () => {
-        const joined = await client.joinInvite({ code: values.get("code") });
-        ui.classroom.message = joined.status === "pending" ? "加入申请已提交，等待老师批准。" : "已加入班级。";
-      }, "加入申请已提交，等待老师批准。", false);
+        await joinClassByInviteCode(values.get("code"));
+      }, "已加入班级。", false);
     } else if (form.id === "classroomInviteForm") {
       const classId = ui.classroom.selectedClassId;
       await runClassroomAction(async () => {
-        const invite = await client.createInvite(classId, {
-          expiresAt: values.get("expiresAt"),
-          maxUses: Number(values.get("maxUses"))
-        });
+        const invite = await client.createInvite(classId);
         ui.classroom.lastInvite = { ...invite, classId };
-      }, "邀请码已生成；请通过安全渠道发给本班学生。", false);
+      }, "邀请码与二维码已生成；请通过可信渠道发给本班学生。", false);
     } else if (form.id === "classroomGroupForm") {
       const classId = ui.classroom.selectedClassId;
       await runClassroomAction(async () => {
         await client.createGroup(classId, { name: values.get("name") });
         await loadClassroomDetail(classId);
       }, "分组已添加。", false);
+    } else if (form.id === "classroomAssignmentForm") {
+      const classId = ui.classroom.selectedClassId;
+      const splitList = (value) => String(value || "")
+        .split(/[\s,，;；]+/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      await runClassroomAction(async () => {
+        const created = await client.createAssignment(classId, {
+          title: values.get("title"),
+          instructions: values.get("instructions"),
+          dueAt: values.get("dueAt") || null,
+          targetType: "class",
+          targetId: null,
+          questionIds: splitList(values.get("questionIds")),
+          knowledgePointKeys: splitList(values.get("knowledgePointKeys")),
+          target: values.get("target"),
+          publish: values.get("publish") === "on"
+        });
+        if (!created?.queued) await loadClassroomDetail(classId);
+      }, "专项作业已创建；若当前离线，将在恢复网络后发送。", false);
+    } else if (form.matches("[data-classroom-review-form]")) {
+      const reviewId = form.dataset.classroomReviewForm;
+      await runClassroomAction(async () => {
+        await client.decideReviewCase(reviewId, {
+          decision: values.get("decision"),
+          score: Number(values.get("score")),
+          perQuestionScores: [],
+          reason: values.get("reason"),
+          annotation: {}
+        });
+        await loadClassroomDetail(ui.classroom.selectedClassId);
+      }, "教师复核决定已提交。", false);
     }
   }
 
   async function handleClassroomClick(event) {
     const client = window.PhysicsStudioClassroom;
+    if (event.target.closest("[data-classroom-qr-camera-close]")) {
+      stopClassroomQrCamera();
+      return;
+    }
+    if (event.target.closest("[data-classroom-qr-camera]") && !ui.classroom.busy) {
+      try {
+        await startClassroomQrCamera();
+      } catch (error) {
+        stopClassroomQrCamera();
+        ui.classroom.message = error?.message || "摄像头二维码扫描不可用";
+        ui.classroom.error = true;
+        renderClassroom();
+      }
+      return;
+    }
     const select = event.target.closest("[data-classroom-select]");
     if (select && !ui.classroom.busy) {
       ui.classroom.selectedClassId = select.dataset.classroomSelect;
@@ -2410,10 +3153,41 @@
       }, "学生分组已更新。", false);
       return;
     }
+    const submitAssignment = event.target.closest("[data-classroom-submit-assignment]");
+    if (submitAssignment && !ui.classroom.busy) {
+      const assignmentId = submitAssignment.dataset.classroomSubmitAssignment;
+      const assignment = ui.classroom.assignments.find((item) => item.id === assignmentId);
+      if (!assignment) return;
+      await runClassroomAction(async () => {
+        const result = await client.submitAssignment(assignmentId, {
+          clientEntityId: `assignment-complete-${assignmentId}`,
+          answers: [{ status: "completed" }]
+        });
+        ui.classroom.assignmentSubmissions[assignmentId] = result;
+      }, "完成状态已提交；若当前离线，将在恢复网络后发送。", false);
+      return;
+    }
     const action = event.target.closest("[data-classroom-action]")?.dataset.classroomAction;
     if (!action) return;
     if (action === "close") classroomDialog.close();
     else if (action === "refresh") await refreshClassroomData(true);
+    else if (action === "delete-class") {
+      const classId = ui.classroom.selectedClassId;
+      const selectedClass = ui.classroom.classes.find((item) => item.id === classId);
+      if (!classId || !selectedClass) return;
+      if (!window.confirm(`确认删除班级“${selectedClass.name}”？删除后邀请码立即失效，学生下次同步将不再看到该班级。`)) return;
+      await runClassroomAction(async () => {
+        await client.deleteClass(classId);
+        ui.classroom.classes = ui.classroom.classes.filter((item) => item.id !== classId);
+        ui.classroom.selectedClassId = ui.classroom.classes[0]?.id || "";
+        ui.classroom.lastInvite = null;
+        ui.classroom.roster = [];
+        ui.classroom.groups = [];
+        ui.classroom.learningSummary = [];
+        ui.classroom.reviewCases = [];
+        if (ui.classroom.selectedClassId) await loadClassroomDetail(ui.classroom.selectedClassId);
+      }, "班级已删除，原邀请码已失效。", true);
+    }
     else if (action === "logout") {
       await runClassroomAction(async () => {
         try { await client.logout(); } finally {
@@ -2421,7 +3195,11 @@
           ui.classroom.selectedClassId = "";
           ui.classroom.roster = [];
           ui.classroom.groups = [];
+          ui.classroom.learningSummary = [];
+          ui.classroom.reviewCases = [];
           ui.classroom.lastInvite = null;
+          ui.classroom.assignments = [];
+          ui.classroom.assignmentSubmissions = {};
         }
       }, "已退出班级服务，继续使用本机离线数据。", false);
     } else if (action === "copy-invite") {
@@ -2435,42 +3213,110 @@
         window.prompt("请复制邀请码", code);
       }
       renderClassroom();
+    } else if (action === "share-invite") {
+      const code = ui.classroom.lastInvite?.code || "";
+      const selected = ui.classroom.classes.find((item) => item.id === ui.classroom.selectedClassId);
+      if (!code) return;
+      const text = `请在费曼物理中加入“${selected?.name || "物理班级"}”，邀请码：${code}`;
+      try {
+        if (typeof navigator.share === "function") {
+          await navigator.share({ title: "费曼物理班级邀请", text });
+          ui.classroom.message = "已打开系统分享。";
+        } else {
+          await navigator.clipboard.writeText(text);
+          ui.classroom.message = "班级邀请文字已复制。";
+        }
+        ui.classroom.error = false;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        window.prompt("请复制班级邀请", text);
+      }
+      renderClassroom();
+    } else if (action === "refresh-invite") {
+      const classId = ui.classroom.selectedClassId;
+      if (!classId) return;
+      await runClassroomAction(async () => {
+        const invite = await client.createInvite(classId);
+        ui.classroom.lastInvite = { ...invite, classId };
+      }, "已刷新邀请码与二维码；旧邀请码已立即失效。", false);
+    }
+  }
+
+  async function handleClassroomChange(event) {
+    const input = event.target.closest("#classroomInviteQrInput");
+    if (!input) return;
+    const status = classroomDialog.querySelector(".classroom-qr-status");
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || !status) return;
+    status.classList.remove("error");
+    status.textContent = "正在本机识别二维码……";
+    try {
+      const code = await decodeClassroomInviteQr(file);
+      status.textContent = "邀请码已识别，正在加入班级……";
+      await runClassroomAction(
+        () => joinClassByInviteCode(code),
+        "二维码已识别，已加入班级。",
+        true,
+      );
+    } catch (error) {
+      status.classList.add("error");
+      status.textContent = error?.message || "二维码识别失败，请改为手动输入邀请码。";
     }
   }
 
   function diagnosticPackageProgress(paper, learning) {
     const profileId = learning?.activeProfileId;
+    const session = paper?.type === "placement" || String(paper?.id || "").startsWith("placement-")
+      ? engine?.placementSessionForProfile?.(learning, profileId)
+      : null;
+    const sessionStartedAt = session ? new Date(session.startedAt || 0).getTime() : 0;
     const attempted = new Set((learning?.attempts || [])
-      .filter((attempt) => attempt.profileId === profileId)
+      .filter((attempt) => attempt.profileId === profileId
+        && (!session || new Date(attempt.completedAt || attempt.createdAt || 0).getTime() >= sessionStartedAt))
       .map((attempt) => attempt.questionId));
     const diagnosed = new Set((learning?.diagnosticAttempts || [])
-      .filter((attempt) => attempt.profileId === profileId)
+      .filter((attempt) => attempt.profileId === profileId
+        && (!session || new Date(attempt.createdAt || 0).getTime() >= sessionStartedAt))
       .map((attempt) => attempt.diagnosticId));
     const completedIds = new Set((paper?.items || []).filter((item) => {
       return item.kind === "misconception-diagnostic" ? diagnosed.has(item.id) : attempted.has(item.id);
     }).map((item) => item.id));
+    const sessionIds = session ? new Set(session.questionIds || []) : null;
+    const filteredIds = sessionIds ? new Set([...completedIds].filter((id) => sessionIds.has(id))) : completedIds;
     return {
-      completedIds,
-      completed: completedIds.size,
+      completedIds: filteredIds,
+      completed: filteredIds.size,
       total: paper?.items?.length || 0,
-      complete: Boolean(paper?.items?.length) && completedIds.size === paper.items.length
+      complete: Boolean(paper?.items?.length) && filteredIds.size === paper.items.length,
+      session
     };
   }
 
-  function showDiagnosticPackage(kind) {
-    const data = getStudentData();
+  function renderDiagnosticPackage(kind, data) {
     const paper = kind === "broad" ? data.broadCoverage?.paper : data.placement;
     if (!paper?.items?.length || !data.learning) {
       window.alert("当前没有可用的完整诊断题包。");
       return;
     }
-    const progress = diagnosticPackageProgress(paper, data.learning);
+    if (kind === "placement" && engine?.startPlacementAssessment) {
+      try {
+        const session = engine.startPlacementAssessment(data.learning, paper, { profileId: data.learning.activeProfileId });
+        if (session?.status === "in-progress") engine.saveState(data.learning);
+      } catch (error) {
+        window.alert(error.message || "无法开始摸底作答会话。");
+        return;
+      }
+    }
+    const progress = diagnosticPackageProgress({ ...paper, type: kind }, data.learning);
     ui.diagnosticPackage = { kind, paperId: paper.id };
     metricsDialog.querySelector("article").innerHTML = `
       <header><div><span>${kind === "broad" ? "BROAD COVERAGE CHECK" : "PLACEMENT DIAGNOSTIC"}</span><h2>${escapeHtml(paper.title)}</h2></div><button data-metrics-action="close" type="button">×</button></header>
       <section class="diagnostic-package-summary">
-        <div><strong>${progress.completed}/${progress.total}</strong><span>已有作答证据</span></div>
-        <div><strong>${paper.coverage.coverageRate}%</strong><span>当前题库知识点覆盖</span></div>
+          <div><strong>${progress.completed}/${progress.total}</strong><span>本次摸底已提交</span></div>
+          <div><strong>${paper.blueprintCoverage?.coveredCount ?? paper.coverage.coveredTopics.length}/${paper.blueprintCoverage?.targetCount ?? paper.coverage.availableTopics.length}</strong><span>蓝图目标覆盖</span></div>
+        <div><strong>${paper.capabilityCoverage?.coveredCount ?? 0}/${paper.capabilityCoverage?.targetCount ?? 8}</strong><span>本次认知维度覆盖</span></div>
+        <div><strong>${paper.longitudinalEvidenceCoverage?.coverageLabel || "0/0"}</strong><span>长期课程证据覆盖</span></div>
         <div><strong>${paper.misconceptionQuestionCount}</strong><span>前概念辨析</span></div>
         <p>${escapeHtml(paper.generationRule)} ${escapeHtml(paper.boundary)}</p>
       </section>
@@ -2488,9 +3334,24 @@
           </li>`;
         }).join("")}
       </ol>
-      ${kind === "broad" ? `<footer class="diagnostic-package-footer"><button data-metrics-action="complete-broad" type="button"${progress.complete ? "" : " disabled"}>${progress.complete ? "记录本次阶段检测完成" : "全部完成后方可记录"}</button></footer>` : ""}
+      <footer class="diagnostic-package-footer"><button data-metrics-action="${kind === "broad" ? "complete-broad" : "complete-placement"}" type="button"${progress.complete ? "" : " disabled"}>${progress.complete ? (kind === "broad" ? "记录本次阶段检测完成" : "提交摸底并生成分析") : "完成全部题目后方可提交"}</button></footer>
       <p class="metrics-boundary">摸底和阶段检测用于形成后续学习证据，不用一次总分给学生贴标签；主观题仍需教师复核。</p>`;
     if (!metricsDialog.open) metricsDialog.showModal();
+  }
+
+  function showDiagnosticPackage(kind) {
+    ui.diagnosticPackage = { kind, paperId: "", loading: true };
+    metricsDialog.querySelector("article").innerHTML = `
+      <header><div><span>${kind === "broad" ? "BROAD COVERAGE CHECK" : "PLACEMENT DIAGNOSTIC"}</span><h2>正在准备测评题包</h2></div><button data-metrics-action="close" type="button">×</button></header>
+      <p class="metrics-loading" role="status">正在读取本机学习证据，请稍候。</p>`;
+    if (!metricsDialog.open) metricsDialog.showModal();
+    window.setTimeout(() => {
+      if (!metricsDialog.open || ui.diagnosticPackage?.kind !== kind) return;
+      renderDiagnosticPackage(kind, getStudentData({
+        includePlacement: kind === "placement",
+        includeBroadCoverage: kind === "broad"
+      }));
+    }, 0);
   }
 
   function showMasteryHelp() {
@@ -2499,10 +3360,10 @@
       <header><div><span>掌握状态说明</span><h2>状态必须来自行为证据</h2></div><button data-metrics-action="close" type="button">×</button></header>
       <div class="mastery-help-list">
         <article><strong>学习中</strong><p>完成过练习，但尚未出现低提示独立正确。</p></article>
-        <article><strong>熟练</strong><p>至少一次正确，最高提示等级不超过 ${rules?.independentHintMaximum ?? 1}。</p></article>
+        <article><strong>已有独立正确证据</strong><p>至少一次正确，最高提示等级不超过 ${rules?.independentHintMaximum ?? 1}；这不是跨日期掌握结论。</p></article>
         <article><strong>已掌握</strong><p>不同日期低提示独立正确至少 ${rules?.masteredIndependentDates ?? 2} 次，并完成至少 ${rules?.masteredTransferEvidence ?? 1} 道迁移记录。</p></article>
         <article><strong>待复习</strong><p>达到掌握标准，但已到间隔复习时间。</p></article>
-        <article><strong>薄弱</strong><p>近期作答错误、提示依赖高，或建模评分较低。</p></article>
+        <article><strong>需巩固</strong><p>近期存在错误或提示依赖证据；建模记录不完整只作为检查线索，不能单独判定知识点薄弱。</p></article>
       </div>
       <p class="metrics-boundary">这些阈值是试运行产品规则，不是教育测量标准，必须通过初高中学生测试继续校准。</p>`;
     metricsDialog.showModal();
@@ -2517,9 +3378,16 @@
     }
     const proceed = window.confirm("即将离开学生模式并打开外部网站。外部内容不受本应用审核，是否继续？");
     if (!proceed) return;
-    const url = `https://www.bing.com/search?q=${encodeURIComponent(`长沙 初高中 物理 ${query}`)}`;
+    const data = getStudentData({ includeAnalysis: true });
+    const focusTopic = data.analysis?.weakest?.[0]?.topic || data.recommendations?.[0]?.question?.topic || "";
+    const searchPrompt = [
+      "长沙", experience.grade, "物理", query,
+      focusTopic ? `当前巩固重点 ${focusTopic}` : "",
+      "分步解题 已知量 研究对象 规律适用条件 单位与结果检验"
+    ].filter(Boolean).join(" ");
+    const url = `https://www.bing.com/search?q=${encodeURIComponent(searchPrompt)}`;
     window.open(url, "_blank", "noopener");
-    recordEvent("student-external-search", { queryLength: query.length });
+    recordEvent("student-external-search", { queryLength: query.length, focusTopic: focusTopic || null });
   }
 
   function openCapture() {
@@ -2537,7 +3405,9 @@
       rotation: 0,
       contrast: 115,
       crop: { x: 0, y: 0, width: 1, height: 1 },
-      recognitionStatus: "学生已人工确认题目文字"
+      recognitionStatus: "学生已人工确认题目文字",
+      recognitionEngine: "manual",
+      confirmedText: ""
     };
     captureDialog.querySelector("form").reset();
     captureDialog.querySelector("#studentCaptureGrade").value = experience.grade;
@@ -2545,8 +3415,7 @@
     captureDialog.querySelector("#studentCaptureTopic").removeAttribute("data-user-edited");
     captureDialog.querySelector("#studentCaptureContrast").value = "115";
     captureDialog.querySelector("#studentCaptureContrastValue").textContent = "115%";
-    captureDialog.querySelector("#studentRecognitionBadge").textContent = "等待图片";
-    captureDialog.querySelector("#studentRecognitionStatus").textContent = "离线版只在设备提供文字检测能力时尝试识别。公式、上下标、矢量符号和图示语义必须人工确认，不会伪装成可靠识别结果。";
+    setRecognitionStatus("依次尝试 Android 原生离线 OCR、设备 TextDetector，再回退到人工输入。公式、上下标、矢量符号和图示语义必须人工确认，不会自动补全。", "等待图片");
     captureDialog.querySelector("#studentCaptureImageStatus").textContent = "图片处理仅用于提升可读性；自动裁边是图像估算，保存前必须检查。";
     renderCaptureCanvas();
   }
@@ -2559,6 +3428,7 @@
     else if (action === "rotate") {
       ui.capture.rotation = (ui.capture.rotation + 90) % 360;
       renderCaptureCanvas();
+      invalidateCaptureConfirmation("图片已旋转，原识别结果可能不再对应当前画面，请重新识别并确认。", "需重新识别");
     } else if (action === "reset-image") {
       ui.capture.crop = { x: 0, y: 0, width: 1, height: 1 };
       ui.capture.rotation = 0;
@@ -2566,8 +3436,10 @@
       captureDialog.querySelector("#studentCaptureContrast").value = "115";
       captureDialog.querySelector("#studentCaptureContrastValue").textContent = "115%";
       renderCaptureCanvas();
+      invalidateCaptureConfirmation("图片处理已重置，请重新识别并确认题干。", "需重新识别");
     } else if (action === "auto-crop") {
       estimateCaptureCrop();
+      invalidateCaptureConfirmation("裁边范围已变化，请重新识别并确认题干。", "需重新识别");
     } else if (action === "recognize") {
       recognizeCaptureText();
     }
@@ -2586,6 +3458,10 @@
       ui.capture.rotation = 0;
       ui.capture.crop = { x: 0, y: 0, width: 1, height: 1 };
       estimateCaptureCrop();
+      captureDialog.querySelector("#studentCaptureText").value = "";
+      ui.capture.recognitionStatus = "新图片尚未识别并人工确认";
+      ui.capture.recognitionEngine = "manual";
+      invalidateCaptureConfirmation("已载入新图片，请重新识别或输入题干并逐字确认。", "待识别 / 手工输入");
       captureDialog.querySelector("#studentRecognitionBadge").textContent = "待识别 / 手工输入";
       setCaptureStatus("图片已载入并估算裁边，请检查是否保留了全部题干、选项、单位和图示。");
     } catch (error) {
@@ -2717,45 +3593,131 @@
     empty.classList.add("hidden");
   }
 
+  function parseAndroidBridgeJson(raw) {
+    if (raw && typeof raw === "object") return raw;
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    try {
+      return JSON.parse(raw);
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  function normalizeOcrLines(blocks, fallbackText = "") {
+    const normalized = (Array.isArray(blocks) ? blocks : []).map((block) => {
+      const text = String(block?.text || block?.rawValue || "").trim();
+      if (!text) return "";
+      const confidence = Number(block?.confidence);
+      // Missing confidence is also uncertain. OCR confidence is never used to
+      // infer a formula, vector, subscript or diagram label.
+      return !Number.isFinite(confidence) || confidence < 0.8 ? `□${text}` : text;
+    }).filter(Boolean);
+    if (normalized.length) return normalized;
+    const text = String(fallbackText || "").trim();
+    return text ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => `□${line}`) : [];
+  }
+
+  function applyCaptureRecognition(lines, engine, statusMessage) {
+    const text = lines.join("\n");
+    captureDialog.querySelector("#studentCaptureText").value = text;
+    captureDialog.querySelector("#studentCaptureTopic").value = inferTopic(lines.join(" "));
+    ui.capture.recognitionStatus = `${engine} 识别草稿；待学生逐字人工确认`;
+    ui.capture.recognitionEngine = engine;
+    invalidateCaptureConfirmation(statusMessage, "全部待确认");
+  }
+
+  function tryAndroidNativeCaptureOcr(canvas) {
+    const bridge = window.PhysicsStudioAndroid;
+    if (!bridge || typeof bridge.ocrImage !== "function") {
+      return { status: "unavailable", reason: "android_bridge_unavailable" };
+    }
+    let capability = null;
+    if (typeof bridge.getOcrCapability === "function") {
+      try {
+        capability = parseAndroidBridgeJson(bridge.getOcrCapability());
+      } catch (error) {
+        console.error("Android OCR capability check failed", error);
+        return { status: "failed", reason: "native_ocr_capability_failed", engine: "android-native" };
+      }
+    }
+    if (capability && capability.available !== true) {
+      return {
+        status: "unavailable",
+        reason: String(capability.reason || "native_ocr_unavailable"),
+        engine: String(capability.engine || "none")
+      };
+    }
+    try {
+      const imageDataUrl = canvas.toDataURL("image/jpeg", 0.92);
+      const result = parseAndroidBridgeJson(bridge.ocrImage(imageDataUrl));
+      if (!result || result.error) {
+        return {
+          status: "failed",
+          reason: String(result?.error || "invalid_native_ocr_response"),
+          engine: String(result?.engine || "android-native")
+        };
+      }
+      const lines = normalizeOcrLines(result.blocks, result.text);
+      if (!lines.length) {
+        return { status: "empty", reason: "no_text", engine: String(result.engine || "android-native") };
+      }
+      return { status: "recognized", lines, engine: String(result.engine || "android-native") };
+    } catch (error) {
+      console.error("Android native OCR failed", error);
+      return { status: "failed", reason: "native_ocr_call_failed", engine: "android-native" };
+    }
+  }
+
   async function recognizeCaptureText() {
     const canvas = captureDialog.querySelector("#studentCaptureCanvas");
     if (!ui.capture?.source) {
       setRecognitionStatus("请先拍照或选择图片。", "未识别", true);
       return;
     }
-    if (typeof window.TextDetector !== "function") {
-      setRecognitionStatus(
-        "当前设备未提供可调用的本地文字检测能力。请手工输入或粘贴题干；应用不会伪造 OCR 结果。",
-        "设备不支持",
-        true
+    invalidateCaptureConfirmation("正在重新识别；识别完成后仍须逐字人工确认。", "识别中");
+    setRecognitionStatus("正在尝试 Android 原生离线 OCR…", "识别中");
+    const nativeResult = tryAndroidNativeCaptureOcr(canvas);
+    if (nativeResult.status === "recognized") {
+      applyCaptureRecognition(
+        nativeResult.lines,
+        nativeResult.engine,
+        "Android 原生离线 OCR 结果仅作为录入草稿；低置信度或无置信度文字已用“□”标记。公式、上下标、矢量和图示必须逐项核对。"
       );
       return;
     }
+
+    if (typeof window.TextDetector !== "function") {
+      const nativeBoundary = nativeResult.reason === "offline_ocr_engine_not_bundled"
+        ? "当前 APK 未捆绑可离线运行的原生 OCR 模型，"
+        : "Android 原生 OCR 当前不可用，";
+      setRecognitionStatus(
+        `${nativeBoundary}设备也未提供 TextDetector。请手工输入或粘贴题干；应用不会伪造 OCR 结果。`,
+        "请人工输入",
+        true
+      );
+      ui.capture.recognitionStatus = "本机 OCR 不可用；学生手工输入并确认";
+      ui.capture.recognitionEngine = "manual";
+      return;
+    }
     try {
-      setRecognitionStatus("正在调用设备提供的本地文字检测…", "识别中");
+      setRecognitionStatus("原生 OCR 不可用，正在调用设备 TextDetector…", "识别中");
       const detector = new window.TextDetector();
       const blocks = await detector.detect(canvas);
-      const lines = (Array.isArray(blocks) ? blocks : []).map((block) => {
-        const text = String(block.rawValue || block.text || "").trim();
-        if (!text) return "";
-        return Number.isFinite(Number(block.confidence)) && Number(block.confidence) < 0.8
-          ? `□${text}`
-          : text;
-      }).filter(Boolean);
+      const lines = normalizeOcrLines(blocks);
       if (!lines.length) {
         setRecognitionStatus("未检测到清晰文字。请改善光线、裁切题目后重试，或手工输入。", "未检出", true);
         return;
       }
-      captureDialog.querySelector("#studentCaptureText").value = lines.join("\n");
-      captureDialog.querySelector("#studentCaptureTopic").value = inferTopic(lines.join(" "));
-      ui.capture.recognitionStatus = "设备文字检测结果；所有字符均由学生人工确认";
-      setRecognitionStatus(
-        "设备接口没有提供可靠的逐字符置信度，因此全部识别文字都视为“待确认”；若出现“□”，该处尤其不确定。公式、上下标和图示必须逐项核对。",
-        "全部待确认"
+      applyCaptureRecognition(
+        lines,
+        "TextDetector",
+        "TextDetector 结果仅作为录入草稿；低置信度或无置信度文字已用“□”标记。公式、上下标、矢量和图示必须逐项核对。"
       );
     } catch (error) {
       console.error("Text detection failed", error);
-      setRecognitionStatus("设备文字检测调用失败。请手工输入或粘贴题干。", "识别失败", true);
+      ui.capture.recognitionStatus = "本机 OCR 调用失败；学生手工输入并确认";
+      ui.capture.recognitionEngine = "manual";
+      setRecognitionStatus("本机文字检测调用失败。请手工输入或粘贴题干。", "识别失败", true);
     }
   }
 
@@ -2772,7 +3734,8 @@
       event.preventDefault();
       captureDialog.querySelector("#studentCaptureText").value = text;
       captureDialog.querySelector("#studentCaptureTopic").value = inferTopic(text);
-      setRecognitionStatus("已粘贴文字。仍需与原题逐字核对，尤其是公式、上下标、单位和图中标注。", "粘贴待确认");
+      ui.capture.recognitionEngine = "manual";
+      invalidateCaptureConfirmation("已粘贴文字。仍需与原题逐字核对，尤其是公式、上下标、单位和图中标注。", "粘贴待确认");
     }
   }
 
@@ -2785,7 +3748,7 @@
       captureDialog.querySelector("#studentCaptureText").focus();
       return;
     }
-    if (!confirmed) {
+    if (!confirmed || ui.capture?.confirmedText !== text) {
       window.alert("请逐字检查题干，并勾选人工确认。");
       captureDialog.querySelector("#studentCaptureConfirmed").focus();
       return;
@@ -2830,7 +3793,8 @@
         questionId: question.id,
         reason,
         usedImage: attachments.length > 0,
-        usedDeviceTextDetection: ui.capture.recognitionStatus.startsWith("设备")
+        usedDeviceTextDetection: ui.capture.recognitionEngine !== "manual",
+        recognitionEngine: ui.capture.recognitionEngine
       });
       startQuestion(question.id, "capture-correction");
     } catch (error) {
@@ -2870,6 +3834,18 @@
     node.classList.toggle("error", error);
   }
 
+  function invalidateCaptureConfirmation(message, badge = "待人工确认") {
+    const checkbox = captureDialog?.querySelector("#studentCaptureConfirmed");
+    if (checkbox) checkbox.checked = false;
+    if (ui.capture) {
+      ui.capture.confirmedText = "";
+      ui.capture.recognitionStatus = ui.capture.recognitionEngine === "manual"
+        ? "学生手工录入题干；待逐字人工确认"
+        : `${ui.capture.recognitionEngine} 识别草稿；待逐字人工确认`;
+    }
+    if (message) setRecognitionStatus(message, badge);
+  }
+
   function setRecognitionStatus(message, badge, error = false) {
     const status = captureDialog.querySelector("#studentRecognitionStatus");
     const badgeNode = captureDialog.querySelector("#studentRecognitionBadge");
@@ -2899,7 +3875,7 @@
         ${validationMetric("次日保持证据", retention.day2, retention.day2Detail)}
         ${validationMetric("七日保持证据", retention.day7, retention.day7Detail)}
       </div>
-      <section class="validation-tasks"><h3>上线前人工可用性任务</h3><ol><li>首次使用并在一分钟内开始第一道题。</li><li>拍入一道错题并检查 OCR 不确定字符。</li><li>完成订正、错误归因和自我解释。</li><li>第二天完成到期复习。</li><li>在“我的”中解释“熟练”和“已掌握”的区别。</li></ol></section>
+      <section class="validation-tasks"><h3>上线前人工可用性任务</h3><ol><li>首次使用并在一分钟内开始第一道题。</li><li>拍入一道错题并检查 OCR 不确定字符。</li><li>完成订正、错误归因和自我解释。</li><li>第二天完成到期复习。</li><li>在“我的”中解释“已有独立正确证据”和“已掌握”的区别。</li></ol></section>
       <p class="metrics-boundary">这些是本机产品验证计数，不是教育效果因果证据，也不含班级排名。应分别邀请初中生和高中生完成观察测试。</p>`;
     metricsDialog.showModal();
   }
@@ -2920,10 +3896,34 @@
     const action = event.target.closest("[data-metrics-action]")?.dataset.metricsAction;
     if (action === "close") metricsDialog.close();
     else if (action === "complete-broad") completeBroadCoverageCheck();
+    else if (action === "complete-placement") completePlacementAssessment();
+  }
+
+  function completePlacementAssessment() {
+    const data = getStudentData({ includePlacement: true });
+    const session = data.placementState?.session
+      || engine?.placementSessionForProfile?.(data.learning, data.learning?.activeProfileId);
+    if (!session || !data.learning || !engine?.completePlacementAssessment) return;
+    const paper = data.placement;
+    const progress = diagnosticPackageProgress({ ...paper, type: "placement" }, data.learning);
+    if (!progress.complete) {
+      window.alert("请先完成本次摸底中的全部题目，再提交摸底。");
+      return;
+    }
+    try {
+      engine.completePlacementAssessment(data.learning, session.id);
+      engine.saveState(data.learning);
+      ui.diagnosticPackage = null;
+      metricsDialog.close();
+      recordEvent("placement-completed", { sessionId: session.id, submittedCount: session.questionIds.length });
+      renderRoleExperience();
+    } catch (error) {
+      window.alert(error.message || "摸底提交失败，数据未保存。");
+    }
   }
 
   function completeBroadCoverageCheck() {
-    const data = getStudentData();
+    const data = getStudentData({ includeBroadCoverage: true });
     const paper = data.broadCoverage?.paper;
     if (!paper || !data.learning || !engine?.recordBroadCoverageCheck) return;
     const progress = diagnosticPackageProgress(paper, data.learning);
@@ -2999,9 +3999,20 @@
       learningMinutes: 0,
       dueCount: 0,
       topics: [],
+      knowledgePointEvidence: {
+        totalKnowledgePoints: 0,
+        evidencedKnowledgePoints: 0,
+        coverageLabel: "0/0",
+        coverageRate: null,
+        insufficient: 0,
+        reinforce: 0,
+        basic: 0,
+        transferable: 0,
+        levelLabel: "证据不足"
+      },
       mastery: {
         masteryRate: 0,
-        counts: { "未开始": 0, "学习中": 0, "熟练": 0, "已掌握": 0, "待复习": 0, "薄弱": 0 }
+        counts: { "未开始": 0, "学习中": 0, "已有独立正确证据": 0, "已掌握": 0, "待复习": 0, "薄弱": 0 }
       }
     };
   }
@@ -3044,6 +4055,43 @@
       .replaceAll("'", "&#039;");
   }
 
+  // A class invite is sufficient for student entry; existing local experience
+  // data remains readable and no password form is rendered.
+  function renderClassroomLogin(status, disabled) {
+    if (experience.role === "teacher") {
+      return `
+        <section class="classroom-guest-teacher">
+          <h3>创建教师班级</h3>
+          <p>输入任意非空班级名称即可创建，创建者自动获得该班级管理权限。</p>
+          <form id="classroomCreateClassForm" class="classroom-compact-form">
+            <label><span>班级名称</span><input name="name" required maxlength="120" placeholder="例如：高三物理一班"></label>
+            <button type="submit"${disabled}>${ui.classroom.busy ? "正在创建…" : "创建班级"}</button>
+          </form>
+          <details class="classroom-server-settings">
+            <summary>联网服务地址</summary>
+            <form id="classroomServerConfigForm"><input name="serverUrl" type="url" required value="${escapeHtml(status.serverUrl)}"><button type="submit">保存</button></form>
+          </details>
+        </section>`;
+    }
+    const isLocalDevelopment = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(status.serverUrl);
+    return `
+      <section class="classroom-guest-student">
+        <h3>加入教师班级</h3>
+        <p>只需输入邀请码或扫描二维码，不需要学生登录名和密码。加入后可修改备注名。</p>
+        <form class="classroom-compact-form" id="classroomStudentJoinForm">
+          <details class="classroom-server-settings"${isLocalDevelopment ? " open" : ""}>
+            <summary>在线班级连接${isLocalDevelopment ? "（开发地址）" : ""}</summary>
+            <label><span>班级服务地址</span><input name="serverUrl" type="url" required value="${escapeHtml(status.serverUrl)}" autocomplete="url"></label>
+          </details>
+          <label><span>学生备注名</span><input name="displayName" maxlength="80" value="${escapeHtml(experience.displayName || "同学")}" autocomplete="nickname" placeholder="例如：李明·一班"></label>
+          <label><span>老师的邀请码</span><input name="code" data-classroom-join-code required minlength="22" maxlength="22" autocomplete="off" placeholder="输入22位邀请码"></label>
+          <label class="classroom-qr-scan"><span>扫描老师的二维码</span><input id="classroomInviteQrInput" type="file" accept="image/*" capture="environment"><small class="classroom-qr-status">可直接拍照或选择二维码图片，识别成功后会通过同一联网流程加入班级。</small></label>
+          <button type="button" data-classroom-qr-camera${disabled}>打开摄像头扫描</button>
+          <button type="submit"${disabled}>${ui.classroom.busy ? "正在加入…" : "输入邀请码加入"}</button>
+        </form>
+      </section>`;
+  }
+
   window.PhysicsExperience = Object.freeze({
     getState() {
       return {
@@ -3056,6 +4104,15 @@
       };
     },
     recordEvent,
+    openClassroom,
+    showMetrics,
+    openFeedbackEmail,
+    setStudentExternalLinks(enabled) {
+      experience.studentExternalLinks = Boolean(enabled);
+      saveExperience();
+      recordEvent("student-external-links-setting", { enabled: experience.studentExternalLinks });
+      return experience.studentExternalLinks;
+    },
     openSettings() {
       showOnboarding(true);
     }

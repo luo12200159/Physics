@@ -6,22 +6,24 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Web.Script.Serialization;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
-[assembly: AssemblyTitle("物理研习室")]
+[assembly: AssemblyTitle("费曼物理")]
 [assembly: AssemblyDescription("支持离线使用、学情档案与受控联网服务的物理学习应用")]
-[assembly: AssemblyProduct("物理研习室")]
+[assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 internal static class Program
 {
-    private const string AppName = "物理研习室";
+    internal const string AppName = "费曼物理";
+    internal const string LegacyDataFolder = "物理研习室";
 
     [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern IntPtr LoadLibrary(string fileName);
@@ -38,13 +40,17 @@ internal static class Program
         {
             return string.Equals(value, "--smoke-test", StringComparison.OrdinalIgnoreCase);
         });
+        bool classroomHostSmoke = Array.Exists(args, delegate(string value)
+        {
+            return string.Equals(value, "--classroom-host-smoke", StringComparison.OrdinalIgnoreCase);
+        });
 
         string missingFile;
         if (!RequiredFilesExist(appDirectory, out missingFile))
         {
             if (!checkOnly)
             {
-                ShowError("应用文件不完整，缺少：" + missingFile + "\n请重新安装物理研习室后再试。");
+                ShowError("应用文件不完整，缺少：" + missingFile + "\n请重新安装费曼物理后再试。");
             }
 
             return 2;
@@ -57,32 +63,50 @@ internal static class Program
 
         try
         {
-            LoadNativeWebView2Loader(appDirectory);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            string smokeUserDataDirectory = smokeTest
-                ? Path.Combine(
-                    Path.GetTempPath(),
-                    "PhysicsStudio-WebView2-Smoke-" + Guid.NewGuid().ToString("N")
-                )
-                : null;
-            try
+            string classroomDataDirectory = ArgumentValue(args, "--classroom-data-dir")
+                ?? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    LegacyDataFolder,
+                    "ClassroomService"
+                );
+            using (LanClassroomHost classroomHost = new LanClassroomHost(
+                Path.Combine(appDirectory, "物理研习室-班级服务.exe"),
+                classroomDataDirectory,
+                LanEndpointPolicy.ServicePort,
+                LanEndpointPolicy.DiscoveryPort
+            ))
             {
-                using (StudioWindow window = new StudioWindow(
-                    appDirectory,
-                    smokeTest,
-                    smokeUserDataDirectory
-                ))
+                LanHostStatus classroomStatus = classroomHost.StartAndWait(TimeSpan.FromSeconds(8));
+                if (classroomHostSmoke) return classroomStatus.Ready ? 0 : 5;
+
+                LoadNativeWebView2Loader(appDirectory);
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                string smokeUserDataDirectory = smokeTest
+                    ? Path.Combine(
+                        Path.GetTempPath(),
+                        "PhysicsStudio-WebView2-Smoke-" + Guid.NewGuid().ToString("N")
+                    )
+                    : null;
+                try
                 {
-                    Application.Run(window);
+                    using (StudioWindow window = new StudioWindow(
+                        appDirectory,
+                        smokeTest,
+                        smokeUserDataDirectory,
+                        classroomStatus
+                    ))
+                    {
+                        Application.Run(window);
+                    }
+                    return Environment.ExitCode;
                 }
-                return Environment.ExitCode;
-            }
-            finally
-            {
-                if (smokeUserDataDirectory != null)
+                finally
                 {
-                    TryDeleteSmokeDirectory(smokeUserDataDirectory);
+                    if (smokeUserDataDirectory != null)
+                    {
+                        TryDeleteSmokeDirectory(smokeUserDataDirectory);
+                    }
                 }
             }
         }
@@ -91,6 +115,16 @@ internal static class Program
             ShowError("应用启动失败：" + exception.Message);
             return 4;
         }
+    }
+
+    private static string ArgumentValue(string[] args, string name)
+    {
+        for (int index = 0; index + 1 < args.Length; index++)
+        {
+            if (String.Equals(args[index], name, StringComparison.OrdinalIgnoreCase))
+                return args[index + 1];
+        }
+        return null;
     }
 
     private static bool RequiredFilesExist(string appDirectory, out string missingFile)
@@ -104,6 +138,7 @@ internal static class Program
             "activation.css",
             "activation-public-key.js",
             "activation.js",
+            "storage-repository.js",
             "curriculum-taxonomy.js",
             "curriculum-bank.js",
             "exam-question-index.js",
@@ -118,8 +153,13 @@ internal static class Program
             "ai-tutor.js",
             "document-import.js",
             "content-catalog.js",
+            "classroom-config.js",
             "classroom-client.js",
+            "物理研习室-班级服务.exe",
+            "question-answer-service.js",
             "learning-engine.js",
+            "physics-visuals.js",
+            "teacher-mode-lock.js",
             "app.js",
             "learning-lab.js",
             "experience-shell.js",
@@ -313,7 +353,7 @@ internal static class ActivationStorage
         {
             return Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "物理研习室",
+                Program.LegacyDataFolder,
                 "Activation"
             );
         }
@@ -452,22 +492,30 @@ internal sealed class StudioWindow : Form
     private readonly WebView2 webView;
     private readonly bool smokeTest;
     private readonly string userDataDirectory;
+    private readonly LanHostStatus classroomStatus;
     private readonly Timer smokeTimer;
     private bool initialized;
 
     internal StudioWindow(
         string applicationDirectory,
         bool runSmokeTest,
-        string smokeUserDataDirectory
+        string smokeUserDataDirectory,
+        LanHostStatus lanClassroomStatus
     )
     {
         appDirectory = applicationDirectory;
         smokeTest = runSmokeTest;
         userDataDirectory = smokeUserDataDirectory;
-        Text = "物理研习室";
+        classroomStatus = lanClassroomStatus;
+                Text = "费曼物理";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(960, 680);
-        ClientSize = new Size(1360, 860);
+        Rectangle workArea = Screen.PrimaryScreen == null
+            ? new Rectangle(0, 0, 1360, 860)
+            : Screen.PrimaryScreen.WorkingArea;
+        int clientWidth = Math.Min(1360, Math.Max(760, workArea.Width - 32));
+        int clientHeight = Math.Min(860, Math.Max(520, workArea.Height - 64));
+        MinimumSize = new Size(Math.Min(960, clientWidth), Math.Min(680, clientHeight));
+        ClientSize = new Size(clientWidth, clientHeight);
         BackColor = Color.FromArgb(244, 246, 242);
 
         webView = new WebView2
@@ -506,7 +554,7 @@ internal sealed class StudioWindow : Form
         {
             string effectiveUserDataDirectory = userDataDirectory ?? Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "物理研习室",
+                Program.LegacyDataFolder,
                 "UserData"
             );
             Directory.CreateDirectory(effectiveUserDataDirectory);
@@ -545,7 +593,7 @@ internal sealed class StudioWindow : Form
                 "无法启动安全的 WebView2 本地宿主。\n\n"
                 + exception.Message
                 + "\n\n是否改用 Edge 或系统默认浏览器打开？",
-                "物理研习室",
+                Program.AppName,
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Warning
             );
@@ -643,10 +691,16 @@ internal sealed class StudioWindow : Form
         {
             return;
         }
-        if (string.IsNullOrEmpty(message) || message.Length > 5000)
+        if (string.IsNullOrEmpty(message) || message.Length > 100000)
         {
             return;
         }
+        if (message[0] == '{')
+        {
+            HandleClassroomWebMessage(message);
+            return;
+        }
+        if (message.Length > 5000) return;
 
         string[] parts = message.Split(new[] { ':' }, 4);
         if (parts.Length < 3
@@ -681,6 +735,24 @@ internal sealed class StudioWindow : Form
         {
             PostActivationMessage(requestId, null, null, false, exception.Message);
         }
+    }
+
+    private async void HandleClassroomWebMessage(string message)
+    {
+        string response;
+        try
+        {
+            response = await Task.Run(delegate
+            {
+                return new LanNativeMessageRouter().Handle(message);
+            });
+        }
+        catch
+        {
+            return;
+        }
+        if (IsDisposed || Disposing || webView.CoreWebView2 == null) return;
+        webView.CoreWebView2.PostWebMessageAsJson(response);
     }
 
     private static bool IsSafeRequestId(string value)

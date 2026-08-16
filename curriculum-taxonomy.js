@@ -497,10 +497,74 @@
     }
   ];
 
+  const knowledgePointAliases = Object.freeze([
+    Object.freeze({
+      id: "kp:带电粒子-磁场运动",
+      labels: Object.freeze([
+        "带电粒子在磁场中运动",
+        "带电粒子在磁场中的运动",
+        "带电粒子在匀强磁场中运动",
+        "带电粒子在匀强磁场中的运动"
+      ])
+    })
+  ]);
+
+  function normalizeKnowledgePointLabel(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .trim()
+      .replace(/[\s\u3000]+/g, "")
+      .replace(/中的?/g, "中")
+      .replace(/[^\p{L}\p{N}]+/gu, "")
+      .toLocaleLowerCase("zh-CN");
+  }
+
+  const aliasIndex = new Map();
+  knowledgePointAliases.forEach((concept) => {
+    concept.labels.forEach((label) => aliasIndex.set(normalizeKnowledgePointLabel(label), concept.id));
+  });
+
+  function fallbackKnowledgePointId(label) {
+    const normalized = String(label || "")
+      .normalize("NFKC")
+      .trim()
+      .replace(/中的?/g, "中")
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "");
+    return normalized ? `kp:${normalized}` : "";
+  }
+
+  function resolveKnowledgePoint(input = {}) {
+    const source = input && typeof input === "object" ? input : { label: input };
+    const label = String(source.label || source.topic || source.knowledgePoint || "").trim();
+    const explicitId = String(source.knowledgePointId || source.id || source.topicKey || "").trim();
+    const aliasId = aliasIndex.get(normalizeKnowledgePointLabel(label));
+    if (aliasId) return { id: aliasId, label: label || aliasId, resolution: "canonical-alias", unresolved: false };
+    if (explicitId) {
+      const explicitAlias = aliasIndex.get(normalizeKnowledgePointLabel(explicitId.replace(/^kp:/, "")));
+      return {
+        id: explicitAlias || explicitId,
+        label: label || explicitId,
+        resolution: explicitAlias ? "canonical-alias" : "explicit",
+        unresolved: false
+      };
+    }
+    const fallbackId = fallbackKnowledgePointId(label);
+    return {
+      id: fallbackId,
+      label,
+      resolution: fallbackId ? "legacy-fallback" : "unresolved",
+      unresolved: true
+    };
+  }
+
   window.PHYSICS_CURRICULUM_TAXONOMY = Object.freeze({
-    version: 1,
+    version: 2,
     verifiedAt: "2026-07-23",
-    books: Object.freeze(books)
+    books: Object.freeze(books),
+    knowledgePointAliases,
+    normalizeKnowledgePointLabel,
+    resolveKnowledgePoint
   });
   window.PHYSICS_SOURCE_CATALOG = Object.freeze(sourceCatalog);
 })();

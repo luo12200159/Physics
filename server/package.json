@@ -1,6 +1,6 @@
 {
   "name": "physics-studio-business-server",
-  "version": "1.0.0",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.18.0",

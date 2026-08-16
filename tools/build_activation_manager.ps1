@@ -20,7 +20,7 @@ if (-not $compiler) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$outputPath = Join-Path $OutputDirectory '物理研习室-激活码管理器-v1.0.0.exe'
+$outputPath = Join-Path $OutputDirectory '费曼物理-激活码管理器-v1.0.0.exe'
 $iconPath = Join-Path $projectDirectory 'assets\app.ico'
 
 & $compiler @(
@@ -51,7 +51,7 @@ if ($CertificateThumbprint) {
     }
     if (-not $SignToolPath) { throw '未找到 Windows SDK SignTool，无法完成代码签名。' }
     $thumbprint = ($CertificateThumbprint -replace '\s', '').ToUpperInvariant()
-    & $SignToolPath sign /sha1 $thumbprint /s My /fd SHA256 /td SHA256 /tr $TimestampUrl /d '物理研习室激活码管理器' $outputPath
+    & $SignToolPath sign /sha1 $thumbprint /s My /fd SHA256 /td SHA256 /tr $TimestampUrl /d '费曼物理激活码管理器' $outputPath
     if ($LASTEXITCODE -ne 0) { throw '激活码管理器代码签名失败。' }
 } elseif ($RequireSignature) {
     throw '已要求代码签名，但未提供 CertificateThumbprint。'
@@ -66,11 +66,11 @@ $hashPath = Join-Path $OutputDirectory 'SHA256-激活码管理器.txt'
 )
 
 $guide = @'
-物理研习室激活码管理器（仅限软件所有者）
+费曼物理激活码管理器（仅限软件所有者）
 
 1. 该程序不会把私钥打包到 EXE 中。可信私钥保存在初始化它的 Windows 当前用户 CNG 密钥库，并设置为不可导出。
 2. 首次发布时仅执行一次：
-   物理研习室-激活码管理器-v1.0.0.exe --initialize activation-public-key.js
+   费曼物理-激活码管理器-v1.0.0.exe --initialize activation-public-key.js
    然后必须用该 activation-public-key.js 重新构建 Windows 与 Android 用户端。
 3. 日常签发时打开管理器，把用户端显示的设备申请码逐行粘贴，批量生成激活码。
 4. 每个激活码只对签发时指定的设备摘要有效，不能用于第二台设备。

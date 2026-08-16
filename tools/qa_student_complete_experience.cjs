@@ -2,22 +2,16 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { launchBrowser } = require("./browser-launcher.cjs");
 
 const project = path.resolve(__dirname, "..");
 const indexPath = path.join(project, "index.html");
 const outputDirectory = path.join(project, "qa-output", "student-complete-experience");
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const moduleViews = [
   "library",
   "wrong",
-  "videos",
-  "mastered",
-  "progress",
   "curriculum",
-  "analysis",
-  "lab",
-  "advice"
+  "lab"
 ];
 
 function experienceInit(grade = "高一") {
@@ -69,7 +63,7 @@ async function preparePage(context, suffix) {
   await page.waitForFunction(() => {
     return !document.body.classList.contains("activation-pending")
       && window.PhysicsStudioApp?.getQuestions?.().length >= 1900
-      && document.querySelectorAll(".student-module-grid [data-student-view]").length >= 9;
+      && document.querySelectorAll(".student-module-grid [data-student-view]").length >= 4;
   });
   return page;
 }
@@ -108,8 +102,7 @@ async function assertNoHorizontalOverflow(page, label) {
 
 async function run() {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  const browser = await chromium.launch({
-    executablePath: edgePath,
+  const browser = await launchBrowser({
     headless: true,
     args: ["--allow-file-access-from-files"]
   });
@@ -313,7 +306,6 @@ async function run() {
 
     const substantiveSelectors = {
       wrong: ".correction-workflow",
-      videos: ".dynamic-method-section",
       mastered: ".mastery-rule-panel",
       progress: ".progress-state-grid",
       analysis: ".analysis-metric-grid",
@@ -336,8 +328,28 @@ async function run() {
     );
     await desktop.locator('[data-open-lab-tab="diagnostic"]').click();
     await desktop.locator("#learningLabModal[open]").waitFor({ state: "visible" });
+    await desktop.locator("#learningLabModal[open] .lab-diagnostic-card").waitFor({ state: "visible" });
     assert.equal(await desktop.locator('.lab-tabs [data-lab-tab="teacher"]').count(), 0);
     assert.ok(await desktop.locator(".lab-diagnostic-card").count() >= 1);
+    const diagnosticStrip = await desktop.locator(".diagnostic-selector").evaluate((strip) => {
+      const before = strip.scrollLeft;
+      strip.scrollLeft = strip.scrollWidth;
+      return {
+        before,
+        after: strip.scrollLeft,
+        clientWidth: strip.clientWidth,
+        scrollWidth: strip.scrollWidth
+      };
+    });
+    assert.ok(diagnosticStrip.scrollWidth >= diagnosticStrip.clientWidth, JSON.stringify(diagnosticStrip));
+    if (diagnosticStrip.scrollWidth > diagnosticStrip.clientWidth) {
+      assert.ok(diagnosticStrip.after > diagnosticStrip.before, JSON.stringify(diagnosticStrip));
+    }
+    const diagnosticOptions = await desktop.locator(".diagnostic-question label").evaluateAll((labels) => labels.map((label) => ({
+      clientWidth: label.clientWidth,
+      scrollWidth: label.scrollWidth
+    })));
+    assert.ok(diagnosticOptions.every((item) => item.scrollWidth <= item.clientWidth + 1), JSON.stringify(diagnosticOptions));
     await desktop.locator('[data-lab-action="close"]').click();
 
     await openStudentView(desktop, "curriculum");

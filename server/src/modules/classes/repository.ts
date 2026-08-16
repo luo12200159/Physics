@@ -171,6 +171,7 @@ export class ClassesRepository {
         `select ${CLASS_COLUMNS}
            from classes
           where classes.owner_teacher_id = $1
+            and classes.status = 'active'
             and ($2::uuid is null or classes.id > $2)
           order by classes.id
           limit 101`,
@@ -180,8 +181,13 @@ export class ClassesRepository {
       result = await this.pool.query<ClassRow>(
         `select ${CLASS_COLUMNS}
            from classes
-           join memberships on memberships.class_id = classes.id
-          where memberships.user_id = $1 and memberships.status = 'active'
+          where (classes.owner_teacher_id = $1 or exists (
+                  select 1 from memberships
+                   where memberships.class_id = classes.id
+                     and memberships.user_id = $1
+                     and memberships.status = 'active'
+                ))
+            and classes.status = 'active'
             and ($2::uuid is null or classes.id > $2)
           order by classes.id
           limit 101`,
@@ -190,8 +196,9 @@ export class ClassesRepository {
     } else {
       result = await this.pool.query<ClassRow>(
         `select ${CLASS_COLUMNS}
-           from classes
-          where ($1::uuid is null or classes.id > $1)
+          from classes
+          where classes.status = 'active'
+            and ($1::uuid is null or classes.id > $1)
           order by classes.id
           limit 101`,
         [cursor],
@@ -250,6 +257,61 @@ export class ClassesRepository {
       ownerTeacherId: row.owner_teacher_id,
       activeMember: row.active_member,
     };
+  }
+
+  async archiveClass(tx: PoolClient, classId: string, now: Date): Promise<ClassView> {
+    const result = await tx.query<ClassRow>(
+      `update classes
+          set status = 'archived', revision = revision + 1, updated_at = $2
+        where id = $1 and status = 'active'
+        returning id, owner_teacher_id, name, grade, subject, school_label,
+                  status, revision, created_at, updated_at`,
+      [classId, now],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Active class archive did not return a row");
+    return classView(row);
+  }
+
+  async revokeClassInvites(tx: PoolClient, classId: string): Promise<void> {
+    await tx.query(
+      `update invites set status = 'revoked'
+        where class_id = $1 and status <> 'revoked'`,
+      [classId],
+    );
+  }
+
+  async revokeClassOwnerCapabilities(tx: PoolClient, classId: string, now: Date): Promise<void> {
+    await tx.query(
+      `update class_owner_capabilities
+          set revoked_at = $2
+        where class_id = $1 and revoked_at is null`,
+      [classId, now],
+    );
+  }
+
+  async removeClassMemberships(
+    tx: PoolClient,
+    classId: string,
+    now: Date,
+  ): Promise<MembershipView[]> {
+    const result = await tx.query<MembershipRow>(
+      `with removed as (
+         update memberships
+            set status = 'removed', group_id = null,
+                revision = revision + 1, updated_at = $2
+          where class_id = $1 and status <> 'removed'
+          returning id, class_id, group_id, user_id,
+                    member_role, student_number, status, revision, joined_at, updated_at
+       )
+       select removed.id, removed.class_id, removed.group_id, removed.user_id,
+              users.display_name, removed.member_role, removed.student_number,
+              removed.status, removed.revision, removed.joined_at, removed.updated_at
+         from removed
+         join users on users.id = removed.user_id`,
+      [classId, now],
+    );
+    return result.rows.map(membershipView);
   }
 
   async insertGroup(tx: PoolClient, record: NewGroupRecord): Promise<GroupView> {

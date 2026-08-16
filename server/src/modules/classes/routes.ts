@@ -7,6 +7,8 @@ import {
   ClassIdParamsSchema,
   ClassListQuerySchema,
   ClassListResponseSchema,
+  DeleteClassResponseSchema,
+  AnonymousClassCreatedSchema,
   ClassViewSchema,
   CreateClassRequestSchema,
   CreateGroupRequestSchema,
@@ -47,7 +49,23 @@ function errors() {
 }
 
 export function registerClassRoutes(app: FastifyInstance, service: ClassesService): void {
+  app.post<{ Body: CreateClassRequest }>("/v1/classes/anonymous", {
+    schema: {
+      body: CreateClassRequestSchema,
+      response: { 201: AnonymousClassCreatedSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.createAnonymousClass(request.body, {
+      ip: request.ip,
+      requestId: String(request.id),
+    });
+    return reply.status(201).send(response);
+  });
+
   app.post<{ Body: CreateClassRequest }>("/v1/classes", {
+    // A stored Owner capability is scoped to the class it created.  This
+    // authenticated compatibility endpoint accepts the user's create action;
+    // subsequent management is still restricted to that class owner.
     preHandler: app.authenticate,
     schema: {
       body: CreateClassRequestSchema,
@@ -67,7 +85,7 @@ export function registerClassRoutes(app: FastifyInstance, service: ClassesServic
   });
 
   app.get<{ Querystring: ClassListQuery }>("/v1/classes", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       querystring: ClassListQuerySchema,
       response: { 200: ClassListResponseSchema, ...errors() },
@@ -80,8 +98,41 @@ export function registerClassRoutes(app: FastifyInstance, service: ClassesServic
     return reply.status(200).send(response);
   });
 
+  app.get<{ Params: ClassIdParams }>("/v1/classes/:classId", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassIdParamsSchema,
+      response: { 200: ClassViewSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.getClass(
+      actorFrom(request.authSession!),
+      request.params.classId,
+    );
+    return reply.status(200).send(response);
+  });
+
+  app.delete<{ Params: ClassIdParams }>("/v1/classes/:classId", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassIdParamsSchema,
+      response: { 200: DeleteClassResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.deleteClass(
+      actorFrom(request.authSession!),
+      request.params.classId,
+      {
+        ip: request.ip,
+        requestId: String(request.id),
+        idempotency: request.mutationIdempotency!,
+      },
+    );
+    return reply.status(200).send(response);
+  });
+
   app.post<{ Params: ClassIdParams; Body: CreateGroupRequest }>("/v1/classes/:classId/groups", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassIdParamsSchema,
       body: CreateGroupRequestSchema,
@@ -102,7 +153,7 @@ export function registerClassRoutes(app: FastifyInstance, service: ClassesServic
   });
 
   app.get<{ Params: ClassIdParams; Querystring: ClassListQuery }>("/v1/classes/:classId/groups", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassIdParamsSchema,
       querystring: ClassListQuerySchema,
@@ -118,7 +169,7 @@ export function registerClassRoutes(app: FastifyInstance, service: ClassesServic
   });
 
   const rosterOptions = {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassIdParamsSchema,
       querystring: ClassListQuerySchema,
@@ -153,7 +204,7 @@ export function registerClassRoutes(app: FastifyInstance, service: ClassesServic
   app.patch<{ Params: MembershipIdParams; Body: UpdateMembershipRequest }>(
     "/v1/memberships/:membershipId",
     {
-      preHandler: app.authenticate,
+      preHandler: app.authenticateOrOwnerCapability,
       schema: {
         params: MembershipIdParamsSchema,
         body: UpdateMembershipRequestSchema,

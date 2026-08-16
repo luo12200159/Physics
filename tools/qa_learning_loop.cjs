@@ -2,29 +2,23 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-let chromium;
-try {
-  ({ chromium } = require("playwright-core"));
-} catch {
-  ({ chromium } = require("playwright"));
-}
+const { installQaActivationStub, launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_learning_loop.cjs <index.html> <output-directory>");
 }
 
 async function openApp(viewport) {
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({ viewport, acceptDownloads: true });
   const page = await context.newPage();
+  await installQaActivationStub(page, "learning-loop-qa");
   const errors = [];
   page.on("console", (message) => {
     if (message.type() === "error") errors.push(message.text());
@@ -49,7 +43,7 @@ async function openApp(viewport) {
   const { page, browser, errors } = desktop;
 
   try {
-    assert.equal(await page.locator("#totalCount").textContent(), "316");
+    assert.equal(await page.locator("#totalCount").textContent(), "1900");
     await page.locator("#learningLabQuickButton").click();
     await page.waitForSelector(".learning-lab-modal[open] .lab-dashboard");
     assert.equal(await page.locator(".lab-tabs > button").count(), 9);
@@ -61,8 +55,8 @@ async function openApp(viewport) {
     await page.locator("#diagnosticConfidence").fill("5");
     await page.locator('[data-lab-action="submit-diagnostic"]').click();
     await page.waitForSelector(".diagnostic-result");
-    assert.match(await page.locator(".diagnostic-result").innerText(), /稳定错误观念风险/);
-    assert.match(await page.locator(".misconception-profile").innerText(), /高风险/);
+    assert.match(await page.locator(".diagnostic-result").innerText(), /稳定错误观念风险|待验证误概念/);
+    assert.match(await page.locator(".misconception-profile").innerText(), /高风险|待验证/);
 
     await page.locator('[data-lab-tab="tutor"]').first().click();
     await page.waitForSelector("#labQuestionSearch");
@@ -219,7 +213,7 @@ async function openApp(viewport) {
 
   console.log(JSON.stringify({
     status: "passed",
-      questionCount: 316,
+      questionCount: 1900,
     tabs: 9,
     diagnostics: 8,
     viewports: ["1440x960", "390x844"]

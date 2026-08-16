@@ -90,8 +90,11 @@ async function main() {
       return fetchHandler(call);
     }
   };
+  const navigator = { onLine: true };
   const context = vm.createContext({
     window,
+    localStorage,
+    navigator,
     console,
     URL,
     AbortController,
@@ -99,6 +102,12 @@ async function main() {
     setTimeout,
     clearTimeout
   });
+  vm.runInContext(
+    fs.readFileSync(path.join(project, "storage-repository.js"), "utf8"),
+    context,
+    { filename: "storage-repository.js" }
+  );
+  window.PhysicsStudioStorageRepository = context.PhysicsStudioStorageRepository;
   vm.runInContext(
     fs.readFileSync(path.join(project, "classroom-client.js"), "utf8"),
     context,
@@ -111,20 +120,63 @@ async function main() {
   assert.deepEqual(
     Object.keys(api),
     [
-      "version", "configure", "status", "login", "logout", "createClass",
-      "listClasses", "createInvite", "joinInvite", "listRoster", "listGroups",
-      "createGroup", "updateMembership"
+      "version", "configure", "status", "checkHealth", "login", "logout", "createClass",
+      "listClasses", "getClass", "deleteClass", "createInvite", "parseInvitePayload", "discoverServices", "joinClassByInviteCode", "joinInvite", "updateDisplayName", "listRoster", "listGroups",
+      "createGroup", "updateMembership", "syncStatus", "syncLearning",
+      "syncExamRecords", "flushSyncQueue", "acknowledgeSyncConflict",
+      "listAssignments", "createAssignment", "submitAssignment", "getClassLearningSummary",
+      "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots"
     ]
   );
   assert.equal(api.register, undefined, "client must not expose account registration");
-  assert.equal(api.status().serverUrl, "http://127.0.0.1:8787");
+  assert.equal(api.status().serverUrl, "");
+  assert.equal(api.status().serviceConfigured, false);
   assert.equal(api.status().authenticated, false);
 
+  const androidStorage = new MemoryStorage();
+  const androidWindow = {
+    localStorage: androidStorage,
+    sessionStorage: new MemoryStorage(),
+    crypto: webcrypto,
+    fetch: async () => jsonResponse(500, { code: "unexpected_request" })
+  };
+  const androidContext = vm.createContext({
+    window: androidWindow,
+    localStorage: androidStorage,
+    navigator: { onLine: true },
+    location: {
+      protocol: "https:",
+      origin: "https://appassets.androidplatform.net",
+      hostname: "appassets.androidplatform.net"
+    },
+    console,
+    URL,
+    AbortController,
+    Uint8Array,
+    setTimeout,
+    clearTimeout
+  });
+  vm.runInContext(fs.readFileSync(path.join(project, "storage-repository.js"), "utf8"), androidContext);
+  androidWindow.PhysicsStudioStorageRepository = androidContext.PhysicsStudioStorageRepository;
+  vm.runInContext(fs.readFileSync(path.join(project, "classroom-client.js"), "utf8"), androidContext);
+  assert.equal(
+    androidWindow.PhysicsStudioClassroom.status().serverUrl,
+    "",
+    "the Android appassets origin must never be mistaken for a classroom API"
+  );
+
   assert.throws(() => api.configure("http://classroom.example"), /HTTPS/);
-  assert.throws(() => api.configure("http://[::1]:8787"), /HTTPS/);
+  assert.equal(
+    api.configure("http://[::1]:8787/").serverUrl,
+    "http://[::1]:8787",
+    "IPv6 loopback remains available for local development without weakening remote HTTPS enforcement"
+  );
   assert.throws(() => api.configure("https://admin:secret@classroom.example"), /不能包含账号/);
   assert.throws(() => api.configure("https://classroom.example?token=secret"), /不能包含查询参数/);
-  assert.equal(api.configure("http://localhost:8787/").serverUrl, "http://localhost:8787");
+  assert.throws(
+    () => api.configure("http://localhost:8787/"),
+    (error) => error?.code === "invalid_server_url",
+  );
   assert.equal(api.configure("https://classroom.example/api/").serverUrl, "https://classroom.example/api");
 
   fetchHandler = async (call) => {
@@ -164,11 +216,60 @@ async function main() {
   assert.doesNotMatch(publicStatus, new RegExp(REFRESH_1.replaceAll(".", "\\.")));
   assert.equal(api.status().authenticated, true);
 
+  navigator.onLine = false;
+  const queuedSync = await api.syncLearning(CLASS_ID, {
+    profile: {
+      clientEntityId: "profile-local-1",
+      displayName: "学生",
+      grade: "高一",
+      curriculumVersion: "2026"
+    },
+    attempts: []
+  });
+  const duplicateQueuedSync = await api.syncLearning(CLASS_ID, {
+    profile: {
+      clientEntityId: "profile-local-1",
+      displayName: "学生",
+      grade: "高一",
+      curriculumVersion: "2026"
+    },
+    attempts: []
+  });
+  assert.equal(queuedSync.queued, true);
+  assert.equal(duplicateQueuedSync.queued, true);
+  assert.equal(api.syncStatus().state, "waiting-sync");
+  assert.equal(api.syncStatus().pending, 1);
+  navigator.onLine = true;
+  fetchHandler = async () => jsonResponse(200, {
+    profileId: USER_ID,
+    accepted: 0,
+    duplicates: 0,
+    conflicts: [],
+    lastAcceptedAt: null
+  });
+  const flushed = await api.flushSyncQueue();
+  assert.equal(flushed.pending, 0);
+  assert.equal(api.syncStatus().state, "synced");
+
   const routeStart = calls.length;
-  fetchHandler = async () => jsonResponse(200, { items: [], nextCursor: null });
+  fetchHandler = async (call) => {
+    if (call.url.endsWith(`/v1/classes/${CLASS_ID}/invites`)) {
+      return jsonResponse(201, {
+        id: "invite-qa-0001",
+        code: "I".repeat(22),
+        expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+        maxUses: 1000
+      });
+    }
+    return jsonResponse(200, { items: [], nextCursor: null });
+  };
   await api.createClass({ name: "九年级一班", grade: "九年级", schoolLabel: "长沙示例学校" });
+  await api.createClass({ name: "快速创建班级" });
+  const quickCreate = calls.slice(routeStart).find((item) => item.url.endsWith("/v1/classes") && item.options.method === "POST" && bodyOf(item)?.name === "快速创建班级");
+  assert.deepEqual(bodyOf(quickCreate), { name: "快速创建班级" });
   await api.listClasses({ cursor: CURSOR_ID });
-  await api.createInvite(CLASS_ID, { expiresAt: "2026-08-02T12:00:00.000Z", maxUses: 30 });
+  const inviteCreatedAfter = Date.now();
+  await api.createInvite(CLASS_ID);
   await api.joinInvite("C".repeat(22));
   await api.listRoster(CLASS_ID, { cursor: CURSOR_ID });
   await api.listGroups(CLASS_ID);
@@ -178,18 +279,29 @@ async function main() {
     groupId: GROUP_ID,
     studentNumber: "2026001"
   });
+  await api.createAssignment(CLASS_ID, {
+    title: "专项练习",
+    instructions: "完成后提交完成状态",
+    targetType: "class",
+    questionIds: ["q-1"],
+    knowledgePointKeys: ["topic:motion"],
+    target: "完成 5 题并提交迁移记录",
+    publish: true
+  });
   const routeCalls = calls.slice(routeStart);
   assert.deepEqual(
     routeCalls.map((call) => [call.options.method, call.url]),
-    [
-      ["POST", "https://classroom.example/api/v1/classes"],
-      ["GET", `https://classroom.example/api/v1/classes?cursor=${CURSOR_ID}`],
+      [
+        ["POST", "https://classroom.example/api/v1/classes"],
+        ["POST", "https://classroom.example/api/v1/classes"],
+        ["GET", `https://classroom.example/api/v1/classes?cursor=${CURSOR_ID}`],
       ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/invites`],
       ["POST", "https://classroom.example/api/v1/invites/join"],
       ["GET", `https://classroom.example/api/v1/classes/${CLASS_ID}/roster?cursor=${CURSOR_ID}`],
       ["GET", `https://classroom.example/api/v1/classes/${CLASS_ID}/groups`],
       ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/groups`],
-      ["PATCH", `https://classroom.example/api/v1/memberships/${MEMBERSHIP_ID}`]
+      ["PATCH", `https://classroom.example/api/v1/memberships/${MEMBERSHIP_ID}`],
+      ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/assignments`]
     ]
   );
   routeCalls.forEach((call) => {
@@ -203,19 +315,29 @@ async function main() {
   assert.deepEqual(bodyOf(routeCalls[0]), {
     name: "九年级一班",
     grade: "九年级",
-    subject: "物理",
     schoolLabel: "长沙示例学校"
   });
-  assert.deepEqual(bodyOf(routeCalls[2]), {
-    expiresAt: "2026-08-02T12:00:00.000Z",
-    maxUses: 30
-  });
-  assert.deepEqual(bodyOf(routeCalls[3]), { code: "C".repeat(22) });
-  assert.deepEqual(bodyOf(routeCalls[6]), { name: "巩固组" });
-  assert.deepEqual(bodyOf(routeCalls[7]), {
+  const inviteBody = bodyOf(routeCalls[3]);
+  assert.equal(inviteBody.maxUses, 1000);
+  const inviteLifetime = new Date(inviteBody.expiresAt).getTime() - inviteCreatedAfter;
+  assert.ok(inviteLifetime >= 29 * 86400000 && inviteLifetime <= 30 * 86400000);
+  assert.deepEqual(bodyOf(routeCalls[4]), { code: "C".repeat(22) });
+  assert.deepEqual(bodyOf(routeCalls[7]), { name: "巩固组" });
+  assert.deepEqual(bodyOf(routeCalls[8]), {
     status: "active",
     groupId: GROUP_ID,
     studentNumber: "2026001"
+  });
+  assert.deepEqual(bodyOf(routeCalls[9]), {
+    title: "专项练习",
+    instructions: "完成后提交完成状态",
+    dueAt: null,
+    targetType: "class",
+    targetId: null,
+    questionIds: ["q-1"],
+    knowledgePointKeys: ["topic:motion"],
+    target: "完成 5 题并提交迁移记录",
+    publish: true
   });
 
   const refreshCalls = [];
@@ -298,7 +420,7 @@ async function main() {
     return true;
   });
 
-  await assert.rejects(api.joinInvite("short"), /格式不正确/);
+  await assert.rejects(api.joinInvite("short"), /未识别到有效班级邀请码/);
   await assert.rejects(api.updateMembership(MEMBERSHIP_ID, {}), /至少需要修改/);
   await assert.rejects(
     api.updateMembership(MEMBERSHIP_ID, { role: "teacher" }),
@@ -328,7 +450,7 @@ async function main() {
   console.log(JSON.stringify({
     status: "passed",
     apiVersion: api.version,
-    defaultServerUrl: "http://127.0.0.1:8787",
+    defaultServerUrl: "unconfigured",
     verifiedRoutes: routeCalls.length,
     mutationKeysVerified: routeCalls.filter((call) => call.options.method !== "GET").length + 4,
     stableDeviceIdLength: deviceIdBeforeLogout.length,

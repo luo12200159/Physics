@@ -47,8 +47,13 @@
       answer,
       examPoints,
       modelFamilyId: familyId,
+      modelDefinitionId: familyId,
       variantRole: variant.key,
       transferGroupId: familyId,
+      retestGroupId: familyId,
+      evidenceTier: variant.key === "core" ? "diagnostic-anchor" : variant.key === "counter" ? "transfer-anchor" : "practice-variant",
+      diagnosticEligible: variant.key === "core",
+      autoScorable: ["选择题", "填空题", "判断题", "计算题"].some((type) => String(payload.questionType || "计算题").includes(type)),
       misconceptionTags: [...(payload.misconceptionTags || model.misconceptionTags || [])],
       recommendationTags: [model.topic, ...examPoints, variant.label],
       source: "物理研习室原创·长沙模拟考结构适配专项",
@@ -1427,10 +1432,87 @@
     throw new Error(`专项迁移题库生成失败：${invalid[0] || `题量${questions.length}`}`);
   }
 
+  const normalizedQuestions = questions.map((question) => ({
+    ...question,
+    knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
+    cognitiveDemand: question.cognitiveDemand || (question.variantRole === "counter" ? "反例辨析" : question.variantRole === "far" ? "远迁移" : "专项应用"),
+    representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : "文字/公式"),
+    independenceGroupId: question.independenceGroupId || question.modelFamilyId || question.modelDefinitionId,
+    assessmentPurpose: question.assessmentPurpose || "targeted"
+  }));
+
+  const TARGET_GRADES = Object.freeze([
+    Object.freeze({ grade: "八年级", gradeCode: "g8" }),
+    Object.freeze({ grade: "九年级", gradeCode: "g9" }),
+    Object.freeze({ grade: "高一", gradeCode: "h1" }),
+    Object.freeze({ grade: "高二", gradeCode: "h2" }),
+    Object.freeze({ grade: "高三", gradeCode: "h3" })
+  ]);
+  const REQUIRED_TRANSFER_ROLES = Object.freeze(["core", "near", "far", "counter"]);
+
+  function coverageReport() {
+    const byGrade = Object.fromEntries(TARGET_GRADES.map(({ grade, gradeCode }) => {
+      const gradeQuestions = normalizedQuestions.filter((question) => question.grade === grade);
+      const families = new Map();
+      gradeQuestions.forEach((question) => {
+        const familyId = String(question.modelFamilyId || "").trim();
+        if (!familyId) return;
+        const family = families.get(familyId) || {
+          modelFamilyId: familyId,
+          knowledgePointIds: new Set(),
+          roles: new Set(),
+          questionIds: []
+        };
+        if (question.knowledgePointId) family.knowledgePointIds.add(question.knowledgePointId);
+        if (question.variantRole) family.roles.add(question.variantRole);
+        family.questionIds.push(question.id);
+        families.set(familyId, family);
+      });
+      const incompleteFamilies = [...families.values()].filter((family) => {
+        return REQUIRED_TRANSFER_ROLES.some((role) => !family.roles.has(role));
+      });
+      const knowledgePointIds = [...new Set(gradeQuestions.map((question) => question.knowledgePointId).filter(Boolean))];
+      const gaps = [];
+      if (!gradeQuestions.length) {
+        gaps.push({
+          type: "no-reviewed-family",
+          detail: "当前没有通过内容审核的 core / near / far / counter 真实题族；UI 不得声称结构完整。"
+        });
+      }
+      incompleteFamilies.forEach((family) => gaps.push({
+        type: "incomplete-transfer-family",
+        modelFamilyId: family.modelFamilyId,
+        missingRoles: REQUIRED_TRANSFER_ROLES.filter((role) => !family.roles.has(role))
+      }));
+      return [grade, {
+        grade,
+        gradeCode,
+        publishedQuestionCount: gradeQuestions.length,
+        publishedModelFamilyCount: families.size,
+        knowledgePointCount: knowledgePointIds.length,
+        knowledgePointIds,
+        incompleteFamilyCount: incompleteFamilies.length,
+        structureStatus: gradeQuestions.length && !incompleteFamilies.length
+          ? "complete-reviewed-structure"
+          : "missing-reviewed-content",
+        gaps
+      }];
+    }));
+    return {
+      generatedAt: new Date().toISOString(),
+      requiredTransferRoles: [...REQUIRED_TRANSFER_ROLES],
+      byGrade,
+      boundary: "覆盖报告只统计已经发布并通过现有内容校验的题目；八年级、高一、高二缺口保持为未发布，不用自动改数字题冒充独立掌握证据。"
+    };
+  }
+
   window.PHYSICS_TARGETED_PRACTICE_BANK = Object.freeze({
     version: VERSION,
     contentVersion: CONTENT_VERSION,
-    questions: Object.freeze(questions.map((question) => Object.freeze(question))),
+    questions: Object.freeze(normalizedQuestions.map((question) => Object.freeze(question))),
+    targetGrades: TARGET_GRADES,
+    requiredTransferRoles: REQUIRED_TRANSFER_ROLES,
+    coverageReport,
     manifest: Object.freeze({
       generatedCount: questions.length,
       byGrade: Object.freeze({ "九年级": 200, "高三": 200 }),

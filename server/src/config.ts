@@ -123,8 +123,19 @@ function parseOrigin(value: string, nodeEnv: NodeEnvironment): string {
   if (url.origin !== value || url.username || url.password || url.search || url.hash) {
     throw new Error(`CORS origin must be an exact origin: ${value}`);
   }
-  const isLoopback = url.hostname === "localhost" || url.hostname === "127.0.0.1";
-  if (url.protocol !== "https:" && !(nodeEnv !== "production" && isLoopback && url.protocol === "http:")) {
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  const isLoopback = hostname === "localhost" || hostname === "::1" || hostname.startsWith("127.");
+  const privateV4 = /^10(?:\.\d{1,3}){3}$/.test(hostname)
+    || /^192\.168(?:\.\d{1,3}){2}$/.test(hostname)
+    || (() => {
+      const match = hostname.match(/^172\.(\d{1,3})(?:\.\d{1,3}){2}$/);
+      return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+    })();
+  const privateV6 = hostname.startsWith("fc") || hostname.startsWith("fd") || hostname.startsWith("fe80:");
+  const developmentHttp = nodeEnv !== "production"
+    && url.protocol === "http:"
+    && (isLoopback || privateV4 || privateV6);
+  if (url.protocol !== "https:" && !developmentHttp) {
     throw new Error(`CORS origin must use HTTPS: ${value}`);
   }
   return url.origin;

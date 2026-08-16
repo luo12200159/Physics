@@ -99,6 +99,14 @@ export class InvitesRepository {
     );
   }
 
+  async revokeActiveClassInvites(tx: PoolClient, classId: string): Promise<void> {
+    await tx.query(
+      `update invites set status = 'revoked'
+        where class_id = $1 and status = 'active'`,
+      [classId],
+    );
+  }
+
   async lockByCodeHash(tx: PoolClient, codeHash: Buffer): Promise<LockedInviteRecord | null> {
     const result = await tx.query<InviteRow>(
       `select invites.id, invites.class_id, invites.expires_at,
@@ -237,6 +245,43 @@ export class InvitesRepository {
     const row = result.rows[0];
     if (!row) throw new Error("Membership insert did not return a row");
     return membershipView(row);
+  }
+
+  /**
+   * Invite-code guest entry is an explicit student credential.  It may enter
+   * the class immediately; the teacher-only moderation workflow continues to
+   * use insertPendingMembership through the authenticated join route.
+   */
+  async insertActiveMembership(
+    tx: PoolClient,
+    membershipId: string,
+    classId: string,
+    userId: string,
+    now: Date,
+  ): Promise<MembershipView> {
+    const result = await tx.query<MembershipRow>(
+      `insert into memberships(
+         id, class_id, group_id, user_id, member_role, student_number,
+         status, joined_at, revision, updated_at
+       ) values ($1, $2, null, $3, 'student', null, 'active', $4, 1, $4)
+       returning id, class_id, group_id, user_id,
+         (select display_name from users where users.id = memberships.user_id) as display_name,
+         member_role, student_number, status, revision, joined_at, updated_at`,
+      [membershipId, classId, userId, now],
+    );
+    const row = result.rows[0];
+    if (!row) throw new Error("Membership insert did not return a row");
+    return membershipView(row);
+  }
+
+  async activateMembership(tx: PoolClient, membershipId: string, now: Date): Promise<void> {
+    await tx.query(
+      `update memberships
+          set status = 'active', joined_at = coalesce(joined_at, $2),
+              revision = revision + 1, updated_at = $2
+        where id = $1 and status = 'pending'`,
+      [membershipId, now],
+    );
   }
 
   async consumeInvite(

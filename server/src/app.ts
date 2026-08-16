@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 
 import { Type } from "@sinclair/typebox";
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import cors from "@fastify/cors";
+import Fastify, { type FastifyInstance, type FastifyRequest, type preHandlerHookHandler } from "fastify";
 import type { TypeBoxTypeProvider } from "@fastify/type-provider-typebox";
 
 import type { AppConfig } from "./config.js";
@@ -14,9 +15,13 @@ import { StrictObject } from "./common/schema.js";
 import { registerAuthRoutes } from "./modules/auth/routes.js";
 import type { AuthService } from "./modules/auth/service.js";
 import { registerClassRoutes } from "./modules/classes/routes.js";
+import type { OwnerCapabilityService } from "./modules/classes/owner-capability.js";
 import type { ClassesService } from "./modules/classes/service.js";
 import { registerInviteRoutes } from "./modules/invites/routes.js";
 import type { InvitesService } from "./modules/invites/service.js";
+import { registerLearningRoutes } from "./modules/learning/routes.js";
+import type { LearningService } from "./modules/learning/service.js";
+import { APP_VERSION } from "./version.js";
 
 export interface AppDependencies {
   config: AppConfig;
@@ -35,12 +40,15 @@ export interface AppDependencies {
   };
   authService?: AuthService;
   classService?: ClassesService;
+  ownerCapabilityService?: OwnerCapabilityService;
   inviteService?: InvitesService;
+  learningService?: LearningService;
 }
 
 declare module "fastify" {
   interface FastifyInstance {
     deps: AppDependencies;
+    authenticateOrOwnerCapability: preHandlerHookHandler;
   }
 
   interface FastifyRequest {
@@ -53,12 +61,16 @@ const idempotencyExemptRoutes = new Set([
   "POST /v1/auth/login",
   "POST /v1/auth/refresh",
   "POST /v1/auth/reauthenticate",
+  // Anonymous class creation has no authenticated actor/idempotency row. The
+  // generated owner capability is the idempotent recovery handle.
+  "POST /v1/classes/anonymous",
+  "POST /v1/invites/join-anonymous",
 ]);
 
 const LiveResponseSchema = StrictObject({
   status: Type.Literal("ok"),
   service: Type.Literal("physics-studio-business"),
-  version: Type.Literal("1.0.0"),
+  version: Type.Literal(APP_VERSION),
 });
 
 function requestId(request: FastifyRequest): string {
@@ -82,6 +94,8 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
           "req.body.accessToken",
           "req.body.refreshToken",
           "req.body.code",
+          "req.body.ownerCapability",
+          "ownerCapability",
           "password",
           "currentPassword",
           "newPassword",
@@ -107,6 +121,28 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
       },
     },
   }).withTypeProvider<TypeBoxTypeProvider>();
+
+  const allowedOrigins = new Set(deps.config.corsAllowedOrigins);
+  await app.register(cors, {
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.has(origin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    credentials: false,
+    methods: ["GET", "HEAD", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Accept",
+      "Authorization",
+      "Content-Type",
+      "Idempotency-Key",
+      "X-Physics-Studio-Client",
+    ],
+    exposedHeaders: ["X-Request-Id"],
+    maxAge: 600,
+  });
 
   app.decorate("deps", deps);
   app.decorateRequest("mutationIdempotency", null);
@@ -153,15 +189,36 @@ export async function buildApp(deps: AppDependencies): Promise<FastifyInstance> 
   }, async () => ({
     status: "ok" as const,
     service: "physics-studio-business" as const,
-    version: "1.0.0" as const,
+    version: APP_VERSION,
   }));
 
   if ((deps.classService || deps.inviteService) && !deps.authService) {
     throw new TypeError("Class and invite routes require an authentication service");
   }
+  if (deps.learningService && !deps.authService) {
+    throw new TypeError("Learning routes require an authentication service");
+  }
   if (deps.authService) registerAuthRoutes(app, deps.authService);
+  app.decorate("authenticateOrOwnerCapability", async (request, reply) => {
+    const authorization = request.headers.authorization;
+    if (authorization?.startsWith("Owner ")) {
+      const capability = authorization.slice("Owner ".length).trim();
+      if (!deps.ownerCapabilityService || capability.length === 0) {
+        throw new ApiError(401, "invalid_owner_capability", "Owner capability is invalid or expired");
+      }
+      request.authSession = await deps.ownerCapabilityService.authenticate(capability);
+      return;
+    }
+    if (!deps.authService) {
+      throw new ApiError(401, "authentication_required", "Authentication is required");
+    }
+    // The normal bearer path remains the existing auth service, including
+    // refresh-session replay and idempotency checks.
+    await app.authenticate(request, reply, () => undefined);
+  });
   if (deps.classService) registerClassRoutes(app, deps.classService);
   if (deps.inviteService) registerInviteRoutes(app, deps.inviteService);
+  if (deps.learningService) registerLearningRoutes(app, deps.learningService);
 
   app.addHook("onClose", async () => {
     await Promise.allSettled([

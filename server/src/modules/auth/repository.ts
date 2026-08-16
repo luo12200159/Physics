@@ -186,6 +186,16 @@ export class AuthRepository {
     };
   }
 
+  async updateDisplayName(userId: string, displayName: string, now: Date): Promise<UserLifecycleRecord | null> {
+    await this.pool.query(
+      `update users
+          set display_name = $2, updated_at = $3
+        where id = $1 and status = 'active'`,
+      [userId, displayName, now],
+    );
+    return this.findLifecycleByUserId(userId);
+  }
+
   async findActiveLifecycleBySession(
     userId: string,
     familyId: string,

@@ -92,8 +92,16 @@ function authService(): AuthService {
 
 function classesService(overrides: Record<string, unknown> = {}): ClassesService {
   return {
+    createAnonymousClass: vi.fn(async () => ({
+      class: { ...CLASS_VIEW, name: "Physics class" },
+      ownerUserId: TEACHER_ID,
+      ownerCapability: `oc1.${"A".repeat(43)}`,
+      ownerCapabilityExpiresAt: "2027-08-01T12:00:00.000Z",
+    })),
     createClass: vi.fn(async () => CLASS_VIEW),
     listClasses: vi.fn(async () => ({ items: [CLASS_VIEW], nextCursor: null })),
+    getClass: vi.fn(async () => CLASS_VIEW),
+    deleteClass: vi.fn(async () => ({ id: CLASS_ID, status: "archived" as const })),
     createGroup: vi.fn(async () => GROUP_VIEW),
     listGroups: vi.fn(async () => ({ items: [GROUP_VIEW], nextCursor: null })),
     getRoster: vi.fn(async () => ({ items: [MEMBERSHIP_VIEW], nextCursor: null })),
@@ -129,6 +137,34 @@ function invitesService(overrides: Record<string, unknown> = {}): InvitesService
 }
 
 describe("class and invite route contracts", () => {
+  it("allows a name-only anonymous class creation without teacher invitation or login", async () => {
+    const createAnonymousClass = vi.fn(async () => ({
+      class: { ...CLASS_VIEW, name: "Physics class" },
+      ownerUserId: TEACHER_ID,
+      ownerCapability: `oc1.${"A".repeat(43)}`,
+      ownerCapabilityExpiresAt: "2027-08-01T12:00:00.000Z",
+    }));
+    const app = await buildTestApp({
+      authService: authService(),
+      classService: classesService({ createAnonymousClass }),
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/classes/anonymous",
+      payload: { name: "  Physics class  " },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json()).toMatchObject({
+      class: { id: CLASS_ID, name: "Physics class" },
+      ownerUserId: TEACHER_ID,
+      ownerCapability: expect.stringMatching(/^oc1\./),
+    });
+    expect(createAnonymousClass).toHaveBeenCalledWith(
+      { name: "  Physics class  " },
+      expect.objectContaining({ ip: expect.any(String), requestId: expect.any(String) }),
+    );
+  });
+
   it("requires authentication and idempotency when a teacher creates a class", async () => {
     const createClass = vi.fn(async () => ({ ...CLASS_VIEW, internalOwnerId: TEACHER_ID }));
     const authenticateAccessToken = vi.fn(async () => TEACHER_SESSION);
@@ -202,6 +238,56 @@ describe("class and invite route contracts", () => {
     expect(listClasses).toHaveBeenCalledWith(
       expect.objectContaining({ userId: TEACHER_ID }),
       null,
+    );
+  });
+
+  it("reads a class detail and archives it through an owner-authorized delete", async () => {
+    const getClass = vi.fn(async () => CLASS_VIEW);
+    const deleteClass = vi.fn(async () => ({ id: CLASS_ID, status: "archived" as const }));
+    const app = await buildTestApp({
+      authService: authService(),
+      classService: classesService({ getClass, deleteClass }),
+    });
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/classes/${CLASS_ID}`,
+      headers: { authorization: AUTHORIZATION },
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+    expect(detail.json()).toEqual(CLASS_VIEW);
+    expect(getClass).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: TEACHER_ID }),
+      CLASS_ID,
+    );
+
+    const missingKey = await app.inject({
+      method: "DELETE",
+      url: `/v1/classes/${CLASS_ID}`,
+      headers: { authorization: AUTHORIZATION },
+    });
+    expect(missingKey.statusCode).toBe(400);
+    expect(deleteClass).not.toHaveBeenCalled();
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/v1/classes/${CLASS_ID}`,
+      headers: {
+        authorization: AUTHORIZATION,
+        "idempotency-key": "class-delete-test-0001",
+      },
+    });
+    expect(removed.statusCode, removed.body).toBe(200);
+    expect(removed.json()).toEqual({ id: CLASS_ID, status: "archived" });
+    expect(deleteClass).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: TEACHER_ID }),
+      CLASS_ID,
+      expect.objectContaining({
+        idempotency: expect.objectContaining({
+          routeKey: "DELETE /v1/classes/:classId",
+          key: "class-delete-test-0001",
+        }),
+      }),
     );
   });
 

@@ -109,7 +109,7 @@
         <div class="activation-panel">
           <div class="activation-brand">
             <span class="activation-brand-mark" aria-hidden="true">φ</span>
-            <div><strong>物理研习室</strong><span>DEVICE ACTIVATION</span></div>
+            <div><strong>费曼物理</strong><span>DEVICE ACTIVATION</span></div>
           </div>
           <h1 id="activationTitle">激活后开始学习</h1>
           <p class="activation-intro">本应用采用一机一码。激活码包含当前设备摘要的数字签名，不能转用于第二台设备。</p>
@@ -187,14 +187,16 @@
       };
     }
 
+    const storage = window.PhysicsStudioStorageRepository;
+    if (!storage) throw new Error("本地存储适配器未加载");
     const storageKey = "physics-studio-browser-activation-v1";
     const deviceSecretKey = "physics-studio-browser-device-secret-v1";
-    let secret = localStorage.getItem(deviceSecretKey);
+    let secret = storage.getItem(deviceSecretKey);
     if (!secret) {
       const random = new Uint8Array(32);
       crypto.getRandomValues(random);
       secret = toBase64Url(random);
-      localStorage.setItem(deviceSecretKey, secret);
+      storage.setItem(deviceSecretKey, secret);
     }
     const digest = await crypto.subtle.digest(
       "SHA-256",
@@ -202,11 +204,11 @@
     );
     return {
       deviceId: bytesToHex(new Uint8Array(digest)),
-      storedCode: localStorage.getItem(storageKey) || "",
+      storedCode: storage.getItem(storageKey) || "",
       description: "浏览器调试存储",
       async save(code) {
-        localStorage.setItem(storageKey, code);
-        return localStorage.getItem(storageKey) === code;
+        storage.setItem(storageKey, code);
+        return storage.getItem(storageKey) === code;
       }
     };
   }
@@ -360,7 +362,7 @@
   }
 
   function unlock(payload, gate) {
-    setStatus(gate, "激活成功，正在进入物理研习室……", "success");
+    setStatus(gate, "激活成功，正在进入费曼物理……", "success");
     document.body.classList.remove("activation-pending");
     document.body.classList.add("activation-complete");
     gate.root.remove();

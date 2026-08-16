@@ -1,7 +1,7 @@
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
-import type { Actor } from "../../src/modules/authorization/policy.js";
+import { authorize, type Actor } from "../../src/modules/authorization/policy.js";
 import { createClassesService } from "../../src/modules/classes/service.js";
 import { createInvitesService } from "../../src/modules/invites/service.js";
 
@@ -23,15 +23,15 @@ function mutationContext() {
   };
 }
 
-describe("class service role gates", () => {
-  it("does not touch persistence when a non-teacher tries to create a class", async () => {
+describe("class service class-scoped ownership", () => {
+  it("does not let a parent create a class", async () => {
     const connect = vi.fn();
     const service = createClassesService({
       pool: { connect } as unknown as Pool,
       auditIpKey: "unit-audit-ip-key-at-least-32-characters",
       syncOutboxRetentionDays: 180,
     });
-    await expect(service.createClass(actor("student", "reauthenticated"), {
+    await expect(service.createClass(actor("parent", "reauthenticated"), {
       name: "九年级一班",
       grade: "九年级",
       subject: "物理",
@@ -43,27 +43,24 @@ describe("class service role gates", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
-  it("requires recent password verification before class management", async () => {
-    const query = vi.fn(async () => ({ rows: [], rowCount: 0 }));
-    const release = vi.fn();
-    const connect = vi.fn(async () => ({ query, release }));
-    const service = createClassesService({
-      pool: { connect } as unknown as Pool,
-      auditIpKey: "unit-audit-ip-key-at-least-32-characters",
-      syncOutboxRetentionDays: 180,
-    });
-    await expect(service.createClass(actor("teacher", "password"), {
-      name: "九年级一班",
-      grade: "九年级",
-      subject: "物理",
-      schoolLabel: null,
-    }, mutationContext())).rejects.toMatchObject({
-      statusCode: 403,
-      code: "reauthentication_required",
-    });
-    expect(connect).toHaveBeenCalledTimes(1);
-    expect(query).toHaveBeenCalledWith("ROLLBACK");
-    expect(release).toHaveBeenCalledTimes(1);
+  it("allows an authenticated teacher session to perform routine class management", () => {
+    expect(authorize(actor("teacher", "password"), "class.manage", {
+      classId: null,
+      ownerTeacherId: TEACHER_ID,
+      ownerUserId: null,
+      activeMember: false,
+      guardianLinked: false,
+    })).toEqual({ allowed: true });
+  });
+
+  it("allows a non-parent account to manage the class it created", () => {
+    expect(authorize(actor("student", "reauthenticated"), "class.manage", {
+      classId: "60000000-0000-4000-8000-000000000003",
+      ownerTeacherId: TEACHER_ID,
+      ownerUserId: null,
+      activeMember: false,
+      guardianLinked: false,
+    })).toEqual({ allowed: true });
   });
 
   it("does not allow parent profiles to enumerate classes", async () => {

@@ -3413,3 +3413,11 @@ body.role-parent .detail-actions [data-detail-action="edit"] {
     transition-duration: 0.01ms !important;
   }
 }
+
+@media (max-width: 860px) {
+  html,
+  body {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+}

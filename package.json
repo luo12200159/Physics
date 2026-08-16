@@ -1,0 +1,26 @@
+{
+  "name": "physics-study-room-qa",
+  "private": true,
+  "version": "3.2.0",
+  "description": "Feynman Physics front-end QA and release entry points",
+  "scripts": {
+    "qa:node": "node tools/qa_node.cjs",
+    "qa:android-security": "node tools/qa_android_security.cjs && node tools/qa_android_lan_classroom.cjs",
+    "qa:browser": "node tools/qa_browser.cjs desktop",
+    "qa:mobile": "node tools/qa_browser.cjs mobile",
+    "qa:teacher": "node tools/qa_targeted_teacher_ui.cjs",
+    "qa:classroom-ui": "node tools/qa_classroom_ui.cjs",
+    "qa:desktop-parity": "node tools/qa_desktop_parity.cjs",
+    "qa:student-guest-join": "node tools/qa_student_guest_join.cjs",
+    "qa:interaction": "node tools/qa_interaction_latency.cjs",
+    "server:install": "pnpm --dir server install --frozen-lockfile",
+    "server:migrate": "pnpm --dir server run migrate:up",
+    "server:dev": "pnpm --dir server run dev",
+    "server:test": "pnpm --dir server run test",
+    "server:build": "pnpm --dir server run build",
+    "qa": "npm run qa:node && npm run qa:android-security && npm run qa:browser && npm run qa:mobile && npm run qa:interaction && npm run qa:teacher && npm run qa:classroom-ui && npm run qa:student-guest-join && npm run qa:desktop-parity"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.52.0"
+  }
+}

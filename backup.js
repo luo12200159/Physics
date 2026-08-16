@@ -78,7 +78,7 @@
       format: FORMAT,
       version: VERSION,
       createdAt: new Date().toISOString(),
-      appVersion: "2.7.0",
+      appVersion: String(learningEngine.version || "unknown"),
       questionCount: questions.length,
       profileCount: learning.profiles.length,
       fileCount: fileDeclarations.length,
@@ -172,7 +172,7 @@
 
   function validateManifest(manifest) {
     if (manifest?.format !== FORMAT || Number(manifest.version) !== VERSION) {
-      throw new Error("不是受支持的物理研习室完整备份。");
+      throw new Error("不是受支持的费曼物理（含旧版物理研习室）完整备份。");
     }
     if (!Array.isArray(manifest.files) || manifest.files.length > 10000) {
       throw new Error("备份清单文件数量不符合要求。");

@@ -58,4 +58,16 @@ describe("protocol authentication lifetime configuration", () => {
     delete missing.INVITE_CODE_KEY;
     expect(() => loadConfig(missing)).toThrow("Missing required environment variable: INVITE_CODE_KEY");
   });
+
+  it("permits explicit private-LAN HTTP origins only outside production", () => {
+    const development = {
+      ...validEnvironment(),
+      CORS_ALLOWED_ORIGINS: "http://192.168.10.8:5173,https://appassets.androidplatform.net",
+    };
+    expect(loadConfig(development).corsAllowedOrigins)
+      .toContain("http://192.168.10.8:5173");
+
+    expect(() => loadConfig({ ...development, NODE_ENV: "production" }))
+      .toThrow("CORS origin must use HTTPS");
+  });
 });

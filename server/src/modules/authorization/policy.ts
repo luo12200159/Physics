@@ -41,7 +41,6 @@ export type AuthorizationDecision =
   };
 
 const sensitiveActions = new Set<AuthorizationAction>([
-  "class.manage",
   "membership.manage",
   "guardian.manage",
   "assignment.publish",
@@ -52,7 +51,11 @@ const sensitiveActions = new Set<AuthorizationAction>([
 ]);
 
 function ownsClass(actor: Actor, resource: ResourceContext): boolean {
-  return actor.role === "teacher" && resource.ownerTeacherId === actor.userId;
+  // `ownerTeacherId` is the persisted class-owner identity, not a claim that
+  // the account has a global teacher role.  A user becomes an owner/teacher
+  // for the specific class through the create action.  Parent identities are
+  // intentionally excluded; they can only use guardian-scoped read paths.
+  return actor.role !== "parent" && resource.ownerTeacherId === actor.userId;
 }
 
 function ownsUserResource(actor: Actor, resource: ResourceContext): boolean {

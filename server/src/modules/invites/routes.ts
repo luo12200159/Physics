@@ -14,11 +14,14 @@ import {
   InviteCreatedSchema,
   InviteIdParamsSchema,
   InviteListResponseSchema,
+  JoinInviteAnonymousRequestSchema,
+  JoinInviteAnonymousResponseSchema,
   JoinInviteRequestSchema,
   JoinInviteResponseSchema,
   RevokeInviteResponseSchema,
   type CreateInviteRequest,
   type InviteIdParams,
+  type JoinInviteAnonymousRequest,
   type JoinInviteRequest,
 } from "./contracts.js";
 import type { InvitesService } from "./service.js";
@@ -44,7 +47,7 @@ const ErrorResponses = {
 
 export function registerInviteRoutes(app: FastifyInstance, service: InvitesService): void {
   app.post<{ Params: ClassIdParams; Body: CreateInviteRequest }>("/v1/classes/:classId/invites", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassIdParamsSchema,
       body: CreateInviteRequestSchema,
@@ -79,8 +82,29 @@ export function registerInviteRoutes(app: FastifyInstance, service: InvitesServi
     return reply.status(201).send(response);
   });
 
+  // Student entry is intentionally separate from the authenticated join
+  // route. The invite code grants only a pending student membership; the
+  // service creates a scoped student session and never a teacher capability.
+  app.post<{ Body: JoinInviteAnonymousRequest }>("/v1/invites/join-anonymous", {
+    schema: {
+      body: JoinInviteAnonymousRequestSchema,
+      response: { 201: JoinInviteAnonymousResponseSchema, ...ErrorResponses },
+    },
+  }, async (request, reply) => {
+    const response = await service.joinInviteAnonymous(request.body, {
+      ip: request.ip,
+      requestId: String(request.id),
+      idempotency: request.mutationIdempotency ?? {
+        routeKey: "POST /v1/invites/join-anonymous",
+        key: `anonymous-${String(request.id)}`,
+        requestHash: Buffer.alloc(32),
+      },
+    });
+    return reply.status(201).send(response);
+  });
+
   app.get<{ Params: ClassIdParams; Querystring: ClassListQuery }>("/v1/classes/:classId/invites", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassIdParamsSchema,
       querystring: ClassListQuerySchema,
@@ -96,7 +120,7 @@ export function registerInviteRoutes(app: FastifyInstance, service: InvitesServi
   });
 
   app.delete<{ Params: InviteIdParams }>("/v1/invites/:inviteId", {
-    preHandler: app.authenticate,
+    preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: InviteIdParamsSchema,
       response: { 200: RevokeInviteResponseSchema, ...ErrorResponses },

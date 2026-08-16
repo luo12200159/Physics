@@ -57,6 +57,14 @@ export const ChangePasswordResponseSchema = StrictObject({
   user: AuthUserSchema,
 });
 
+export const UpdateDisplayNameRequestSchema = StrictObject({
+  displayName: Type.String({ minLength: 1, maxLength: 80 }),
+});
+
+export const UpdateDisplayNameResponseSchema = StrictObject({
+  user: AuthUserSchema,
+});
+
 export type UserRole = Static<typeof UserRoleSchema>;
 export type AuthUser = Static<typeof AuthUserSchema>;
 export type LoginRequest = Static<typeof LoginRequestSchema>;
@@ -66,3 +74,5 @@ export type ReauthenticateRequest = Static<typeof ReauthenticateRequestSchema>;
 export type ReauthenticateResponse = Static<typeof ReauthenticateResponseSchema>;
 export type ChangePasswordRequest = Static<typeof ChangePasswordRequestSchema>;
 export type ChangePasswordResponse = Static<typeof ChangePasswordResponseSchema>;
+export type UpdateDisplayNameRequest = Static<typeof UpdateDisplayNameRequestSchema>;
+export type UpdateDisplayNameResponse = Static<typeof UpdateDisplayNameResponseSchema>;

@@ -1,7 +1,7 @@
 const assert = require("node:assert/strict");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { installQaActivationStub, launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
@@ -10,10 +10,10 @@ if (!appPath || !outputDirectory) {
 }
 
 (async () => {
-  const executablePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
-  const browser = await chromium.launch({ executablePath, headless: true });
+  const browser = await launchBrowser({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
+  await installQaActivationStub(page, "feature-upgrade-qa");
   const pageErrors = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });

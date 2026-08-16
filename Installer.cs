@@ -6,22 +6,23 @@ using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyTitle("物理研习室安装程序")]
-[assembly: AssemblyDescription("物理研习室 Windows 单文件安装程序")]
-[assembly: AssemblyProduct("物理研习室")]
+[assembly: AssemblyTitle("费曼物理安装程序")]
+[assembly: AssemblyDescription("费曼物理 Windows 单文件安装程序")]
+[assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 internal static class InstallerProgram
 {
-    private const string AppName = "物理研习室";
-    private const string AppVersion = "2.7.0";
+    private const string AppName = "费曼物理";
+    private const string AppVersion = "3.2.0";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PhysicsStudio";
 
     private static readonly PayloadFile[] Payload =
     {
         new PayloadFile("PhysicsStudio.Payload.Launcher", "物理研习室.exe"),
+        new PayloadFile("PhysicsStudio.Payload.LanClassroomService", "物理研习室-班级服务.exe"),
         new PayloadFile("PhysicsStudio.Payload.Uninstaller", "卸载物理研习室.exe"),
         new PayloadFile("PhysicsStudio.Payload.Index", "index.html"),
         new PayloadFile("PhysicsStudio.Payload.Styles", "styles.css"),
@@ -30,6 +31,7 @@ internal static class InstallerProgram
         new PayloadFile("PhysicsStudio.Payload.ActivationStyles", "activation.css"),
         new PayloadFile("PhysicsStudio.Payload.ActivationPublicKey", "activation-public-key.js"),
         new PayloadFile("PhysicsStudio.Payload.ActivationScript", "activation.js"),
+        new PayloadFile("PhysicsStudio.Payload.StorageRepository", "storage-repository.js"),
         new PayloadFile("PhysicsStudio.Payload.CurriculumTaxonomy", "curriculum-taxonomy.js"),
         new PayloadFile("PhysicsStudio.Payload.CurriculumBank", "curriculum-bank.js"),
         new PayloadFile("PhysicsStudio.Payload.ExamQuestionIndex", "exam-question-index.js"),
@@ -53,8 +55,12 @@ internal static class InstallerProgram
         new PayloadFile("PhysicsStudio.Payload.AiTutor", "ai-tutor.js"),
         new PayloadFile("PhysicsStudio.Payload.DocumentImport", "document-import.js"),
         new PayloadFile("PhysicsStudio.Payload.ContentCatalog", "content-catalog.js"),
+        new PayloadFile("PhysicsStudio.Payload.ClassroomConfig", "classroom-config.js"),
         new PayloadFile("PhysicsStudio.Payload.ClassroomClient", "classroom-client.js"),
+        new PayloadFile("PhysicsStudio.Payload.QuestionAnswerService", "question-answer-service.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningEngine", "learning-engine.js"),
+        new PayloadFile("PhysicsStudio.Payload.PhysicsVisuals", "physics-visuals.js"),
+        new PayloadFile("PhysicsStudio.Payload.TeacherModeLock", "teacher-mode-lock.js"),
         new PayloadFile("PhysicsStudio.Payload.Script", "app.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningLab", "learning-lab.js"),
         new PayloadFile("PhysicsStudio.Payload.ExperienceScript", "experience-shell.js"),
@@ -75,7 +81,7 @@ internal static class InstallerProgram
         if (!options.Silent)
         {
             DialogResult answer = MessageBox.Show(
-                "将把“物理研习室”安装到当前 Windows 用户。\n\n"
+                "将把“费曼物理”安装到当前 Windows 用户。\n\n"
                 + "核心题库和本地视频可离线使用；互联网题源、互联网搜索和在线视频在联网时可用。\n\n"
                 + "安装不需要管理员权限。是否继续？",
                 AppName + " 安装程序",

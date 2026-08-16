@@ -9,9 +9,9 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
 
-[assembly: System.Reflection.AssemblyTitle("物理研习室激活码管理器")]
+[assembly: System.Reflection.AssemblyTitle("费曼物理激活码管理器")]
 [assembly: System.Reflection.AssemblyDescription("使用当前 Windows 用户的不可导出签名密钥批量签发设备绑定激活码")]
-[assembly: System.Reflection.AssemblyProduct("物理研习室激活码管理器")]
+[assembly: System.Reflection.AssemblyProduct("费曼物理激活码管理器")]
 [assembly: System.Reflection.AssemblyCompany("")]
 [assembly: System.Reflection.AssemblyVersion("1.0.0.0")]
 [assembly: System.Reflection.AssemblyFileVersion("1.0.0.0")]
@@ -46,7 +46,7 @@ internal static class ActivationManagerProgram
             }
             MessageBox.Show(
                 exception.Message,
-                "物理研习室激活码管理器",
+                "费曼物理激活码管理器",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             );
@@ -376,7 +376,7 @@ internal sealed class ActivationManagerWindow : Form
 
     internal ActivationManagerWindow()
     {
-        Text = "物理研习室 · 激活码管理器（仅限所有者）";
+        Text = "费曼物理 · 激活码管理器（仅限所有者）";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(880, 650);
         ClientSize = new Size(1080, 760);
@@ -604,7 +604,7 @@ internal sealed class ActivationManagerWindow : Form
         using (SaveFileDialog dialog = new SaveFileDialog
         {
             Filter = "CSV 文件 (*.csv)|*.csv",
-            FileName = "物理研习室-激活码-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv"
+            FileName = "费曼物理-激活码-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv"
         })
         {
             if (dialog.ShowDialog(this) != DialogResult.OK) return;

@@ -33,6 +33,9 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -42,8 +45,13 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @SuppressWarnings("deprecation")
 public final class MainActivity extends Activity {
@@ -60,6 +68,7 @@ public final class MainActivity extends Activity {
     private static final String ACTIVATION_PREFERENCES = "physics_studio_activation_v1";
     private static final String ACTIVATION_CODE_KEY = "activation_code";
     private static final String ACTIVATION_FALLBACK_DEVICE_KEY = "fallback_device_secret";
+    private static final int MAX_OCR_IMAGE_DATA_URL_LENGTH = 12 * 1024 * 1024;
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
@@ -67,11 +76,15 @@ public final class MainActivity extends Activity {
     private byte[] pendingAttachmentBytes;
     private PermissionRequest pendingCameraPermissionRequest;
     private PermissionRequest pendingAudioPermissionRequest;
+    private final ExecutorService classroomExecutor = Executors.newFixedThreadPool(2);
+    private volatile LanClassroomHost classroomHost;
+    private volatile boolean classroomHostClosing;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         configureSystemBars();
+        startClassroomHost();
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(244, 246, 242));
@@ -103,6 +116,29 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private void startClassroomHost() {
+        classroomExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                LanClassroomHost candidate = null;
+                try {
+                    candidate = new LanClassroomHost(new java.io.File(getFilesDir(), "classroom-service"));
+                    candidate.start();
+                    if (classroomHostClosing) {
+                        candidate.close();
+                    } else {
+                        classroomHost = candidate;
+                    }
+                } catch (IOException ignored) {
+                    if (candidate != null) candidate.close();
+                    // A port collision can mean another classroom host is
+                    // already available on this LAN. Discovery remains usable;
+                    // no credential or filesystem path is written to logs.
+                }
+            }
+        });
+    }
+
     private void configureSystemBars() {
         getWindow().setStatusBarColor(Color.rgb(244, 246, 242));
         getWindow().setNavigationBarColor(Color.rgb(244, 246, 242));
@@ -128,17 +164,29 @@ public final class MainActivity extends Activity {
         settings.setSupportZoom(true);
         settings.setBuiltInZoomControls(true);
         settings.setDisplayZoomControls(false);
+        settings.setUseWideViewPort(true);
+        settings.setLoadWithOverviewMode(false);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             settings.setSafeBrowsingEnabled(true);
         }
-        settings.setUserAgentString(settings.getUserAgentString() + " PhysicsStudioAndroid/2.7.0");
+        String appVersion = "unknown";
+        try {
+            appVersion = getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (PackageManager.NameNotFoundException ignored) {
+            // The installed package should always resolve; keep an explicit
+            // non-version fallback instead of duplicating the release number.
+        }
+        settings.setUserAgentString(settings.getUserAgentString() + " PhysicsStudioAndroid/" + appVersion);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, false);
         WebView.setWebContentsDebuggingEnabled(false);
 
+        // Security TODO: migrate this local-only bridge to AndroidX WebMessage
+        // with an explicit appassets origin allowlist. Never load arbitrary
+        // remote documents in this WebView while the native bridge is present.
         webView.addJavascriptInterface(new AndroidBridge(), "PhysicsStudioAndroid");
         webView.setWebViewClient(new StudioWebViewClient());
         webView.setWebChromeClient(new StudioWebChromeClient());
@@ -349,12 +397,73 @@ public final class MainActivity extends Activity {
 
         @Override
         public boolean onConsoleMessage(ConsoleMessage message) {
-            Log.d(TAG, message.message() + " @" + message.lineNumber());
+            // Do not synchronously log every WebView message on release
+            // devices; verbose console traffic noticeably competes with
+            // touch/render work. Keep error visibility for diagnostics.
+            if (message != null && message.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                Log.e(TAG, message.message() + " @" + message.lineNumber());
+            }
             return true;
         }
     }
 
     private final class AndroidBridge {
+        /**
+         * The current dependency-free Android shell is compiled directly with android.jar and
+         * does not bundle an OCR model. Android itself does not expose a general text-recognition
+         * API. These two bridge methods deliberately report that boundary instead of returning
+         * fabricated text. The web layer can then fall back to TextDetector or manual entry.
+         */
+        @JavascriptInterface
+        public String getOcrCapability() {
+            JSONObject capability = new JSONObject();
+            try {
+                capability.put("available", false);
+                capability.put("engine", "none");
+                capability.put("reason", "offline_ocr_engine_not_bundled");
+            } catch (Exception ignored) {
+                return "{\"available\":false,\"engine\":\"none\",\"reason\":\"offline_ocr_engine_not_bundled\"}";
+            }
+            return capability.toString();
+        }
+
+        @JavascriptInterface
+        public String ocrImage(String imageDataUrl) {
+            String error = "offline_ocr_engine_not_bundled";
+            if (imageDataUrl != null && imageDataUrl.length() > MAX_OCR_IMAGE_DATA_URL_LENGTH) {
+                error = "image_too_large";
+            }
+            JSONObject result = new JSONObject();
+            try {
+                result.put("text", "");
+                result.put("blocks", new JSONArray());
+                result.put("engine", "none");
+                result.put("error", error);
+            } catch (Exception ignored) {
+                return "{\"text\":\"\",\"blocks\":[],\"engine\":\"none\",\"error\":\"native_ocr_unavailable\"}";
+            }
+            return result.toString();
+        }
+
+        @JavascriptInterface
+        public String getHostedClassroomServiceInfo() {
+            LanClassroomHost host = classroomHost;
+            if (host == null || !host.isRunning()) return "";
+            try {
+                JSONObject result = new JSONObject();
+                result.put("serverUrl", "http://127.0.0.1:" + LanClassroomHost.SERVICE_PORT);
+                JSONArray services = new JSONArray();
+                services.put("http://127.0.0.1:" + LanClassroomHost.SERVICE_PORT);
+                for (String address : LanClassroomHost.privateIpv4Addresses()) {
+                    services.put("http://" + address + ":" + LanClassroomHost.SERVICE_PORT);
+                }
+                result.put("services", services);
+                return result.toString();
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
         @JavascriptInterface
         public String getActivationDeviceId() {
             String androidId = Settings.Secure.getString(
@@ -399,13 +508,75 @@ public final class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public void classroomRequest(final String requestId, final String requestJson) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            if (requestJson == null || requestJson.length() > 100000) {
+                postClassroomResponse(requestId, false, null, "invalid_request");
+                return;
+            }
+            classroomExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        JSONObject input = new JSONObject(requestJson);
+                        Map<String, String> headers = new LinkedHashMap<String, String>();
+                        JSONObject sourceHeaders = input.optJSONObject("headers");
+                        if (sourceHeaders != null) {
+                            for (String name : new String[] {
+                                "Authorization", "Idempotency-Key", "X-Physics-Studio-Client"
+                            }) {
+                                if (sourceHeaders.has(name)) headers.put(name, sourceHeaders.optString(name, ""));
+                            }
+                        }
+                        LanClassroomTransport.Response response = LanClassroomTransport.request(
+                            input.optString("serverUrl", ""),
+                            input.optString("path", ""),
+                            input.optString("method", "GET"),
+                            headers,
+                            input.optString("bodyText", ""),
+                            input.optInt("timeoutMs", 15000)
+                        );
+                        JSONObject result = new JSONObject();
+                        result.put("status", response.status);
+                        result.put("bodyText", response.bodyText);
+                        postClassroomResponse(requestId, true, result, "");
+                    } catch (LanClassroomTransport.TransportException error) {
+                        postClassroomResponse(requestId, false, null, error.code);
+                    } catch (Exception error) {
+                        postClassroomResponse(requestId, false, null, "invalid_request");
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void discoverClassroomServices(final String requestId) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            classroomExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        List<String> services = LanClassroomTransport.discover(1800);
+                        JSONObject result = new JSONObject();
+                        result.put("services", new JSONArray(services));
+                        postClassroomResponse(requestId, true, result, "");
+                    } catch (LanClassroomTransport.TransportException error) {
+                        postClassroomResponse(requestId, false, null, error.code);
+                    } catch (Exception error) {
+                        postClassroomResponse(requestId, false, null, "network_error");
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
         public void saveTextFile(String fileName, String content, String mimeType) {
             if (content == null) return;
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     pendingExportText = content;
-                    String safeName = sanitizeFileName(fileName);
+                    String safeName = sanitizeGenericFileName(fileName, mimeType);
                     Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE);
                     intent.setType(
@@ -451,7 +622,7 @@ public final class MainActivity extends Activity {
                             ? "application/octet-stream"
                             : mimeType
                     );
-                    intent.putExtra(Intent.EXTRA_TITLE, sanitizeGenericFileName(fileName));
+                        intent.putExtra(Intent.EXTRA_TITLE, sanitizeGenericFileName(fileName, mimeType));
                     try {
                         startActivityForResult(intent, REQUEST_SAVE_ATTACHMENT);
                     } catch (ActivityNotFoundException error) {
@@ -461,6 +632,49 @@ public final class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    private static boolean isSafeClassroomRequestId(String value) {
+        if (value == null || value.length() < 8 || value.length() > 80) return false;
+        for (int index = 0; index < value.length(); index += 1) {
+            char character = value.charAt(index);
+            boolean allowed = character == '-'
+                || (character >= '0' && character <= '9')
+                || (character >= 'A' && character <= 'Z')
+                || (character >= 'a' && character <= 'z');
+            if (!allowed) return false;
+        }
+        return true;
+    }
+
+    private void postClassroomResponse(
+        final String requestId,
+        final boolean ok,
+        final JSONObject result,
+        final String errorCode
+    ) {
+        if (!isSafeClassroomRequestId(requestId)) return;
+        final JSONObject message = new JSONObject();
+        try {
+            message.put("channel", "physics-studio-classroom");
+            message.put("requestId", requestId);
+            message.put("ok", ok);
+            if (ok) message.put("result", result == null ? new JSONObject() : result);
+            else message.put("error", errorCode == null || errorCode.isEmpty() ? "invalid_request" : errorCode);
+        } catch (Exception ignored) {
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (webView == null) return;
+                webView.evaluateJavascript(
+                    "globalThis.PhysicsStudioClassroomNativeResponse&&"
+                        + "globalThis.PhysicsStudioClassroomNativeResponse(" + message.toString() + ")",
+                    null
+                );
+            }
+        });
     }
 
     private static boolean isSafeActivationCode(String code) {
@@ -498,17 +712,34 @@ public final class MainActivity extends Activity {
     }
 
     private static String sanitizeFileName(String fileName) {
-        String safe = fileName == null ? "物理题库备份.json" : fileName.trim();
-        safe = safe.replaceAll("[\\\\/:*?\"<>|]", "_");
-        if (safe.isEmpty()) safe = "物理题库备份.json";
-        if (!safe.toLowerCase(Locale.ROOT).endsWith(".json")) safe += ".json";
+        return sanitizeGenericFileName(fileName, "application/json");
+    }
+
+    private static String sanitizeGenericFileName(String fileName, String mimeType) {
+        String safe = fileName == null ? "物理试题导出" : fileName.trim();
+        safe = safe.replaceAll("[\\\\/:*?\"<>|\\p{Cntrl}]", "_");
+        safe = safe.replaceAll("\\.{2,}", "_");
+        safe = safe.replaceAll("^\\.+", "");
+        if (safe.isEmpty()) safe = "物理试题导出";
+        String expectedExtension = extensionForMime(mimeType);
+        if (!expectedExtension.isEmpty()) {
+            String lower = safe.toLowerCase(Locale.ROOT);
+            if (!lower.endsWith(expectedExtension)) {
+                int dot = safe.lastIndexOf('.');
+                if (dot > 0) safe = safe.substring(0, dot);
+                safe += expectedExtension;
+            }
+        }
         return safe;
     }
 
-    private static String sanitizeGenericFileName(String fileName) {
-        String safe = fileName == null ? "物理试题附件" : fileName.trim();
-        safe = safe.replaceAll("[\\\\/:*?\"<>|]", "_");
-        return safe.isEmpty() ? "物理试题附件" : safe;
+    private static String extensionForMime(String mimeType) {
+        String mime = mimeType == null ? "" : mimeType.trim().toLowerCase(Locale.ROOT);
+        if ("application/json".equals(mime)) return ".json";
+        if ("text/html".equals(mime)) return ".html";
+        if ("text/csv".equals(mime)) return ".csv";
+        if ("text/plain".equals(mime)) return ".txt";
+        return "";
     }
 
     private void handleWebPermissionRequest(PermissionRequest request) {
@@ -646,6 +877,11 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        classroomHostClosing = true;
+        LanClassroomHost host = classroomHost;
+        classroomHost = null;
+        if (host != null) host.close();
+        classroomExecutor.shutdownNow();
         if (filePathCallback != null) filePathCallback.onReceiveValue(null);
         if (pendingCameraPermissionRequest != null) {
             pendingCameraPermissionRequest.deny();

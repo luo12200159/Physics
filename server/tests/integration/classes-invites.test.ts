@@ -10,6 +10,7 @@ import type { AuthResponse, ReauthenticateResponse } from "../../src/modules/aut
 import { hashPassword } from "../../src/modules/auth/password.js";
 import { createAuthService, type AuthService } from "../../src/modules/auth/service.js";
 import { createClassesService, type ClassesService } from "../../src/modules/classes/service.js";
+import { OwnerCapabilityService } from "../../src/modules/classes/owner-capability.js";
 import { createInvitesService, type InvitesService } from "../../src/modules/invites/service.js";
 import { startPostgres, startRedis } from "../helpers/containers.js";
 import { buildTestApp } from "../helpers/test-app.js";
@@ -29,6 +30,7 @@ describe("teacher class and student invite lifecycle", () => {
   let auth: AuthService;
   let classes: ClassesService;
   let invites: InvitesService;
+  let ownerCapabilities: OwnerCapabilityService;
   let app: FastifyInstance;
 
   beforeAll(async () => {
@@ -65,7 +67,12 @@ describe("teacher class and student invite lifecycle", () => {
     classes = createClassesService({
       pool,
       auditIpKey: "integration-class-audit-key-at-least-32-characters",
+      ownerCapabilitySecret: "integration-owner-capability-key-at-least-32-characters",
       syncOutboxRetentionDays: 180,
+    });
+    ownerCapabilities = new OwnerCapabilityService({
+      pool,
+      secret: "integration-owner-capability-key-at-least-32-characters",
     });
     invites = createInvitesService({
       pool,
@@ -73,11 +80,18 @@ describe("teacher class and student invite lifecycle", () => {
       inviteCodeKey: "integration-invite-code-key-at-least-32-characters",
       auditIpKey: "integration-class-audit-key-at-least-32-characters",
       syncOutboxRetentionDays: 180,
+      jwtSecret: "integration-class-jwt-secret-at-least-32-characters",
+      refreshTokenTtlSeconds: 2_592_000,
     });
   }, 120_000);
 
   beforeEach(async () => {
-    app = await buildTestApp({ authService: auth, classService: classes, inviteService: invites });
+    app = await buildTestApp({
+      authService: auth,
+      classService: classes,
+      ownerCapabilityService: ownerCapabilities,
+      inviteService: invites,
+    });
   });
 
   afterAll(async () => {
@@ -113,6 +127,70 @@ describe("teacher class and student invite lifecycle", () => {
     expect(response.statusCode, response.body).toBe(200);
     return response.json<ReauthenticateResponse>().accessToken;
   }
+
+  it("creates an anonymous teacher class and lets one device join idempotently before owner deletion", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/classes/anonymous",
+      payload: { name: "  无账号教师班级  " },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const createdBody = created.json<{
+      class: { id: string; name: string };
+      ownerCapability: string;
+    }>();
+    expect(createdBody.class.name).toBe("无账号教师班级");
+    expect(createdBody.class.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(createdBody.ownerCapability).toMatch(/^oc1\./);
+    const ownerAuthorization = `Owner ${createdBody.ownerCapability}`;
+
+    const invite = await app.inject({
+      method: "POST",
+      url: `/v1/classes/${createdBody.class.id}/invites`,
+      headers: {
+        authorization: ownerAuthorization,
+        "idempotency-key": "anonymous-flow-invite-0001",
+      },
+      payload: {
+        expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        maxUses: 20,
+      },
+    });
+    expect(invite.statusCode, invite.body).toBe(201);
+    const code = String(invite.json().code);
+    const deviceId = "9".repeat(64);
+    const join = () => app.inject({
+      method: "POST",
+      url: "/v1/invites/join-anonymous",
+      payload: { code, displayName: "学生备注", deviceId },
+    });
+    const firstJoin = await join();
+    const secondJoin = await join();
+    expect(firstJoin.statusCode, firstJoin.body).toBe(201);
+    expect(secondJoin.statusCode, secondJoin.body).toBe(201);
+    expect(secondJoin.json().membershipId).toBe(firstJoin.json().membershipId);
+    expect(secondJoin.json().user.role).toBe("student");
+    const membershipCount = await pool.query<{ count: string }>(
+      `select count(*)::text as count
+         from memberships
+        where class_id = $1 and status <> 'removed'`,
+      [createdBody.class.id],
+    );
+    expect(membershipCount.rows[0]?.count).toBe("1");
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/v1/classes/${createdBody.class.id}`,
+      headers: {
+        authorization: ownerAuthorization,
+        "idempotency-key": "anonymous-flow-delete-0001",
+      },
+    });
+    expect(removed.statusCode, removed.body).toBe(200);
+    const staleJoin = await join();
+    expect(staleJoin.statusCode, staleJoin.body).toBe(409);
+    expect(staleJoin.json()).toMatchObject({ code: "invite_unavailable" });
+  });
 
   it("creates, joins, approves, groups, syncs, and isolates one class", async () => {
     const teacherASession = await login("class-teacher-a", "a");
@@ -374,5 +452,147 @@ describe("teacher class and student invite lifecycle", () => {
       [membershipId],
     );
     expect(outbox.rows[0]?.count).toBe("4");
+  });
+
+  it("lets only the owner delete a class and immediately invalidates membership and invites", async () => {
+    const teacherASession = await login("class-teacher-a", "e");
+    const teacherBSession = await login("class-teacher-b", "f");
+    const studentASession = await login("class-student-a", "1");
+    const studentBSession = await login("class-student-b", "2");
+    const teacherAToken = await elevate(teacherASession);
+    const teacherBToken = await elevate(teacherBSession);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/v1/classes",
+      headers: {
+        authorization: `Bearer ${teacherAToken}`,
+        "idempotency-key": "class-delete-flow-create-0001",
+      },
+      payload: { name: "删除流程测试班", grade: "高一", subject: "物理", schoolLabel: null },
+    });
+    expect(created.statusCode, created.body).toBe(201);
+    const classId = String(created.json().id);
+
+    const invite = await app.inject({
+      method: "POST",
+      url: `/v1/classes/${classId}/invites`,
+      headers: {
+        authorization: `Bearer ${teacherAToken}`,
+        "idempotency-key": "class-delete-flow-invite-0001",
+      },
+      payload: {
+        expiresAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+        maxUses: 5,
+      },
+    });
+    expect(invite.statusCode, invite.body).toBe(201);
+    const inviteCode = String(invite.json().code);
+
+    const joined = await app.inject({
+      method: "POST",
+      url: "/v1/invites/join",
+      headers: {
+        authorization: `Bearer ${studentASession.accessToken}`,
+        "idempotency-key": "class-delete-flow-join-0001",
+      },
+      payload: { code: inviteCode },
+    });
+    expect(joined.statusCode, joined.body).toBe(201);
+    const membershipId = String(joined.json().membershipId);
+    const activated = await app.inject({
+      method: "PATCH",
+      url: `/v1/memberships/${membershipId}`,
+      headers: {
+        authorization: `Bearer ${teacherAToken}`,
+        "idempotency-key": "class-delete-flow-activate-0001",
+      },
+      payload: { status: "active" },
+    });
+    expect(activated.statusCode, activated.body).toBe(200);
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `/v1/classes/${classId}`,
+      headers: { authorization: `Bearer ${studentASession.accessToken}` },
+    });
+    expect(detail.statusCode, detail.body).toBe(200);
+
+    const forbidden = await app.inject({
+      method: "DELETE",
+      url: `/v1/classes/${classId}`,
+      headers: {
+        authorization: `Bearer ${teacherBToken}`,
+        "idempotency-key": "class-delete-flow-other-teacher",
+      },
+    });
+    expect(forbidden.statusCode, forbidden.body).toBe(403);
+    expect(forbidden.json()).toMatchObject({ code: "resource_forbidden" });
+
+    const deleted = await app.inject({
+      method: "DELETE",
+      url: `/v1/classes/${classId}`,
+      headers: {
+        authorization: `Bearer ${teacherAToken}`,
+        "idempotency-key": "class-delete-flow-owner-0001",
+      },
+    });
+    expect(deleted.statusCode, deleted.body).toBe(200);
+    expect(deleted.json()).toEqual({ id: classId, status: "archived" });
+
+    const persisted = await pool.query<{
+      class_status: string;
+      invite_status: string;
+      membership_status: string;
+      active_owner_capabilities: string;
+    }>(
+      `select classes.status as class_status,
+              invites.status as invite_status,
+              memberships.status as membership_status,
+              (select count(*)::text
+                 from class_owner_capabilities capabilities
+                where capabilities.class_id = classes.id
+                  and capabilities.revoked_at is null) as active_owner_capabilities
+         from classes
+         join invites on invites.class_id = classes.id
+         join memberships on memberships.class_id = classes.id
+        where classes.id = $1 and memberships.id = $2`,
+      [classId, membershipId],
+    );
+    expect(persisted.rows[0]).toEqual({
+      class_status: "archived",
+      invite_status: "revoked",
+      membership_status: "removed",
+      active_owner_capabilities: "0",
+    });
+
+    const staleInvite = await app.inject({
+      method: "POST",
+      url: "/v1/invites/join",
+      headers: {
+        authorization: `Bearer ${studentBSession.accessToken}`,
+        "idempotency-key": "class-delete-flow-stale-invite",
+      },
+      payload: { code: inviteCode },
+    });
+    expect(staleInvite.statusCode, staleInvite.body).toBe(409);
+    expect(staleInvite.json()).toMatchObject({ code: "invite_unavailable" });
+
+    const studentClasses = await app.inject({
+      method: "GET",
+      url: "/v1/classes",
+      headers: { authorization: `Bearer ${studentASession.accessToken}` },
+    });
+    expect(studentClasses.statusCode, studentClasses.body).toBe(200);
+    expect(studentClasses.json().items).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: classId }),
+    ]));
+
+    const deletedDetail = await app.inject({
+      method: "GET",
+      url: `/v1/classes/${classId}`,
+      headers: { authorization: `Bearer ${teacherAToken}` },
+    });
+    expect(deletedDetail.statusCode, deletedDetail.body).toBe(404);
   });
 });

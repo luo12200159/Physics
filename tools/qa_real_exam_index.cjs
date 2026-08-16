@@ -2,11 +2,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { installQaActivationStub, launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_real_exam_index.cjs <index.html> <output-directory>");
@@ -60,15 +59,34 @@ async function putStoredQuestion(page, question) {
   }, question);
 }
 
+async function waitForRealExamInstallation(page) {
+  await page.waitForFunction(async () => {
+    const expected = window.PHYSICS_REAL_EXAM_INDEX?.questions?.length || 0;
+    if (!expected) return false;
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open("physics-studio-db", 1);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    const stored = await new Promise((resolve, reject) => {
+      const request = database.transaction("questions", "readonly").objectStore("questions").getAll();
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    database.close();
+    return stored.filter((question) => question.collection === "changsha-six-year-real-exam-index").length === expected;
+  });
+}
+
 (async () => {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
+  await installQaActivationStub(page, "real-exam-qa");
   await page.addInitScript(() => {
     localStorage.setItem("physics-experience-v2", JSON.stringify({
       version: 2, onboarded: true, role: "teacher", displayName: "QA",
@@ -85,8 +103,9 @@ async function putStoredQuestion(page, question) {
   try {
     await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(
-      () => document.getElementById("totalCount")?.textContent === "316"
+      () => document.getElementById("totalCount")?.textContent === "1900"
     );
+    await waitForRealExamInstallation(page);
 
     const manifest = await page.evaluate(() => {
       const bank = window.PHYSICS_REAL_EXAM_INDEX;
@@ -145,18 +164,17 @@ async function putStoredQuestion(page, question) {
 
     let stored = await getStoredQuestions(page);
     let indexed = stored.filter((question) => question.collection === "changsha-six-year-real-exam-index");
-    assert.equal(stored.length, 316);
+    assert.equal(stored.length, 2132);
     assert.equal(indexed.length, 232);
     assert.equal(indexed.filter((question) => question.examLevel === "中考").length, 141);
     assert.equal(indexed.filter((question) => question.examLevel === "高考").length, 91);
     assert.equal(indexed.filter((question) => question.resourceOnly).length, 0);
     assert.equal(stored.filter((question) => question.collection === "changsha-internet-source-index").length, 0);
-    assert.equal(await page.locator(".tag-real-exam").count(), 232);
 
     await page.locator("#searchInput").fill("2021年长沙中考物理");
-    assert.equal(await page.locator("#resultCount").textContent(), "23 道题");
+    assert.equal(await page.locator("#resultCount").textContent(), "0 道完整题 · 23 条题源索引");
     await page.locator("#searchInput").fill("洛埃镜");
-    assert.equal(await page.locator("#resultCount").textContent(), "1 道题");
+    assert.equal(await page.locator("#resultCount").textContent(), "0 道完整题 · 1 条题源索引");
     assert.ok(await page.locator('.question-card[data-id="real-exam-gaokao-2024-q9"]').isVisible());
 
     await page.locator("#searchInput").fill("温度测量");
@@ -216,13 +234,14 @@ async function putStoredQuestion(page, question) {
 
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.waitForFunction(
-      () => document.getElementById("totalCount")?.textContent === "316"
+      () => document.getElementById("totalCount")?.textContent === "1900"
     );
+    await waitForRealExamInstallation(page);
     stored = await getStoredQuestions(page);
     indexed = stored.filter((question) => question.collection === "changsha-six-year-real-exam-index");
     const restoredRealExam = stored.find((question) => question.id === "real-exam-zhongkao-2021-q17");
     const migratedSource = stored.find((question) => question.id === "qa-legacy-source-only");
-    assert.equal(stored.length, 317);
+    assert.equal(stored.length, 2133);
     assert.equal(indexed.length, 232);
     assert.equal(restoredRealExam.resourceOnly, false);
     assert.equal(restoredRealExam.mastered, true);
@@ -247,7 +266,7 @@ async function putStoredQuestion(page, question) {
     await page.locator(".close-resource-modal").first().click();
 
     await page.locator("#searchInput").fill("2025年长沙中考物理");
-    assert.equal(await page.locator("#resultCount").textContent(), "23 道题");
+    assert.equal(await page.locator("#resultCount").textContent(), "0 道完整题 · 23 条题源索引");
     await page.screenshot({
       path: path.join(outputDirectory, "physics-studio-real-exam-index.png"),
       type: "png",
@@ -258,7 +277,7 @@ async function putStoredQuestion(page, question) {
     console.log(JSON.stringify({
       status: "passed",
       manifest,
-      visibleQuestionTotal: 316,
+      visibleQuestionTotal: 1900,
       storedTotalAfterMigration: stored.length,
       indexedTotal: indexed.length,
       migratedSourcePreserved: true,

@@ -18,6 +18,8 @@ import type {
   ReauthenticateRequest,
   ReauthenticateResponse,
   RefreshRequest,
+  UpdateDisplayNameRequest,
+  UpdateDisplayNameResponse,
 } from "./contracts.js";
 import { hashPassword, verifyPassword } from "./password.js";
 import {
@@ -36,7 +38,10 @@ import {
   type AccessClaims,
 } from "./tokens.js";
 
-const DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=65536,p=1,t=3$AAECAwQFBgcICQoLDA0ODw$g+cyBgEd91RhaGj522HX0zaMuGIVFhZOtD/id/PK358";
+// Shared with the invite guest-session bootstrap. It is never used as a
+// usable password; it only keeps the credential row compatible with the
+// existing refresh-session schema.
+export const DUMMY_PASSWORD_HASH = "$argon2id$v=19$m=65536,p=1,t=3$AAECAwQFBgcICQoLDA0ODw$g+cyBgEd91RhaGj522HX0zaMuGIVFhZOtD/id/PK358";
 const LOGIN_RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
 if current == 1 or redis.call('TTL', KEYS[1]) < 0 then
@@ -466,6 +471,23 @@ export class AuthService {
       nowSeconds: Math.floor(now.getTime() / 1_000),
     }, this.jwtSecret);
     return { accessToken, user: toAuthUser(credential) };
+  }
+
+  async updateDisplayName(
+    actor: AuthenticatedSession,
+    input: UpdateDisplayNameRequest,
+    _context: AuthMutationContext,
+  ): Promise<UpdateDisplayNameResponse> {
+    if (actor.role !== "student") {
+      throw new ApiError(403, "student_role_required", "Only students can change a class remark name");
+    }
+    const displayName = input.displayName.normalize("NFKC").trim();
+    if (displayName.length < 1 || displayName.length > 80 || /[\u0000-\u001f\u007f]/u.test(displayName)) {
+      throw new ApiError(400, "validation_error", "Display name is invalid");
+    }
+    const user = await this.repository.updateDisplayName(actor.userId, displayName, this.now());
+    if (!user || user.status !== "active") throw invalidAccessToken();
+    return { user: toAuthUser(user) };
   }
 
   async changePassword(

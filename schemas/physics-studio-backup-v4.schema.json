@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://physics-studio.local/schema/backup-v4.json",
-  "title": "物理研习室轻量题库备份 v4",
+  "title": "费曼物理轻量题库备份 v4（兼容物理研习室）",
   "type": "object",
   "additionalProperties": false,
   "required": ["format", "version", "exportedAt", "questions"],
@@ -80,6 +80,34 @@
         "originalExercise": { "type": "boolean" },
         "originalMock": { "type": "boolean" },
         "questionType": { "$ref": "#/$defs/shortString" },
+        "knowledgePointId": { "$ref": "#/$defs/shortString" },
+        "cognitiveDemand": { "$ref": "#/$defs/shortString" },
+        "representationType": { "$ref": "#/$defs/shortString" },
+        "independenceGroupId": { "$ref": "#/$defs/shortString" },
+        "assessmentPurpose": { "$ref": "#/$defs/shortString" },
+        "evidenceTier": {
+          "enum": ["diagnostic-anchor", "practice-variant", "transfer-anchor", "retest-anchor", "manual-review"]
+        },
+        "modelDefinitionId": { "$ref": "#/$defs/shortString" },
+        "retestGroupId": { "$ref": "#/$defs/shortString" },
+        "diagnosticEligible": { "type": "boolean" },
+        "autoScorable": { "type": "boolean" },
+        "visualSpec": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type"],
+          "properties": {
+            "type": { "enum": ["force", "kinematics", "circuit", "scatter-fit", "ray"] },
+            "model": { "enum": ["projectile", "incline", "circuit", "uniform", "newton", "energy", "collision", "wave"] },
+            "modelType": { "enum": ["projectile", "incline", "circuit", "uniform", "newton", "energy", "collision", "wave"] },
+            "task": { "type": "string", "maxLength": 1000 },
+            "parameters": {
+              "type": "object",
+              "maxProperties": 30,
+              "additionalProperties": true
+            }
+          }
+        },
         "number": { "type": ["string", "number"] },
         "verifiedAt": { "type": "string", "maxLength": 40 },
         "rightsEvidenceId": { "$ref": "#/$defs/shortString" },

@@ -1,7 +1,9 @@
 ﻿param(
     [string]$ToolchainRoot = '',
-    [string]$VersionName = '2.7.0',
-    [int]$VersionCode = 20700
+    [string]$VersionName = '',
+    [int]$VersionCode = 0,
+    [string]$ClassroomServerUrl = $env:PHYSICS_STUDIO_CLASSROOM_URL,
+    [switch]$AllowInsecureClassroomLan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -63,6 +65,19 @@ function Read-SigningProperties {
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $WebRoot = Split-Path -Parent $ProjectRoot
 $WorkspaceRoot = Split-Path -Parent $WebRoot
+$VersionSourcePath = Join-Path $WebRoot 'version.json'
+if (-not (Test-Path -LiteralPath $VersionSourcePath)) { throw "缺少统一版本源：$VersionSourcePath" }
+$VersionSource = Get-Content -LiteralPath $VersionSourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
+$CanonicalVersion = [string]$VersionSource.appVersion
+$VersionMatch = [Text.RegularExpressions.Regex]::Match($CanonicalVersion, '^(\d+)\.(\d+)\.(\d+)$')
+if ([string]::IsNullOrWhiteSpace($CanonicalVersion) -or -not $VersionMatch.Success) {
+    throw "version.json 的 appVersion 无效。"
+}
+$CanonicalVersionCode = [int]$VersionMatch.Groups[1].Value * 10000 + [int]$VersionMatch.Groups[2].Value * 100 + [int]$VersionMatch.Groups[3].Value
+if ($VersionName -and $VersionName -ne $CanonicalVersion) { throw "VersionName 必须与 version.json 一致：$CanonicalVersion" }
+if ($VersionCode -gt 0 -and $VersionCode -ne $CanonicalVersionCode) { throw "VersionCode 必须由 version.json 生成：$CanonicalVersionCode" }
+$VersionName = $CanonicalVersion
+$VersionCode = $CanonicalVersionCode
 if ([string]::IsNullOrWhiteSpace($ToolchainRoot)) {
     $ToolchainRoot = Join-Path $WorkspaceRoot '.android-build-tools'
 }
@@ -124,6 +139,29 @@ $DexDirectory = Join-Path $BuildDirectory 'dex'
 $GeneratedDirectory = Join-Path $BuildDirectory 'generated'
 New-Item -ItemType Directory -Force -Path $StagedProject, $AssetsDirectory, $ClassesDirectory, $DexDirectory, $GeneratedDirectory | Out-Null
 
+$ClassroomServerUrl = [string]$ClassroomServerUrl
+$ClassroomServerUrl = $ClassroomServerUrl.Trim().TrimEnd('/')
+if ($ClassroomServerUrl) {
+    $classroomUri = $null
+    if (-not [Uri]::TryCreate($ClassroomServerUrl, [UriKind]::Absolute, [ref]$classroomUri)) {
+        throw 'ClassroomServerUrl 不是有效的绝对 URL。'
+    }
+    if ($classroomUri.UserInfo -or $classroomUri.Query -or $classroomUri.Fragment) {
+        throw 'ClassroomServerUrl 不能包含账号、查询参数或片段。'
+    }
+    if ($classroomUri.Scheme -ne 'https' -and -not ($AllowInsecureClassroomLan -and $classroomUri.Scheme -eq 'http')) {
+        throw '正式 Android 发布的 ClassroomServerUrl 必须使用 HTTPS。'
+    }
+}
+$classroomUrlJson = ConvertTo-Json -InputObject $ClassroomServerUrl -Compress
+$allowInsecureLanJson = if ($AllowInsecureClassroomLan) { 'true' } else { 'false' }
+$classroomConfigSource = "globalThis.PHYSICS_STUDIO_CLASSROOM_URL = $classroomUrlJson;`nglobalThis.PHYSICS_STUDIO_ALLOW_INSECURE_LAN = $allowInsecureLanJson;`n"
+[IO.File]::WriteAllText(
+    (Join-Path $AssetsDirectory 'classroom-config.js'),
+    $classroomConfigSource,
+    (New-Object Text.UTF8Encoding($false))
+)
+
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'AndroidManifest.xml') -Destination $StagedProject -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'res') -Destination (Join-Path $StagedProject 'res') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'src') -Destination (Join-Path $StagedProject 'src') -Recurse -Force
@@ -159,7 +197,11 @@ Copy-Item -LiteralPath (Join-Path $WebRoot 'ai-tutor.js') -Destination $AssetsDi
 Copy-Item -LiteralPath (Join-Path $WebRoot 'document-import.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'content-catalog.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'classroom-client.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'question-answer-service.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'storage-repository.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-engine.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'physics-visuals.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'teacher-mode-lock.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'app.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'experience-shell.js') -Destination $AssetsDirectory -Force
@@ -210,7 +252,7 @@ Invoke-Checked -FilePath $D8 -ArgumentList @(
 
 Push-Location $DexDirectory
 try {
-    Invoke-Checked -FilePath $Aapt -ArgumentList @('add', $UnsignedApk, 'classes.dex')
+    Invoke-Checked -FilePath $Aapt -ArgumentList @('add', '-f', $UnsignedApk, 'classes.dex')
 } finally {
     Pop-Location
 }
@@ -276,7 +318,7 @@ Invoke-Checked -FilePath $ZipAlign -ArgumentList @('-c', '-p', '4', $SignedApk)
 
 $ReleaseDirectory = Join-Path $WebRoot '发布\Android'
 New-Item -ItemType Directory -Force -Path $ReleaseDirectory | Out-Null
-$ApkName = "物理研习室-Android-v$VersionName.apk"
+$ApkName = "费曼物理-Android-v$VersionName.apk"
 $ReleaseApk = Join-Path $ReleaseDirectory $ApkName
 Copy-Item -LiteralPath $SignedApk -Destination $ReleaseApk -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot '安装说明.txt') -Destination (Join-Path $ReleaseDirectory '安装说明.txt') -Force
@@ -305,7 +347,7 @@ $ApkHashPath = Join-Path $ReleaseDirectory 'SHA256.txt'
     (New-Object Text.UTF8Encoding($false))
 )
 
-$ZipName = "物理研习室-Android-v$VersionName.zip"
+$ZipName = "费曼物理-Android-v$VersionName.zip"
 $ReleaseZip = Join-Path $ReleaseDirectory $ZipName
 Compress-Archive -LiteralPath @(
     $ReleaseApk,

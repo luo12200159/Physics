@@ -9,6 +9,13 @@ const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 const MAX_LIBRARY_MEDIA_BYTES = 2 * 1024 * 1024 * 1024;
 const QUESTION_PAGE_SIZE = 40;
 
+function appStorage() {
+  return window.PhysicsStudioStorageRepository || {
+    getItem: () => null,
+    setItem: () => {}
+  };
+}
+
 const seedQuestions = [
   {
     id: "sample-force",
@@ -16,6 +23,18 @@ const seedQuestions = [
     stage: "初中",
     grade: "八年级",
     topic: "力与运动",
+    knowledgePointId: "kp:force-motion",
+    questionType: "计算题",
+    cognitiveDemand: "定量计算",
+    representationType: "文字",
+    evidenceTier: "practice-variant",
+    assessmentPurpose: "practice",
+    modelDefinitionId: "model:sample-force",
+    modelFamilyId: "family:sample-force",
+    retestGroupId: "retest:sample-force",
+    independenceGroupId: "independent:sample-force",
+    diagnosticEligible: false,
+    autoScorable: true,
     difficulty: "基础",
     source: "示例题",
     sourceLicense: "应用内原创",
@@ -40,6 +59,18 @@ const seedQuestions = [
     stage: "初中",
     grade: "九年级",
     topic: "欧姆定律",
+    knowledgePointId: "kp:ohms-law",
+    questionType: "计算题",
+    cognitiveDemand: "定量计算",
+    representationType: "电路文字表征",
+    evidenceTier: "practice-variant",
+    assessmentPurpose: "practice",
+    modelDefinitionId: "model:sample-electricity",
+    modelFamilyId: "family:sample-electricity",
+    retestGroupId: "retest:sample-electricity",
+    independenceGroupId: "independent:sample-electricity",
+    diagnosticEligible: false,
+    autoScorable: true,
     difficulty: "进阶",
     source: "示例题",
     sourceLicense: "应用内原创",
@@ -64,6 +95,18 @@ const seedQuestions = [
     stage: "高中",
     grade: "高一",
     topic: "曲线运动",
+    knowledgePointId: "kp:projectile-motion",
+    questionType: "计算题",
+    cognitiveDemand: "建模与定量计算",
+    representationType: "文字",
+    evidenceTier: "practice-variant",
+    assessmentPurpose: "practice",
+    modelDefinitionId: "model:sample-projectile",
+    modelFamilyId: "family:sample-projectile",
+    retestGroupId: "retest:sample-projectile",
+    independenceGroupId: "independent:sample-projectile",
+    diagnosticEligible: false,
+    autoScorable: true,
     difficulty: "进阶",
     source: "示例题",
     sourceLicense: "应用内原创",
@@ -224,6 +267,7 @@ const state = {
   curriculumGrade: "all",
   questionPage: 1,
   questionListSignature: "",
+  questionSearchIndex: new Map(),
   masteryEvidence: new Map(),
   masterySummary: null
 };
@@ -242,6 +286,18 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 async function init() {
+  let learningStorageError = null;
+  const learningRepository = window.PhysicsStudioStorageRepository;
+  const learningEngine = window.PHYSICS_LEARNING_ENGINE;
+  if (learningRepository?.prepareLearningState && learningEngine?.storageKey) {
+    try {
+      await learningRepository.prepareLearningState(learningEngine.storageKey);
+      await learningRepository.stageLearningState(learningEngine.storageKey, learningEngine.loadState());
+    } catch (error) {
+      learningStorageError = error;
+      console.error("学习数据存储初始化失败；旧数据仍保留，当前修改可能无法保存。", error);
+    }
+  }
   cacheElements();
   bindEvents();
   updateCurriculumBookOptions("八年级");
@@ -249,7 +305,9 @@ async function init() {
     state.db = await openDatabase();
     await seedDatabaseIfEmpty();
     await upgradeBundledSamples();
-    const removedGradeSevenCount = await removeGradeSevenQuestions();
+    // v2.9.0 keeps legacy v2.8 records intact.  Retired grade-seven records
+    // remain in IndexedDB for backup/restore compatibility; active v2.9
+    // learning views continue to filter them out without deleting data.
     const installedCurriculumCount = await installCurriculumBank();
     const installedMockCount = await installMockExamBank();
     const installedOriginalPracticeCount = await installOriginalPracticeBank();
@@ -259,9 +317,10 @@ async function init() {
     await refreshQuestions();
     initResourceCenter();
     publishAppApi();
-    if (removedGradeSevenCount > 0 || installedCurriculumCount > 0 || installedMockCount > 0 || installedOriginalPracticeCount > 0 || installedTargetedPracticeCount > 0 || installedRealExamCount > 0 || migratedSourceCount > 0) {
+    document.dispatchEvent(new CustomEvent("physics-learning-state-changed", { detail: { restored: true } }));
+    if (learningStorageError) showToast("学习数据未保存：长期存储初始化失败，请先导出备份并检查可用空间。", true);
+    if (installedCurriculumCount > 0 || installedMockCount > 0 || installedOriginalPracticeCount > 0 || installedTargetedPracticeCount > 0 || installedRealExamCount > 0 || migratedSourceCount > 0) {
       const parts = [];
-      if (removedGradeSevenCount > 0) parts.push(`已移除 ${removedGradeSevenCount} 道七年级内容`);
       if (installedCurriculumCount > 0) parts.push(`${installedCurriculumCount} 道原创同步练习`);
       if (installedMockCount > 0) parts.push(`${installedMockCount} 道原创模拟题`);
       if (installedOriginalPracticeCount > 0) parts.push(`${installedOriginalPracticeCount} 道长沙课程适配原创变式题`);
@@ -366,7 +425,7 @@ function publishAppApi() {
       const added = [];
       const skipped = [];
       for (const input of records) {
-        if (!isValidImportedQuestion(input) || input.grade === "七年级") {
+        if (!isValidImportedQuestion(input)) {
           skipped.push({ id: String(input?.id || ""), reason: "字段或年级不符合要求" });
           continue;
         }
@@ -404,12 +463,13 @@ function publishAppApi() {
       if (!Array.isArray(records) || records.length > 5000) {
         throw new Error("完整备份题目数量不符合要求。");
       }
-      if (records.some((question) => !isValidImportedQuestion(question) || question.grade === "七年级")) {
-        throw new Error("完整备份含无效字段或已停用的七年级内容。");
+      if (records.some((question) => !isValidImportedQuestion(question))) {
+        throw new Error("完整备份含无效字段。");
       }
       const previousQuestions = await getAllQuestions();
       const learningKey = window.PHYSICS_LEARNING_ENGINE?.storageKey;
-      const previousLearning = learningKey ? localStorage.getItem(learningKey) : null;
+      const storage = appStorage();
+      const previousLearning = learningKey ? storage.getItem(learningKey) : null;
       try {
         await replaceAllQuestions(records.map((question) => ({
           ...question,
@@ -424,8 +484,8 @@ function publishAppApi() {
       } catch (error) {
         await replaceAllQuestions(previousQuestions);
         if (learningKey) {
-          if (previousLearning == null) localStorage.removeItem(learningKey);
-          else localStorage.setItem(learningKey, previousLearning);
+          if (previousLearning == null) storage.removeItem(learningKey);
+          else storage.setItem(learningKey, previousLearning);
         }
         await refreshQuestions();
         throw error;
@@ -445,7 +505,8 @@ function publishAppApi() {
           counts: { ...evidence.counts },
           masteryRate: evidence.masteryRate,
           rules: evidence.rules
-        } : null
+        } : null,
+        knowledgePointEvidence: state.knowledgePointEvidence || null
       };
     },
     getContentCoverage() {
@@ -493,6 +554,10 @@ function cacheElements() {
 }
 
 function bindEvents() {
+  window.addEventListener("physics-storage-error", (event) => {
+    const reason = String(event.detail?.reason || "本地存储事务失败").slice(0, 160);
+    showToast(`数据未保存：${reason}。请先导出备份并检查可用空间。`, true);
+  });
   els.addQuestionButton.addEventListener("click", () => openForm());
   els.emptyAddButton.addEventListener("click", handleEmptyAction);
   document.querySelectorAll(".close-modal").forEach((button) => {
@@ -696,21 +761,13 @@ async function upgradeBundledSamples() {
   return updates.length;
 }
 
-async function removeGradeSevenQuestions() {
-  const existing = await getAllQuestions();
-  const gradeSevenQuestions = existing.filter((question) => question.grade === "七年级");
-  if (!gradeSevenQuestions.length) return 0;
-  await Promise.all(gradeSevenQuestions.map((question) => deleteQuestion(question.id)));
-  return gradeSevenQuestions.length;
-}
-
 async function installCurriculumBank() {
   const bank = window.PHYSICS_CURRICULUM_BANK;
   if (!bank || !Array.isArray(bank.questions) || bank.questions.length === 0) return 0;
 
   const markerKey = `physics-curriculum-bank-v${bank.version}`;
   try {
-    if (localStorage.getItem(markerKey) === bank.contentVersion) return 0;
+    if (appStorage().getItem(markerKey) === bank.contentVersion) return 0;
   } catch (error) {
     console.warn("无法读取题库安装标记，将通过试题编号安全去重。", error);
   }
@@ -755,7 +812,7 @@ async function installCurriculumBank() {
   }
 
   try {
-    localStorage.setItem(markerKey, bank.contentVersion);
+    appStorage().setItem(markerKey, bank.contentVersion);
   } catch (error) {
     console.warn("无法保存题库安装标记，但试题已按编号去重写入。", error);
   }
@@ -823,7 +880,7 @@ async function installMockExamBank() {
 
   await Promise.all([...additions, ...updates].map((question) => putQuestion(question)));
   try {
-    localStorage.setItem(`physics-mock-exam-bank-v${bank.version}`, bank.contentVersion);
+    appStorage().setItem(`physics-mock-exam-bank-v${bank.version}`, bank.contentVersion);
   } catch (error) {
     console.warn("无法保存原创模拟卷安装标记，但试题已按编号安全去重写入。", error);
   }
@@ -889,7 +946,7 @@ async function installOriginalPracticeBank() {
 
   await putQuestions([...additions, ...updates]);
   try {
-    localStorage.setItem(`physics-original-practice-bank-v${bank.version}`, bank.contentVersion);
+    appStorage().setItem(`physics-original-practice-bank-v${bank.version}`, bank.contentVersion);
   } catch (error) {
     console.warn("无法保存原创变式题库安装标记，但题目已按编号安全去重写入。", error);
   }
@@ -967,7 +1024,7 @@ async function installTargetedPracticeBank() {
 
   await putQuestions([...additions, ...updates]);
   try {
-    localStorage.setItem(`physics-targeted-practice-bank-v${bank.version}`, bank.contentVersion);
+    appStorage().setItem(`physics-targeted-practice-bank-v${bank.version}`, bank.contentVersion);
   } catch (error) {
     console.warn("无法保存专项迁移题库安装标记，但题目已按编号安全去重写入。", error);
   }
@@ -1123,7 +1180,7 @@ async function installRealExamQuestionIndex() {
 
   const markerKey = `physics-real-exam-index-v${bank.version}`;
   try {
-    localStorage.getItem(markerKey);
+    appStorage().getItem(markerKey);
   } catch (error) {
     console.warn("无法读取近六年真题安装标记，将通过题目编号安全去重。", error);
   }
@@ -1189,7 +1246,7 @@ async function installRealExamQuestionIndex() {
 
   await Promise.all([...additions, ...updates].map((question) => putQuestion(question)));
   try {
-    localStorage.setItem(markerKey, bank.contentVersion);
+    appStorage().setItem(markerKey, bank.contentVersion);
   } catch (error) {
     console.warn("无法保存近六年真题安装标记，但题目已按编号去重写入。", error);
   }
@@ -1218,12 +1275,84 @@ function inferResourceAnswerStatus(resource) {
   return "答案状态请在来源页面核对。";
 }
 
+function inferQuestionTypeMetadata(question = {}) {
+  const explicit = String(question.questionType || question.examQuestionType || "").trim();
+  if (explicit) return explicit;
+  const text = [question.title, question.content, question.solution, question.answer].join(" ");
+  if (/选择题|单选|多选|\b[A-D][.、)]/.test(text)) return "单项选择题";
+  if (/填空|（\s*）|\(\s*\)|____|横线上/.test(text)) return "填空题";
+  if (/实验|探究|器材|测量|装置|数据处理/.test(text)) return "实验题";
+  if (/判断/.test(text)) return "判断题";
+  if (/简答|说明|解释|为什么|比较|论述/.test(text)) return "简答题";
+  if (/求|计算|速度|质量|电流|电压|功率|能量|周期|距离|时间/.test(text)) return "计算题";
+  return "未标注";
+}
+
+function canonicalKnowledgePointId(question = {}) {
+  const taxonomyResolver = window.PHYSICS_CURRICULUM_TAXONOMY?.resolveKnowledgePoint;
+  if (typeof taxonomyResolver === "function") {
+    const resolved = taxonomyResolver(question);
+    if (resolved.id) return resolved.id;
+  }
+  const explicit = String(question.knowledgePointId || "").trim();
+  if (explicit) return explicit;
+  const section = String(question.curriculumSectionId || question.curriculumSection || "").trim();
+  if (section && /^[-A-Za-z0-9_:.]+$/.test(section)) return `kp:section:${section}`;
+  const label = String(question.topic || question.knowledgePoint || question.topicLabel || "")
+    .normalize("NFKC").replace(/[\s\u3000]+/g, "").trim();
+  if (!label) return "";
+  // Semantic aliases stay in one evidence bucket even when source wording
+  // differs (e.g. “带电粒子在磁场中运动/中的运动”).
+  const compact = label.replace(/中的?/g, "").replace(/运动运动/g, "运动");
+  if (/带电粒子.*磁场.*运动/.test(compact)) return "kp:带电粒子-磁场运动";
+  return `kp:${compact.replace(/[^\p{L}\p{N}]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 120)}`;
+}
+
+function normalizeQuestionMetadata(question = {}) {
+  const questionType = inferQuestionTypeMetadata(question);
+  const collection = String(question.collection || "local").trim() || "local";
+  const modelDefinitionId = String(question.modelDefinitionId || question.modelFamilyId || `${collection}:${question.topic || question.id}`).slice(0, 160);
+  const retestGroupId = String(question.retestGroupId || question.transferGroupId || modelDefinitionId).slice(0, 160);
+  const diagnosticEligible = question.diagnosticEligible != null
+    ? Boolean(question.diagnosticEligible)
+    : ["diagnostic-anchor", "retest-anchor"].includes(question.evidenceTier);
+  const autoScorable = question.autoScorable != null
+    ? Boolean(question.autoScorable)
+    : ["单项选择题", "多项选择题", "填空题", "判断题", "计算题"].some((type) => questionType.includes(type));
+  return {
+    ...question,
+    questionType,
+    knowledgePointId: canonicalKnowledgePointId(question),
+    cognitiveDemand: String(question.cognitiveDemand || question.cognitiveRequirement || (question.difficulty === "挑战" ? "迁移" : question.difficulty === "进阶" ? "应用" : "基础")),
+    representationType: String(question.representationType || (/实验|探究/.test(questionType) ? "实验" : /图|图像/.test(String(question.content || "")) ? "图像" : "文字/公式")),
+    independenceGroupId: String(question.independenceGroupId || modelDefinitionId).slice(0, 160),
+    assessmentPurpose: String(question.assessmentPurpose || (question.diagnosticEligible ? "diagnostic" : "practice")),
+    evidenceTier: String(question.evidenceTier || (question.variantRole === "core" ? "diagnostic-anchor" : "practice-variant")),
+    modelDefinitionId,
+    retestGroupId,
+    diagnosticEligible,
+    autoScorable
+  };
+}
+
+async function normalizeStoredQuestionMetadata(records) {
+  const normalized = (records || []).map(normalizeQuestionMetadata);
+  const updates = normalized.filter((question, index) => {
+    const previous = records[index];
+    return ["questionType", "knowledgePointId", "evidenceTier", "modelDefinitionId", "retestGroupId", "diagnosticEligible", "autoScorable", "cognitiveDemand", "representationType", "independenceGroupId", "assessmentPurpose"]
+      .some((field) => previous[field] !== question[field]);
+  });
+  if (updates.length) await putQuestions(updates);
+  return normalized;
+}
+
 async function refreshQuestions() {
-  const storedRecords = await getAllQuestions();
+  const storedRecords = await normalizeStoredQuestionMetadata(await getAllQuestions());
   state.sourceRecords = storedRecords.filter((question) => question.resourceOnly);
   state.questions = storedRecords.filter((question) => !question.resourceOnly).sort((a, b) => {
     return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
   });
+  state.questionSearchIndex.clear();
   refreshMasteryEvidence();
   render();
   document.dispatchEvent(new CustomEvent("physics-studio-questions-changed", {
@@ -1236,6 +1365,7 @@ function refreshMasteryEvidence() {
   if (!engine?.loadState || !engine?.masterySummary) {
     state.masteryEvidence = new Map();
     state.masterySummary = null;
+    state.knowledgePointEvidence = null;
     return;
   }
   const learningState = engine.loadState();
@@ -1243,6 +1373,10 @@ function refreshMasteryEvidence() {
     learningState,
     state.questions.filter(isCompletePracticeQuestion)
   );
+  state.knowledgePointEvidence = engine.knowledgePointEvidenceSummary?.(
+    learningState,
+    state.questions.filter(isCompletePracticeQuestion)
+  ) || null;
   state.masteryEvidence = new Map(
     state.masterySummary.profile.map((item) => [item.questionId, item])
   );
@@ -1267,46 +1401,55 @@ function render() {
 }
 
 function renderStats() {
-  const total = state.questions.filter(isCompletePracticeQuestion).length;
-  const video = state.questions.filter(hasVideo).length;
+  let total = 0;
+  let video = 0;
+  let wrong = 0;
+  state.questions.forEach((question) => {
+    if (isCompletePracticeQuestion(question)) total += 1;
+    if (hasVideo(question)) video += 1;
+    if (question.wrong) wrong += 1;
+  });
   const mastered = state.masterySummary?.mastered || 0;
   els.totalCount.textContent = total;
   els.videoCount.textContent = video;
   els.masteredCount.textContent = mastered;
-  els.masteryRate.textContent = `${state.masterySummary?.masteryRate || 0}%`;
-  els.wrongNavCount.textContent = state.questions.filter((question) => Boolean(question.wrong)).length;
+  els.masteryRate.textContent = state.knowledgePointEvidence?.coverageLabel || "0/0";
+  els.wrongNavCount.textContent = wrong;
 }
 
 function renderProgress() {
-  const total = state.questions.filter(isCompletePracticeQuestion).length;
-  const mastered = state.masterySummary?.mastered || 0;
-  const pending = total - mastered;
-  const rate = total ? Math.round((mastered / total) * 100) : 0;
+  const coverage = state.knowledgePointEvidence;
+  const total = coverage?.totalKnowledgePoints || 0;
+  const evidenced = coverage?.evidencedKnowledgePoints || 0;
+  const pending = Math.max(0, total - evidenced);
+  const rate = coverage?.coverageRate || 0;
   els.progressPanel.classList.toggle("hidden", state.view !== "progress");
-  els.progressRate.textContent = `${rate}%`;
-  els.progressMasteredCount.textContent = mastered;
+  els.progressRate.textContent = coverage?.coverageLabel || "0/0";
+  els.progressMasteredCount.textContent = evidenced;
   els.progressPendingCount.textContent = pending;
   els.progressSummary.textContent = total
-    ? `已掌握 ${mastered} 道，共 ${total} 道；还有 ${pending} 道需要继续巩固。`
-    : "题库中还没有试题，添加题目后即可记录掌握进度。";
+    ? `已有证据 ${evidenced}/${total} 个知识点；其中基本掌握 ${coverage.basic}、可迁移 ${coverage.transferable}、需巩固 ${coverage.reinforce}、证据不足 ${coverage.insufficient}。`
+    : "当前年级没有可评估知识点，暂不能形成覆盖结论。";
   els.progressBarFill.style.width = `${rate}%`;
   els.progressTrack.setAttribute("aria-valuenow", String(rate));
 }
 
 function renderInsights() {
+  const analysisVisible = state.view === "analysis";
+  const knowledgeVisible = state.view === "knowledge";
+  els.analysisPanel.classList.toggle("hidden", !analysisVisible);
+  els.knowledgePanel.classList.toggle("hidden", !knowledgeVisible);
+  if (!analysisVisible && !knowledgeVisible) return;
+
   const learningQuestions = state.questions.filter(isCompletePracticeQuestion);
-  const total = learningQuestions.length;
-  const mastered = state.masterySummary?.mastered || 0;
   const wrong = learningQuestions.filter((question) => Boolean(question.wrong)).length;
   const topics = getTopicStats();
   const transferCount = learningQuestions.reduce((sum, question) => {
     return sum + Object.keys(question.transferNotes || {}).length;
   }, 0);
-  const masteryRate = total ? Math.round((mastered / total) * 100) : 0;
+  const coverage = state.knowledgePointEvidence;
 
-  els.analysisPanel.classList.toggle("hidden", state.view !== "analysis");
-  els.knowledgePanel.classList.toggle("hidden", state.view !== "knowledge");
-  els.analysisMasteryRate.textContent = `${masteryRate}%`;
+  els.analysisMasteryRate.textContent = coverage?.coverageLabel || "0/0";
   els.analysisWrongCount.textContent = wrong;
   els.analysisTopicCount.textContent = topics.length;
   els.analysisTransferCount.textContent = transferCount;
@@ -1314,14 +1457,13 @@ function renderInsights() {
   const priority = topics[0];
   if (priority) {
     els.analysisPriority.innerHTML = `
-      <div class="priority-topic-row"><strong>${escapeHtml(priority.topic)}</strong><span>${priority.rate}%</span></div>
-      <div class="mini-progress"><span style="width:${priority.rate}%"></span></div>
-      <p>共 ${priority.total} 道，已掌握 ${priority.mastered} 道，当前错题 ${priority.wrong} 道。该结论仅反映题库内已记录的题目。</p>`;
+      <div class="priority-topic-row"><strong>${escapeHtml(priority.topic)}</strong><span>${escapeHtml(priority.evidenceStatus)}</span></div>
+      <p>当前为${escapeHtml(priority.evidenceStatus)}，已有 ${priority.evidenceSampleSize} 条可追溯证据；该知识点可评估题目 ${priority.total} 道，当前错题 ${priority.wrong} 道。证据不足时不会推断总体能力。</p>`;
   } else {
     els.analysisPriority.innerHTML = "<p>题库中还没有可分析的知识点。添加题目并记录掌握情况后，这里会给出优先级。</p>";
   }
 
-  const advice = buildLearningAdvice({ total, mastered, wrong, topics, transferCount });
+  const advice = buildLearningAdvice({ total: learningQuestions.length, mastered: coverage?.evidencedKnowledgePoints || 0, wrong, topics, transferCount });
   els.analysisAdviceList.innerHTML = advice.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   els.knowledgeGrid.innerHTML = topics.length
     ? topics.map(knowledgeTopicTemplate).join("")
@@ -1335,11 +1477,17 @@ function renderViewLayout() {
 }
 
 function getTopicStats() {
+  const engine = window.PHYSICS_LEARNING_ENGINE;
+  const evidenceByKey = new Map((state.knowledgePointEvidence?.byTopic || [])
+    .map((item) => [item.key, item]));
   const topicMap = new Map();
   state.questions.forEach((question) => {
     const topic = question.topic || "未分类";
-    const current = topicMap.get(topic) || {
+    const topicKey = engine?.topicKeyForQuestion?.(question)
+      || `topic:${String(topic).trim().toLocaleLowerCase("zh-CN").replace(/[^\p{L}\p{N}]+/gu, "-")}`;
+    const current = topicMap.get(topicKey) || {
       topic,
+      topicKey,
       total: 0,
       mastered: 0,
       wrong: 0,
@@ -1351,34 +1499,50 @@ function getTopicStats() {
     if (question.wrong) current.wrong += 1;
     if (hasVideo(question)) current.videos += 1;
     current.transfer += Object.keys(question.transferNotes || {}).length;
-    topicMap.set(topic, current);
+    topicMap.set(topicKey, current);
   });
 
-  return Array.from(topicMap.values()).map((item) => ({
-    ...item,
-    rate: item.total ? Math.round((item.mastered / item.total) * 100) : 0
-  })).sort((a, b) => a.rate - b.rate || b.wrong - a.wrong || b.total - a.total
-    || a.topic.localeCompare(b.topic, "zh-CN"));
+  const statusLabels = {
+    insufficient: "证据不足",
+    reinforce: "需巩固",
+    basic: "基本掌握",
+    transferable: "可迁移"
+  };
+  return Array.from(topicMap.values()).map((item) => {
+    const evidence = evidenceByKey.get(item.topicKey);
+    const evidenceCode = evidence?.code || "insufficient";
+    return {
+      ...item,
+      evidenceCode,
+      evidenceStatus: statusLabels[evidenceCode] || "证据不足",
+      evidenceSampleSize: evidence?.sampleSize || 0,
+      evidenceAttemptCount: evidence?.attemptCount || 0,
+      evidenceTransferCount: evidence?.transferCount || 0,
+      evidenceExamCount: evidence?.examCount || 0,
+      evidenceLatestDate: evidence?.latestEvidenceDate || "暂无"
+    };
+  }).sort((a, b) => {
+    const order = { reinforce: 0, insufficient: 1, basic: 2, transferable: 3 };
+    return (order[a.evidenceCode] ?? 1) - (order[b.evidenceCode] ?? 1)
+      || b.wrong - a.wrong
+      || b.evidenceSampleSize - a.evidenceSampleSize
+      || a.topic.localeCompare(b.topic, "zh-CN");
+  });
 }
 
 function knowledgeTopicTemplate(topic) {
-  const status = topic.rate >= 80 && topic.wrong === 0
-    ? "较稳固"
-    : topic.rate >= 50 && topic.wrong === 0
-      ? "提升中"
-      : "需巩固";
   return `
     <button class="knowledge-topic-card" data-topic="${escapeHtml(topic.topic)}" type="button">
       <div class="knowledge-topic-head">
-        <div><strong>${escapeHtml(topic.topic)}</strong><span class="knowledge-status status-${status}">${status}</span></div>
-        <b>${topic.rate}%</b>
+        <div><strong>${escapeHtml(topic.topic)}</strong><span class="knowledge-status status-${escapeHtml(topic.evidenceCode)}">${escapeHtml(topic.evidenceStatus)}</span></div>
+        <b>${topic.evidenceSampleSize} 条证据</b>
       </div>
-      <div class="knowledge-progress"><span style="width:${topic.rate}%"></span></div>
       <div class="knowledge-topic-meta">
-        <span>${topic.mastered}/${topic.total} 道已掌握</span>
+        <span>可评估题目 ${topic.total} 道</span>
+        <span>正式作答 ${topic.evidenceAttemptCount} 次</span>
+        <span>最近证据 ${escapeHtml(topic.evidenceLatestDate)}</span>
         <span>${topic.wrong} 道错题</span>
-        <span>${topic.videos} 个视频</span>
-        <span>${topic.transfer} 条变式记录</span>
+        <span>已验证迁移 ${topic.evidenceTransferCount} 条</span>
       </div>
       <small>打开该知识点试题 →</small>
     </button>`;
@@ -1517,7 +1681,7 @@ function buildLearningAdvice({ total, wrong, topics, transferCount }) {
 
   const advice = [];
   if (wrong > 0) advice.push(`先复盘当前 ${wrong} 道错题，写清错误原因后再标记掌握。`);
-  if (topics[0]) advice.push(`优先练习“${topics[0].topic}”，其题库内掌握率为 ${topics[0].rate}%。`);
+  if (topics[0]) advice.push(`优先检查“${topics[0].topic}”，当前为${topics[0].evidenceStatus}，已有 ${topics[0].evidenceSampleSize} 条可追溯证据。`);
   const wrongWithoutVideo = state.questions.filter((question) => question.wrong && !hasVideo(question)).length;
   if (wrongWithoutVideo > 0) advice.push(`为 ${wrongWithoutVideo} 道缺少视频的错题补充方法视频，便于复盘关键步骤。`);
   if (transferCount === 0) advice.push("完成一道典型题后，至少保存一条举一反三记录，检验方法是否能够迁移。");
@@ -1531,6 +1695,8 @@ function isCompletePracticeQuestion(question) {
     : Boolean(question && !question.resourceOnly && question.fullTextIncluded !== false);
   return Boolean(
     published
+    && String(question.questionType || question.examQuestionType || "").trim()
+    && String(question.questionType || question.examQuestionType || "") !== "未标注"
     && String(question.content || "").trim()
     && String(question.solution || "").trim()
     && String(question.answer || "").trim()
@@ -1539,39 +1705,41 @@ function isCompletePracticeQuestion(question) {
 
 function getFilteredQuestions() {
   return state.questions.filter((question) => {
-    const searchable = [
-      question.title,
-      question.stage,
-      question.grade,
-      question.topic,
-      question.difficulty,
-      question.source,
-      question.content,
-      question.solution,
-      question.answer,
-      question.textbookUnit,
-      question.curriculumBook,
-      question.curriculumChapter,
-      question.curriculumSection,
-      question.curriculumBasis,
-      question.copyrightNote,
-      question.sourceLicense,
-      question.sourceUrl,
-      question.answerUrl,
-      question.examLevel,
-      question.examYear,
-      question.examRegion,
-      question.examPaperTitle,
-      question.examQuestionNumber,
-      question.examQuestionType,
-      question.examScopeNote,
-      question.examPaperStatus,
-      ...(Array.isArray(question.examPoints) ? question.examPoints : []),
-      ...(Array.isArray(question.attachments) ? question.attachments.map((attachment) => attachment.name) : []),
-      ...Object.values(question.transferNotes || {})
-    ]
-      .join(" ")
-      .toLocaleLowerCase("zh-CN");
+    let searchable = state.questionSearchIndex.get(question.id);
+    if (!searchable) {
+      searchable = [
+        question.title,
+        question.stage,
+        question.grade,
+        question.topic,
+        question.difficulty,
+        question.source,
+        question.content,
+        question.solution,
+        question.answer,
+        question.textbookUnit,
+        question.curriculumBook,
+        question.curriculumChapter,
+        question.curriculumSection,
+        question.curriculumBasis,
+        question.copyrightNote,
+        question.sourceLicense,
+        question.sourceUrl,
+        question.answerUrl,
+        question.examLevel,
+        question.examYear,
+        question.examRegion,
+        question.examPaperTitle,
+        question.examQuestionNumber,
+        question.examQuestionType,
+        question.examScopeNote,
+        question.examPaperStatus,
+        ...(Array.isArray(question.examPoints) ? question.examPoints : []),
+        ...(Array.isArray(question.attachments) ? question.attachments.map((attachment) => attachment.name) : []),
+        ...Object.values(question.transferNotes || {})
+      ].join(" ").toLocaleLowerCase("zh-CN");
+      state.questionSearchIndex.set(question.id, searchable);
+    }
     const matchesSearch = !state.search || searchable.includes(state.search);
     const matchesStage = state.stage === "all" || question.stage === state.stage;
     const matchesDifficulty = state.difficulty === "all" || question.difficulty === state.difficulty;
@@ -1587,7 +1755,7 @@ function getFilteredQuestions() {
 
 function renderQuestions() {
   releaseCardVideos();
-  if (state.view === "analysis" || state.view === "knowledge") {
+  if (["analysis", "knowledge", "curriculum"].includes(state.view)) {
     els.questionGrid.innerHTML = "";
     return;
   }
@@ -1658,7 +1826,7 @@ function questionCardTemplate(question) {
             ${question.collection === "changsha-six-year-real-exam-index" && question.fullTextIncluded === false ? '<span class="tag">原卷入口</span>' : ""}
             ${Array.isArray(question.attachments) && question.attachments.length ? `<span class="tag">附件 ${question.attachments.length}</span>` : ""}
             ${question.wrong ? '<span class="tag tag-wrong">错题</span>' : ""}
-            <span class="tag evidence-${escapeHtml(mastery.code)}">掌握证据：${escapeHtml(mastery.status)}</span>
+            <span class="tag evidence-${escapeHtml(mastery.code)}">掌握证据：${escapeHtml(window.PHYSICS_LEARNING_ENGINE?.masteryDisplayLabel?.(mastery) || mastery.status)}</span>
           </div>
           <div class="card-menu">
             <button class="more-button" data-action="menu" type="button" aria-label="题目操作">···</button>
@@ -1678,7 +1846,7 @@ function questionCardTemplate(question) {
             <button class="wrong-button ${question.wrong ? "active" : ""}" data-action="wrong" type="button">${question.wrong ? "移出错题" : "加入错题"}</button>
             <button class="transfer-button" data-action="transfer" type="button">举一反三</button>
             <button class="coach-button" data-action="learn" type="button">分步训练</button>
-            <span class="mastery-evidence-badge evidence-${escapeHtml(mastery.code)}" title="${escapeHtml(mastery.reasons.join("；"))}">${escapeHtml(mastery.status)}</span>
+            <span class="mastery-evidence-badge evidence-${escapeHtml(mastery.code)}" title="${escapeHtml(mastery.reasons.join("；"))}">${escapeHtml(window.PHYSICS_LEARNING_ENGINE?.masteryDisplayLabel?.(mastery) || mastery.status)}</span>
             <button class="view-button" data-action="view" type="button">查看解析</button>
           </div>
         </div>
@@ -1752,8 +1920,7 @@ function navigateToView(view, resetFilters = false) {
   if (resetFilters) resetListFilters();
   setView(view);
   requestAnimationFrame(() => {
-    const behavior = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
-    els.workspace.scrollIntoView({ behavior, block: "start" });
+    els.workspace.scrollIntoView({ behavior: "auto", block: "start" });
     const focusTarget = state.view === "analysis"
       ? els.analysisTitle
       : state.view === "knowledge"
@@ -1774,9 +1941,16 @@ function resetListFilters() {
   els.difficultyFilter.value = "all";
 }
 
+let localSearchRenderFrame = 0;
+
 function updateLocalSearch() {
   state.search = els.searchInput.value.trim().toLocaleLowerCase("zh-CN");
-  render();
+  if (localSearchRenderFrame) return;
+  const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+  localSearchRenderFrame = schedule(() => {
+    localSearchRenderFrame = 0;
+    render();
+  });
 }
 
 function searchLocalQuestions(event) {
@@ -1797,6 +1971,12 @@ function searchWithEdge() {
   if (!query) {
     showToast("请先输入需要联网搜索的关键词。", true);
     els.searchInput.focus();
+    return;
+  }
+  const questionAnswerService = window.PhysicsStudioQuestionAnswerService;
+  if (questionAnswerService?.searchOnline) {
+    const result = questionAnswerService.searchOnline(query);
+    showToast(result.answer || "已在 Microsoft Edge 中打开搜索。", !result.networkSearched);
     return;
   }
   const searchUrl = `https://www.bing.com/search?q=${encodeURIComponent(query)}`;
@@ -2885,7 +3065,7 @@ function openDetail(question) {
         ${studentMode ? "" : `<button class="ghost-button" data-detail-action="edit" data-id="${escapeHtml(question.id)}" type="button">编辑题目</button>`}
         <button class="coach-button" data-detail-action="learn" data-id="${escapeHtml(question.id)}" type="button">进入分步训练</button>
         <button class="wrong-detail-button ${question.wrong ? "active" : ""}" data-detail-action="wrong" data-id="${escapeHtml(question.id)}" type="button">${question.wrong ? "移出错题集" : "加入错题集"}</button>
-        <span class="mastery-evidence-badge evidence-${escapeHtml(mastery.code)}" title="${escapeHtml(mastery.reasons.join("；"))}">掌握证据：${escapeHtml(mastery.status)}</span>
+        <span class="mastery-evidence-badge evidence-${escapeHtml(mastery.code)}" title="${escapeHtml(mastery.reasons.join("；"))}">掌握证据：${escapeHtml(window.PHYSICS_LEARNING_ENGINE?.masteryDisplayLabel?.(mastery) || mastery.status)}</span>
       </div>
     </div>`;
   els.detailModal.showModal();
@@ -3216,7 +3396,7 @@ async function exportCompleteBackup() {
       window.PhysicsStudioApp,
       window.PHYSICS_LEARNING_ENGINE
     );
-    await downloadBlob(`物理研习室完整备份-${formatDateForFile(new Date())}.pslab`, result.blob);
+    await downloadBlob(`费曼物理完整备份-${formatDateForFile(new Date())}.pslab`, result.blob);
     showToast(`完整备份已生成：${result.manifest.questionCount} 道题、${result.manifest.profileCount} 份档案。`);
   } catch (error) {
     console.error(error);
@@ -3343,7 +3523,6 @@ async function importQuestions() {
     if (parsed.questions.length > 5000) throw new Error("Too many questions");
     const valid = parsed.questions.filter((question) => {
       return isValidImportedQuestion(question)
-        && question.grade !== "七年级"
         && question.id.length <= 160
         && question.title.length <= 200
         && question.content.length <= 60000
@@ -3582,7 +3761,7 @@ function downloadAuthorizedImportTemplate() {
     questions: []
   };
   const serialized = JSON.stringify(payload, null, 2);
-  const filename = "物理研习室-授权题库导入模板.json";
+  const filename = "费曼物理-授权题库导入模板.json";
   if (window.PhysicsStudioAndroid && typeof window.PhysicsStudioAndroid.saveTextFile === "function") {
     window.PhysicsStudioAndroid.saveTextFile(filename, serialized, "application/json");
     showToast("请选择授权题库导入模板的保存位置。");
@@ -3602,8 +3781,9 @@ function isValidImportedQuestion(question) {
   return question && typeof question.id === "string" && typeof question.title === "string"
     && typeof question.content === "string" && typeof question.solution === "string"
     && ["初中", "高中"].includes(question.stage)
-    && ["八年级", "九年级", "高一", "高二", "高三"].includes(question.grade)
-    && (question.stage === "初中") === ["八年级", "九年级"].includes(question.grade)
+    // 七年级仅作为 v2.8 legacy data 接受导入/恢复，不进入 v2.9 当前学习统计。
+    && ["七年级", "八年级", "九年级", "高一", "高二", "高三"].includes(question.grade)
+    && (question.stage === "初中") === ["七年级", "八年级", "九年级"].includes(question.grade)
     && ["基础", "进阶", "挑战"].includes(question.difficulty);
 }
 

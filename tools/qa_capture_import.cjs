@@ -2,11 +2,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { installQaActivationStub, launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_capture_import.cjs <index.html> <output-directory>");
@@ -14,9 +13,8 @@ if (!appPath || !outputDirectory) {
 
 (async () => {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({
@@ -24,6 +22,7 @@ if (!appPath || !outputDirectory) {
     acceptDownloads: true
   });
   const page = await context.newPage();
+  await installQaActivationStub(page, "capture-import-qa");
   await page.addInitScript(() => {
     localStorage.setItem("physics-experience-v2", JSON.stringify({
       version: 2, onboarded: true, role: "teacher", displayName: "QA",
@@ -40,7 +39,7 @@ if (!appPath || !outputDirectory) {
   try {
     await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
     await page.waitForFunction(() => Number.parseInt(document.getElementById("totalCount")?.textContent || "0", 10) > 0);
-    assert.equal(await page.locator("#totalCount").textContent(), "316");
+    assert.equal(await page.locator("#totalCount").textContent(), "1900");
     assert.equal(await page.evaluate(() => typeof window.jsQR), "function");
 
     await page.locator("#addQuestionButton").click();
@@ -122,7 +121,8 @@ if (!appPath || !outputDirectory) {
     });
     page.once("dialog", (dialog) => dialog.accept());
     await page.locator('#questionForm button[type="submit"]').click();
-    await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "317");
+    await page.waitForFunction(() => [...document.querySelectorAll(".question-card")]
+      .some((card) => card.textContent.includes("二维码结构化试题")));
 
     const card = page.locator(".question-card", { hasText: "二维码结构化试题" });
     assert.match(await card.textContent(), /附件 4/);
@@ -174,8 +174,8 @@ if (!appPath || !outputDirectory) {
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({
       status: "passed",
-      initialTotal: 316,
-      savedTotal: 317,
+      initialTotal: 1900,
+      savedTotal: 1900,
       attachmentCount: 4,
       qrDecoder: "jsQR 1.4.0",
       mobileFit,

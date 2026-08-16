@@ -2,11 +2,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_experience_shell.cjs <index.html> <output-directory>");
@@ -31,8 +30,7 @@ async function chooseRole(page, role, options = {}) {
 }
 
 async function run() {
-  const browser = await chromium.launch({
-    executablePath: edgePath,
+  const browser = await launchBrowser({
     headless: true
   });
   const desktop = await browser.newContext({ viewport: { width: 1440, height: 900 } });
@@ -64,7 +62,7 @@ async function run() {
   try {
     await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
     await page.locator("#experienceOnboarding").waitFor({ state: "visible" });
-    assert.equal(await page.locator('.role-choice input[name="experienceRole"]').count(), 3);
+    assert.equal(await page.locator('.role-choice input[name="experienceRole"]').count(), 2);
 
     await chooseRole(page, "student", {
       name: "测试同学",
@@ -110,7 +108,7 @@ async function run() {
 
     await page.locator('[data-student-view="practice"]').first().click();
     await page.locator("#studentPracticeSearch").fill("平抛");
-    assert.match(await page.locator(".student-safe-search").innerText(), /外部网站访问已关闭/);
+    assert.match(await page.locator(".student-external-search").innerText(), /联网检索默认开启/);
     await page.locator('.student-search-submit[data-student-view="library"]').click();
     await page.waitForTimeout(120);
     assert.ok(await page.locator(".student-question-card").count() >= 1);
@@ -144,7 +142,13 @@ async function run() {
     assert.match(await page.locator(".student-safety-note").innerText(), /不允许手动勾选/);
 
     await page.locator('[data-shell-action="open-settings"]').first().click();
+    const teacherPinHandler = async (dialog) => {
+      if (dialog.type() === "prompt" && /PIN/.test(dialog.message())) await dialog.accept("246810");
+      else await dialog.dismiss();
+    };
+    page.on("dialog", teacherPinHandler);
     await chooseRole(page, "teacher");
+    page.off("dialog", teacherPinHandler);
     assert.equal(await page.locator(".main").isVisible(), true);
     assert.equal(await page.locator("#teacherExperienceBar").isVisible(), true);
     await page.locator('[data-teacher-action="center"]').click();
@@ -164,11 +168,15 @@ async function run() {
     await page.locator("#questionModal .close-modal").first().click();
 
     await page.locator('[data-teacher-action="switch"]').click();
+    assert.equal(await page.locator('.role-choice input[value="parent"]').count(), 0);
+    assert.equal(await page.locator('.parent-main').count(), 0);
+    if (false) {
     await chooseRole(page, "parent");
     assert.equal(await page.locator(".parent-main").isVisible(), true);
     assert.match(await page.locator(".parent-intro").innerText(), /不贴负面标签/);
     assert.equal(await page.getByText(/排名/, { exact: false }).count() > 0, true);
     await page.screenshot({ path: path.join(outputDirectory, "parent-summary.png") });
+    }
 
     const mobile = await browser.newContext({
       viewport: { width: 390, height: 844 },

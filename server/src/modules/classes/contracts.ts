@@ -16,8 +16,10 @@ export const GradeSchema = Type.Union([
 
 export const CreateClassRequestSchema = StrictObject({
   name: Type.String({ minLength: 1, maxLength: 120 }),
-  grade: GradeSchema,
-  subject: Type.Literal("物理"),
+  // Optional in v2.9.0 so quick-create only needs a name. The service
+  // supplies the backwards-compatible default when omitted.
+  grade: Type.Optional(GradeSchema),
+  subject: Type.Optional(Type.Literal("物理")),
   schoolLabel: Type.Optional(Type.Union([
     Type.String({ minLength: 1, maxLength: 120 }),
     Type.Null(),
@@ -43,6 +45,18 @@ export const ClassListQuerySchema = StrictObject({
 export const ClassListResponseSchema = StrictObject({
   items: Type.Array(ClassViewSchema, { maxItems: 100 }),
   nextCursor: Type.Union([UuidSchema, Type.Null()]),
+});
+
+export const DeleteClassResponseSchema = StrictObject({
+  id: UuidSchema,
+  status: Type.Literal("archived"),
+});
+
+export const AnonymousClassCreatedSchema = StrictObject({
+  class: ClassViewSchema,
+  ownerUserId: UuidSchema,
+  ownerCapability: Type.String({ pattern: "^oc1\\.[A-Za-z0-9_-]{43}$" }),
+  ownerCapabilityExpiresAt: Type.String({ format: "date-time" }),
 });
 
 export const ClassIdParamsSchema = StrictObject({ classId: UuidSchema });
@@ -110,6 +124,8 @@ export type CreateClassRequest = Static<typeof CreateClassRequestSchema>;
 export type ClassView = Static<typeof ClassViewSchema>;
 export type ClassListQuery = Static<typeof ClassListQuerySchema>;
 export type ClassListResponse = Static<typeof ClassListResponseSchema>;
+export type DeleteClassResponse = Static<typeof DeleteClassResponseSchema>;
+export type AnonymousClassCreated = Static<typeof AnonymousClassCreatedSchema>;
 export type ClassIdParams = Static<typeof ClassIdParamsSchema>;
 export type CreateGroupRequest = Static<typeof CreateGroupRequestSchema>;
 export type GroupView = Static<typeof GroupViewSchema>;

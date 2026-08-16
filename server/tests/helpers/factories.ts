@@ -60,6 +60,8 @@ export function makeUnitDependencies(overrides: UnitDependencyOverrides = {}): A
   };
   if (overrides.authService) dependencies.authService = overrides.authService;
   if (overrides.classService) dependencies.classService = overrides.classService;
+  if (overrides.ownerCapabilityService) dependencies.ownerCapabilityService = overrides.ownerCapabilityService;
   if (overrides.inviteService) dependencies.inviteService = overrides.inviteService;
+  if (overrides.learningService) dependencies.learningService = overrides.learningService;
   return dependencies;
 }

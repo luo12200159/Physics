@@ -1305,6 +1305,14 @@ button.continue-card {
   backdrop-filter: blur(7px);
 }
 
+html.android-app .experience-onboarding::backdrop,
+html.android-app .student-capture-dialog::backdrop,
+html.android-app .experience-metrics-dialog::backdrop,
+html.android-app .classroom-dialog::backdrop,
+html.android-app .student-method-dialog::backdrop {
+  backdrop-filter: none;
+}
+
 .classroom-dialog {
   width: min(1120px, calc(100vw - 24px));
   max-width: none;
@@ -1423,9 +1431,31 @@ button.continue-card {
   padding: 28px;
 }
 
-.classroom-login-form > div:first-child {
+.classroom-login-form > div:first-child,
+.classroom-server-settings,
+.classroom-server-settings label {
   display: grid;
   gap: 6px;
+}
+
+.classroom-server-settings {
+  padding: 13px;
+  border: 1px solid #d1ddd6;
+  border-radius: 12px;
+  background: #f4f8f5;
+}
+
+.classroom-server-settings summary {
+  cursor: pointer;
+  color: #244d3b;
+  font-weight: 750;
+  line-height: 1.5;
+}
+
+.classroom-server-settings small,
+.classroom-qr-scan small {
+  color: #5d6b63;
+  line-height: 1.5;
 }
 
 .classroom-form-grid {
@@ -1613,6 +1643,107 @@ button.continue-card {
   margin-top: 18px;
 }
 
+.classroom-teaching-actions {
+  margin-top: 18px;
+}
+
+.classroom-teaching-actions .classroom-compact-form {
+  max-width: none;
+}
+
+.classroom-teaching-actions textarea,
+.classroom-review-form input,
+.classroom-review-form select,
+.classroom-teaching-actions input:not([type="checkbox"]) {
+  min-width: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cbd7d0;
+  border-radius: 11px;
+  color: #182a22;
+  background: #fff;
+  font: inherit;
+}
+
+.classroom-learning-summary,
+.classroom-review-cases {
+  display: grid;
+  gap: 12px;
+  margin-top: 20px;
+  padding: 18px;
+  border: 1px solid #d4ded8;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.classroom-learning-summary > header,
+.classroom-review-cases > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.classroom-learning-summary > header span,
+.classroom-review-cases > header span {
+  color: #3f6a57;
+  font-size: 0.76em;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+}
+
+.classroom-learning-summary > header h3,
+.classroom-review-cases > header h3 {
+  margin: 3px 0 0;
+}
+
+.classroom-learning-summary > p,
+.classroom-review-cases > p {
+  margin: 0;
+  color: #56665e;
+  line-height: 1.6;
+}
+
+.classroom-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.classroom-summary-grid article {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e0e6e2;
+  border-radius: 12px;
+  background: #f8fbf8;
+}
+
+.classroom-summary-grid span,
+.classroom-summary-grid small,
+.classroom-review-form span {
+  color: #5d6b63;
+  font-size: 0.82em;
+  overflow-wrap: anywhere;
+}
+
+.classroom-review-form {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.7fr) minmax(100px, 0.5fr) minmax(180px, 1.4fr) auto;
+  align-items: end;
+  gap: 10px;
+  padding: 12px 0;
+  border-top: 1px solid #e0e6e2;
+}
+
+.classroom-review-form > div:first-child,
+.classroom-review-form label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
 .classroom-invite-code {
   display: grid;
   gap: 7px;
@@ -1627,6 +1758,30 @@ button.continue-card {
   color: #123e2d;
   font: 800 1.22em ui-monospace, Consolas, monospace;
   letter-spacing: 0.04em;
+}
+
+.classroom-invite-code canvas {
+  width: min(198px, 100%);
+  height: auto;
+  padding: 8px;
+  border: 1px solid #d4dfd8;
+  border-radius: 10px;
+  background: #fff;
+  image-rendering: pixelated;
+}
+
+.classroom-invite-code > div {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.classroom-qr-status {
+  display: block;
+}
+
+.classroom-qr-status.error {
+  color: #813b31;
 }
 
 .classroom-group-list {
@@ -1701,6 +1856,61 @@ button.continue-card {
   background: #fff;
 }
 
+.student-assignment-list {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #d4ded8;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.student-assignment-list > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.student-assignment-list > header span {
+  color: #3f6a57;
+  font-size: 0.76em;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+}
+
+.student-assignment-list > header h3 {
+  margin: 3px 0 0;
+}
+
+.student-assignment-list > article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 13px 0;
+  border-top: 1px solid #e0e6e2;
+}
+
+.student-assignment-list > article strong,
+.student-assignment-list > article span,
+.student-assignment-list > article small {
+  display: block;
+}
+
+.student-assignment-list > article span,
+.student-assignment-list > article small {
+  margin-top: 4px;
+  color: #5d6b63;
+}
+
+.student-assignment-list > article small {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 780px) {
   .classroom-dialog {
     width: 100vw;
@@ -1720,6 +1930,19 @@ button.continue-card {
     grid-template-columns: 1fr;
   }
 
+  .student-assignment-list {
+    grid-column: auto;
+  }
+
+  .student-assignment-list > article {
+    grid-template-columns: 1fr;
+  }
+
+  .classroom-review-form {
+    grid-template-columns: 1fr;
+    align-items: stretch;
+  }
+
   .classroom-sidebar {
     border-right: 0;
     border-bottom: 1px solid #d8e1db;
@@ -1732,6 +1955,10 @@ button.continue-card {
 
   .classroom-roster > article > div:last-child {
     display: grid;
+  }
+
+  .classroom-invite-code > div {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -4879,4 +5106,50 @@ textarea:focus-visible,
     padding-left: 17px;
     padding-right: 17px;
   }
+}
+
+@media (max-width: 860px) {
+  html,
+  body,
+  .experience-shell,
+  .student-shell,
+  .student-shell-main,
+  .student-page {
+    max-width: 100%;
+    min-width: 0;
+    overflow-x: hidden;
+  }
+
+  .experience-shell * {
+    min-width: 0;
+  }
+
+  .experience-shell p,
+  .experience-shell h1,
+  .experience-shell h2,
+  .experience-shell h3,
+  .experience-shell h4,
+  .experience-shell button,
+  .experience-shell span,
+  .experience-shell strong {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+}
+.classroom-qr-camera-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  margin: 12px 0;
+  border: 1px solid rgba(20, 92, 73, .25);
+  border-radius: 14px;
+  background: #f4faf7;
+}
+
+.classroom-qr-camera-panel video {
+  width: 100%;
+  max-height: 260px;
+  object-fit: cover;
+  border-radius: 10px;
+  background: #102f28;
 }

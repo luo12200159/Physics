@@ -9,10 +9,13 @@ import {
   ReauthenticateRequestSchema,
   ReauthenticateResponseSchema,
   RefreshRequestSchema,
+  UpdateDisplayNameRequestSchema,
+  UpdateDisplayNameResponseSchema,
   type ChangePasswordRequest,
   type LoginRequest,
   type ReauthenticateRequest,
   type RefreshRequest,
+  type UpdateDisplayNameRequest,
 } from "./contracts.js";
 import {
   extractBearerToken,
@@ -113,6 +116,28 @@ export function registerAuthRoutes(app: FastifyInstance, service: AuthService): 
   }, async (request, reply) => {
     const response = await service.reauthenticate(request.authSession!, request.body, {
       ip: request.ip,
+    });
+    return reply.status(200).send(response);
+  });
+
+  app.patch<{ Body: UpdateDisplayNameRequest }>("/v1/account/self", {
+    preHandler: app.authenticate,
+    schema: {
+      body: UpdateDisplayNameRequestSchema,
+      response: {
+        200: UpdateDisplayNameResponseSchema,
+        400: ApiErrorBodySchema,
+        401: ApiErrorBodySchema,
+        403: ApiErrorBodySchema,
+        500: ApiErrorBodySchema,
+        503: ApiErrorBodySchema,
+      },
+    },
+  }, async (request, reply) => {
+    const response = await service.updateDisplayName(request.authSession!, request.body, {
+      ip: request.ip,
+      requestId: String(request.id),
+      idempotency: request.mutationIdempotency!,
     });
     return reply.status(200).send(response);
   });

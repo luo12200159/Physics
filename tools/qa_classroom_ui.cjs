@@ -2,17 +2,19 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { launchBrowser } = require("./browser-launcher.cjs");
 
 const project = path.resolve(__dirname, "..");
 const outputDirectory = path.join(project, "qa-output", "classroom-ui");
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 const classId = "11111111-1111-4111-8111-111111111111";
+const createdClassId = "88888888-8888-4888-8888-888888888888";
 const membershipId = "22222222-2222-4222-8222-222222222222";
 const groupId = "33333333-3333-4333-8333-333333333333";
 const inviteCode = "AbCdEfGhIjKlMnOpQrStUv";
 const accessToken = `access.${"x".repeat(100)}`;
 const refreshToken = `r1.44444444-4444-4444-8444-444444444444.${"a".repeat(43)}`;
+const ownerCapability = `oc1.${"o".repeat(43)}`;
+const ownerUserId = "99999999-9999-4999-8999-999999999999";
 
 function experience(role) {
   return {
@@ -64,7 +66,7 @@ function json(route, status, body) {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Physics-Studio-Client",
-      "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS"
+      "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS"
     },
     body: body == null ? "" : JSON.stringify(body)
   });
@@ -73,7 +75,18 @@ function json(route, status, body) {
 async function installServerMock(page, role, calls) {
   let memberStatus = "pending";
   let groups = [];
-  await page.route("http://127.0.0.1:8787/**", async (route) => {
+  let classes = role === "teacher" ? [] : [{
+    id: classId,
+    name: "九年级物理一班",
+    grade: "九年级",
+    subject: "物理",
+    schoolLabel: "验收学校",
+    status: "active",
+    revision: 1,
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-01T00:00:00.000Z"
+  }];
+  await page.route("https://classroom.example/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
     const method = request.method();
@@ -97,21 +110,47 @@ async function installServerMock(page, role, calls) {
     }
     if (url.pathname === "/v1/classes" && method === "GET") {
       return json(route, 200, {
-        items: role === "teacher" ? [{
-          id: classId,
-          name: "九年级物理一班",
-          grade: "九年级",
-          subject: "物理",
-          schoolLabel: "验收学校",
-          status: "active",
-          revision: 1,
-          createdAt: "2026-08-01T00:00:00.000Z",
-          updatedAt: "2026-08-01T00:00:00.000Z"
-        }] : [],
+        items: classes,
         nextCursor: null
       });
     }
-    if (url.pathname === `/v1/classes/${classId}/roster` && method === "GET") {
+    if (url.pathname === "/v1/classes" && method === "POST") {
+      const created = {
+        id: createdClassId,
+        name: body.name,
+        grade: "高一",
+        subject: "物理",
+        schoolLabel: null,
+        status: "active",
+        revision: 1,
+        createdAt: "2026-08-08T00:00:00.000Z",
+        updatedAt: "2026-08-08T00:00:00.000Z"
+      };
+      classes = [created, ...classes];
+      return json(route, 201, created);
+    }
+    if (url.pathname === "/v1/classes/anonymous" && method === "POST") {
+      const created = {
+        id: createdClassId,
+        name: body.name,
+        grade: "高一",
+        subject: "物理",
+        schoolLabel: null,
+        status: "active",
+        revision: 1,
+        createdAt: "2026-08-08T00:00:00.000Z",
+        updatedAt: "2026-08-08T00:00:00.000Z"
+      };
+      classes = [created, ...classes];
+      return json(route, 201, {
+        class: created,
+        ownerUserId,
+        ownerCapability,
+        ownerCapabilityExpiresAt: "2027-08-08T00:00:00.000Z"
+      });
+    }
+    const activeClassId = [classId, createdClassId].find((id) => url.pathname.startsWith(`/v1/classes/${id}/`));
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/roster` && method === "GET") {
       return json(route, 200, {
         items: [{
           id: membershipId,
@@ -129,19 +168,31 @@ async function installServerMock(page, role, calls) {
         nextCursor: null
       });
     }
-    if (url.pathname === `/v1/classes/${classId}/groups` && method === "GET") {
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/groups` && method === "GET") {
       return json(route, 200, { items: groups, nextCursor: null });
     }
-    if (url.pathname === `/v1/classes/${classId}/groups` && method === "POST") {
-      groups = [{ id: groupId, classId, name: body.name, revision: 1, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" }];
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/groups` && method === "POST") {
+      groups = [{ id: groupId, classId: activeClassId, name: body.name, revision: 1, createdAt: "2026-08-01T00:00:00.000Z", updatedAt: "2026-08-01T00:00:00.000Z" }];
       return json(route, 201, groups[0]);
     }
-    if (url.pathname === `/v1/classes/${classId}/invites` && method === "POST") {
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignments` && method === "GET") {
+      return json(route, 200, { items: [], nextCursor: null });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/learning/summary` && method === "GET") {
+      return json(route, 200, { items: [], nextCursor: null });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/review-cases` && method === "GET") {
+      return json(route, 200, { items: [], nextCursor: null });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/learning/sync` && method === "POST") {
+      return json(route, 200, { accepted: true, nextRevision: 2, conflicts: [] });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/invites` && method === "POST") {
       return json(route, 201, {
         id: "77777777-7777-4777-8777-777777777777",
         code: inviteCode,
-        expiresAt: body.expiresAt,
-        maxUses: body.maxUses
+        expiresAt: body.expiresAt || "2026-09-07T00:00:00.000Z",
+        maxUses: body.maxUses || 1000
       });
     }
     if (url.pathname === `/v1/memberships/${membershipId}` && method === "PATCH") {
@@ -163,6 +214,35 @@ async function installServerMock(page, role, calls) {
     if (url.pathname === "/v1/invites/join" && method === "POST") {
       return json(route, 201, { membershipId, status: "pending" });
     }
+    if (url.pathname === "/v1/invites/join-anonymous" && method === "POST") {
+      return json(route, 201, {
+        accessToken,
+        refreshToken,
+        user: {
+          id: "66666666-6666-4666-8666-666666666666",
+          role: "student",
+          displayName: body.displayName || "瀛︾敓",
+          status: "active",
+          mustChangePassword: false,
+          deletionPending: false
+        },
+        membershipId,
+        classId,
+        status: "active"
+      });
+    }
+    if (url.pathname === "/v1/account/self" && method === "PATCH") {
+      return json(route, 200, {
+        user: {
+          id: "66666666-6666-4666-8666-666666666666",
+          role: "student",
+          displayName: body.displayName,
+          status: "active",
+          mustChangePassword: false,
+          deletionPending: false
+        }
+      });
+    }
     if (url.pathname === "/v1/auth/logout" && method === "POST") return json(route, 204, null);
     return json(route, 404, { code: "not_found", requestId: "classroom-ui-qa" });
   });
@@ -176,7 +256,16 @@ async function preparePage(context, role, calls) {
     if (message.type() === "error") errors.push(message.text());
   });
   await page.addInitScript((value) => {
+    globalThis.PHYSICS_STUDIO_CLASSROOM_URL = value.role === "teacher"
+      ? "https://classroom.example"
+      : "";
+    globalThis.PHYSICS_STUDIO_ALLOW_INSECURE_LAN = true;
     localStorage.setItem("physics-experience-v2", JSON.stringify(value));
+    if (value.role === "teacher") {
+      // The UI fixture represents an already authenticated teacher session;
+      // keep the local PIN gate explicit without opening prompt dialogs.
+      sessionStorage.setItem("physics-teacher-mode-session-v1", "unlocked");
+    }
   }, experience(role));
   await installActivationStub(page);
   await installServerMock(page, role, calls);
@@ -198,8 +287,7 @@ async function login(page, loginName) {
 
 (async () => {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  const browser = await chromium.launch({
-    executablePath: edgePath,
+  const browser = await launchBrowser({
     headless: true,
     args: ["--allow-file-access-from-files"]
   });
@@ -210,12 +298,36 @@ async function login(page, loginName) {
     const teacher = await preparePage(teacherContext, "teacher", teacherCalls);
     await teacher.page.locator('[data-teacher-action="classroom"]').click();
     await teacher.page.locator("#classroomDialog[open]").waitFor({ state: "visible" });
-    await login(teacher.page, "teacher.qa");
-    assert.match(await teacher.page.locator(".classroom-session-bar").innerText(), /服务端教师[\s\S]*教师账号/);
-    assert.match(await teacher.page.locator(".classroom-class-head").innerText(), /九年级物理一班/);
+    await teacher.page.locator('#classroomCreateClassForm input[name="name"]').fill("仅名称创建的物理班");
+    await teacher.page.locator('#classroomCreateClassForm button[type="submit"]').click();
+    try {
+      await teacher.page.getByText("仅名称创建的物理班", { exact: true }).first().waitFor({ timeout: 8_000 });
+    } catch (error) {
+      throw new Error(`teacher create UI did not complete: ${await teacher.page.locator("#classroomContent").innerText()}`, {
+        cause: error,
+      });
+    }
+    assert.match(await teacher.page.locator(".classroom-class-head").innerText(), /仅名称创建的物理班/);
+    const createCall = teacherCalls.find((call) => call.method === "POST" && call.path === "/v1/classes/anonymous");
+    assert.deepEqual(createCall?.body, { name: "仅名称创建的物理班" });
     await teacher.page.locator('#classroomInviteForm button[type="submit"]').click();
     await teacher.page.locator(".classroom-invite-code").waitFor({ state: "visible" });
     assert.match(await teacher.page.locator(".classroom-invite-code").innerText(), new RegExp(inviteCode));
+    assert.equal(await teacher.page.locator('#classroomInviteForm input[name="expiresAt"]').count(), 0);
+    assert.equal(await teacher.page.locator('#classroomInviteForm input[name="maxUses"]').count(), 0);
+    const qrCanvas = teacher.page.locator("#classroomInviteQr");
+    const decodedInvite = await qrCanvas.evaluate((canvas) => {
+      const context = canvas.getContext("2d");
+      const image = context.getImageData(0, 0, canvas.width, canvas.height);
+      return window.jsQR(image.data, image.width, image.height, { inversionAttempts: "attemptBoth" })?.data || "";
+    });
+    const parsedInvite = new URL(decodedInvite);
+    assert.equal(parsedInvite.protocol, "physicsstudio:");
+    assert.equal(parsedInvite.searchParams.get("c"), createdClassId);
+    assert.equal(parsedInvite.searchParams.get("i"), inviteCode);
+    assert.equal(parsedInvite.searchParams.get("h"), "classroom.example");
+    const inviteQrPng = await qrCanvas.screenshot();
+    await teacher.page.screenshot({ path: path.join(outputDirectory, "teacher-invite-qr.png"), fullPage: false });
     await teacher.page.locator('#classroomGroupForm input[name="name"]').fill("基础巩固组");
     await teacher.page.locator('#classroomGroupForm button[type="submit"]').click();
     await teacher.page.locator(".classroom-group-list").getByText("基础巩固组").waitFor();
@@ -224,6 +336,17 @@ async function login(page, loginName) {
     const approvedText = await teacher.page.locator("#classroomContent").innerText();
     assert.match(approvedText, /已批准学生加入。[\s\S]*已加入/, approvedText);
     await teacher.page.screenshot({ path: path.join(outputDirectory, "teacher-classroom.png"), fullPage: false });
+    await teacher.page.setViewportSize({ width: 390, height: 844 });
+    await teacher.page.locator("#classroomInviteQr").scrollIntoViewIfNeeded();
+    const teacherMobileFit = await teacher.page.locator("#classroomDialog").evaluate((node) => ({
+      clientWidth: node.clientWidth,
+      scrollWidth: node.scrollWidth,
+      clientHeight: node.clientHeight,
+      scrollHeight: node.scrollHeight
+    }));
+    assert.ok(teacherMobileFit.scrollWidth <= teacherMobileFit.clientWidth + 1, JSON.stringify(teacherMobileFit));
+    await teacher.page.screenshot({ path: path.join(outputDirectory, "teacher-mobile-invite.png"), fullPage: false });
+    if (teacher.errors.length) console.error("teacher page errors", teacher.errors, teacherCalls.map((call) => `${call.method} ${call.path}`));
     assert.deepEqual(teacher.errors, []);
     await teacherContext.close();
 
@@ -232,10 +355,59 @@ async function login(page, loginName) {
     await student.page.locator('.student-bottom-nav [data-student-view="profile"]').click();
     await student.page.locator('[data-shell-action="classroom"]').click();
     await student.page.locator("#classroomDialog[open]").waitFor({ state: "visible" });
-    await login(student.page, "student.qa");
-    await student.page.locator('#classroomJoinForm input[name="code"]').fill(inviteCode);
-    await student.page.locator('#classroomJoinForm button[type="submit"]').click();
+    // A previous teacher session must never make the student entry point render
+    // the teacher classroom editor. This reproduces the device-switch bug.
+    await student.page.evaluate(({ accessToken: token, refreshToken: refresh, user }) => {
+      sessionStorage.setItem("physics-classroom-access-token-v1", token);
+      sessionStorage.setItem("physics-classroom-refresh-token-v1", refresh);
+      sessionStorage.setItem("physics-classroom-user-v1", JSON.stringify(user));
+    }, {
+      accessToken,
+      refreshToken,
+      user: {
+        id: "55555555-5555-4555-8555-555555555555",
+        role: "teacher",
+        displayName: "残留教师会话",
+        status: "active"
+      }
+    });
+    await student.page.reload({ waitUntil: "domcontentloaded" });
+    await student.page.waitForFunction(() => !document.body.classList.contains("activation-pending"));
+    await student.page.locator('.student-bottom-nav [data-student-view="profile"]').click();
+    await student.page.locator('[data-shell-action="classroom"]').click();
+    await student.page.locator("#classroomDialog[open]").waitFor({ state: "visible" });
+    await student.page.locator("#classroomStudentJoinForm").waitFor({ state: "visible" });
+    assert.equal(await student.page.locator("#classroomCreateClassForm").count(), 0);
+    await student.page.evaluate(() => sessionStorage.clear());
+    await student.page.reload({ waitUntil: "domcontentloaded" });
+    await student.page.waitForFunction(() => !document.body.classList.contains("activation-pending"));
+    await student.page.locator('.student-bottom-nav [data-student-view="profile"]').click();
+    await student.page.locator('[data-shell-action="classroom"]').click();
+    await student.page.locator("#classroomDialog[open]").waitFor({ state: "visible" });
+    // A fresh student profile must see the matching add-class flow before
+    // any account authentication; the invite route creates the scoped guest
+    // student session in one step.
+    await student.page.locator("#classroomStudentJoinForm").waitFor({ state: "visible" });
+    assert.equal(await student.page.locator('#classroomStudentJoinForm input[name="login"]').count(), 0);
+    assert.equal(await student.page.locator('#classroomStudentJoinForm input[name="password"]').count(), 0);
+    if (false) {
+    await student.page.locator('#classroomStudentJoinForm input[name="deviceName"]').fill("学生测试设备");
+    }
+    await student.page.locator('#classroomStudentJoinForm input[name="displayName"]').fill("李明·一班");
+    await student.page.locator("#classroomStudentJoinForm #classroomInviteQrInput").setInputFiles({
+      name: "classroom-invite.png",
+      mimeType: "image/png",
+      buffer: inviteQrPng
+    });
+    await student.page.locator(".classroom-session-bar").waitFor({ state: "visible" });
+    assert.equal(
+      studentCalls.filter((call) => call.method === "POST" && call.path === "/v1/invites/join-anonymous").length,
+      1,
+      "QR image decoding must call the same anonymous join endpoint exactly once",
+    );
+    if (false) {
     await student.page.getByText("加入申请已提交，等待老师批准。", { exact: true }).waitFor();
+    }
     const mobileFit = await student.page.locator("#classroomDialog").evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
@@ -245,20 +417,25 @@ async function login(page, loginName) {
     assert.ok(mobileFit.scrollWidth <= mobileFit.clientWidth + 1, JSON.stringify(mobileFit));
     assert.ok(mobileFit.scrollHeight >= mobileFit.clientHeight, JSON.stringify(mobileFit));
     await student.page.screenshot({ path: path.join(outputDirectory, "student-join.png"), fullPage: false });
+    if (student.errors.length) console.error("student page errors", student.errors, studentCalls.map((call) => `${call.method} ${call.path}`));
     assert.deepEqual(student.errors, []);
     await studentContext.close();
 
     const mutations = [...teacherCalls, ...studentCalls].filter((call) => ["POST", "PATCH"].includes(call.method));
     assert.ok(mutations.length >= 6, JSON.stringify(mutations));
     assert.ok(mutations.every((call) => /^[\x21-\x7e]{16,128}$/.test(call.headers["idempotency-key"] || "")));
-    const protectedCalls = [...teacherCalls, ...studentCalls].filter((call) => !call.path.startsWith("/v1/auth/"));
-    assert.ok(protectedCalls.every((call) => call.headers.authorization === `Bearer ${accessToken}`));
+    const protectedCalls = [...teacherCalls, ...studentCalls].filter((call) => !call.path.startsWith("/v1/auth/") && call.path !== "/v1/classes/anonymous" && call.path !== "/v1/invites/join-anonymous");
+    assert.ok(protectedCalls.every((call) => [
+      `Bearer ${accessToken}`,
+      `Owner ${ownerCapability}`
+    ].includes(call.headers.authorization)));
     console.log(JSON.stringify({
       status: "passed",
       teacherMutations: teacherCalls.filter((call) => ["POST", "PATCH"].includes(call.method)).map((call) => call.path),
       studentMutations: studentCalls.filter((call) => ["POST", "PATCH"].includes(call.method)).map((call) => call.path),
       inviteCodeShownOnce: true,
-      pendingApprovalFlow: true,
+      directGuestJoin: true,
+      teacherMobileFit,
       mobileFit,
       screenshots: fs.readdirSync(outputDirectory).filter((name) => name.endsWith(".png")).sort()
     }, null, 2));

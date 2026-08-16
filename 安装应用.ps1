@@ -16,6 +16,7 @@ $requiredFiles = @(
     'activation.css',
     'activation-public-key.js',
     'activation.js',
+    'storage-repository.js',
     'curriculum-taxonomy.js',
     'curriculum-bank.js',
     'exam-question-index.js',
@@ -33,7 +34,9 @@ $requiredFiles = @(
     'document-import.js',
     'content-catalog.js',
     'classroom-client.js',
+    'question-answer-service.js',
     'learning-engine.js',
+    'physics-visuals.js',
     'app.js',
     'learning-lab.js',
     'experience-shell.js',
@@ -64,6 +67,7 @@ $filesToInstall = @(
     'activation.css',
     'activation-public-key.js',
     'activation.js',
+    'storage-repository.js',
     'curriculum-taxonomy.js',
     'curriculum-bank.js',
     'exam-question-index.js',
@@ -77,7 +81,9 @@ $filesToInstall = @(
     'document-import.js',
     'content-catalog.js',
     'classroom-client.js',
+    'question-answer-service.js',
     'learning-engine.js',
+    'physics-visuals.js',
     'app.js',
     'learning-lab.js',
     'experience-shell.js',
@@ -117,9 +123,9 @@ foreach ($asset in $assetFiles) {
 }
 
 $targetPath = Join-Path $installDirectory $executableName
-$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '物理研习室.lnk'
-$startMenuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) '物理研习室'
-$startMenuShortcut = Join-Path $startMenuDirectory '物理研习室.lnk'
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '费曼物理.lnk'
+$startMenuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) '费曼物理'
+$startMenuShortcut = Join-Path $startMenuDirectory '费曼物理.lnk'
 
 New-Item -ItemType Directory -Force -Path $startMenuDirectory | Out-Null
 

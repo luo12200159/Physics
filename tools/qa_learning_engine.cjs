@@ -30,6 +30,7 @@ const context = {
 };
 context.window = context;
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(projectRoot, "storage-repository.js"), "utf8"), context, { filename: "storage-repository.js" });
 vm.runInContext(source, context, { filename: "learning-engine.js" });
 
 const engine = context.PHYSICS_LEARNING_ENGINE;
@@ -95,8 +96,36 @@ const misconception = engine.recordDiagnostic(state, {
   reason: "R1",
   confidence: 5
 });
-assert.equal(misconception.attempt.classification, "stable-misconception");
-assert.equal(engine.misconceptionProfile(state)[0].status, "高风险");
+assert.equal(misconception.attempt.classification, "high-confidence-error");
+assert.match(engine.diagnosticClassificationLabel(misconception.attempt), /待验证/);
+
+const lowConfidenceState = engine.defaultState();
+const lowConfidence = engine.recordDiagnostic(lowConfidenceState, {
+  diagnosticId: "diag-force-motion",
+  answer: "A",
+  reason: "R1",
+  confidence: 3
+});
+assert.notEqual(lowConfidence.attempt.classification, "stable-misconception");
+
+state.diagnosticAttempts.unshift({
+  id: "independent-confirmation-1",
+  profileId: state.activeProfileId,
+  misconceptionCode: misconception.attempt.misconceptionCode,
+  diagnosticId: "independent-question-1",
+  answer: "A",
+  reason: "R1",
+  answerCorrect: false,
+  createdAt: "2026-08-07T10:00:00.000Z"
+});
+const confirmedMisconception = engine.recordDiagnostic(state, {
+  diagnosticId: "diag-force-motion",
+  answer: "A",
+  reason: "R1",
+  confidence: 5
+});
+assert.equal(confirmedMisconception.attempt.classification, "stable-misconception");
+assert.equal(confirmedMisconception.attempt.confirmationEvidenceId, "independent-confirmation-1");
 
 const secure = engine.recordDiagnostic(state, {
   diagnosticId: "diag-zero-velocity",
@@ -236,10 +265,12 @@ assert.ok(engine.modelingRadar(state).every((axis) => axis.value > 0));
 
 const now = Date.now();
 const review = engine.scheduleReview(state, choiceQuestion.id, 0, now);
-assert.ok(new Date(review.dueAt).getTime() - now >= 9 * 60 * 1000);
-assert.ok(new Date(review.dueAt).getTime() - now <= 11 * 60 * 1000);
+const automaticCorrectInterval = 3 * 24 * 60 * 60 * 1000;
+assert.equal(review.lastRating, 2);
+assert.equal(review.ratingSource, "automatic-answer-and-hints");
+assert.equal(new Date(review.dueAt).getTime() - now, automaticCorrectInterval);
 assert.equal(engine.dueReviews(state, now).length, 0);
-assert.equal(engine.dueReviews(state, now + 11 * 60 * 1000).length, 1);
+assert.equal(engine.dueReviews(state, now + automaticCorrectInterval).length, 1);
 
 assert.equal(engine.validateDimension("F=m*a").valid, true);
 assert.equal(engine.validateDimension("W=F/t").valid, false);
@@ -344,7 +375,8 @@ assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).st
 
 const abilityState = engine.defaultState();
 const abilityQuestions = [
-  { ...masteryQuestion, id: "ability-motion", topic: "运动学", questionType: "计算题" },
+  { ...masteryQuestion, id: "ability-motion", topic: "运动学", questionType: "计算题", modelDefinitionId: "model-motion-1", independenceGroupId: "independent-motion-1" },
+  { ...masteryQuestion, id: "ability-motion-transfer", topic: "运动学", questionType: "条件变式题", modelDefinitionId: "model-motion-2", independenceGroupId: "independent-motion-2" },
   { ...masteryQuestion, id: "ability-circuit", topic: "电路", questionType: "实验探究题" },
   { ...masteryQuestion, id: "ability-optics", topic: "光学", questionType: "作图题" },
   { ...masteryQuestion, id: "ability-sound", topic: "声学", questionType: "选择题" }
@@ -365,7 +397,7 @@ function addDatedAttempt(input, completedAt) {
   return attempt;
 }
 addDatedAttempt({
-  questionId: "ability-motion",
+  questionId: "ability-motion-transfer",
   topic: "运动学",
   questionType: "计算题",
   hintLevel: 0,

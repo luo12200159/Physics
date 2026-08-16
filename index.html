@@ -12,7 +12,7 @@
       name="description"
       content="可离线使用的初高中物理试题与解题视频管理应用"
     />
-    <title>物理研习室｜初高中物理题库</title>
+    <title>费曼物理｜初高中物理学习闭环</title>
     <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="learning-lab.css" />
@@ -24,10 +24,10 @@
     <div class="ambient ambient-two" aria-hidden="true"></div>
 
     <aside class="sidebar" aria-label="主导航">
-      <a class="brand" href="#top" aria-label="物理研习室首页">
+      <a class="brand" href="#top" aria-label="费曼物理首页">
         <span class="brand-mark" aria-hidden="true">φ</span>
         <span>
-          <strong>物理研习室</strong>
+          <strong>费曼物理</strong>
           <small>PHYSICS STUDIO</small>
         </span>
       </a>
@@ -138,11 +138,11 @@
         </button>
         <button class="stat-card stat-mastered" data-view-target="mastered" type="button" aria-label="打开已经掌握的试题">
           <span class="stat-symbol">✓</span>
-          <span class="stat-copy"><strong id="masteredCount">0</strong><span class="stat-label">已经掌握</span><span class="stat-link">打开已掌握题目 →</span></span>
+          <span class="stat-copy"><strong id="masteredCount">0</strong><span class="stat-label">已有掌握证据题目</span><span class="stat-link">打开已有证据题目 →</span></span>
         </button>
         <button class="stat-card stat-rate" data-view-target="progress" type="button" aria-label="打开掌握进度">
           <span class="stat-symbol">↗</span>
-          <span class="stat-copy"><strong id="masteryRate">0%</strong><span class="stat-label">掌握进度</span><span class="stat-link">查看学习进度 →</span></span>
+          <span class="stat-copy"><strong id="masteryRate">0/0</strong><span class="stat-label">知识点证据覆盖</span><span class="stat-link">查看学习进度 →</span></span>
         </button>
       </section>
 
@@ -197,7 +197,7 @@
                 <h2 id="progressTitle">掌握进度</h2>
                 <p id="progressSummary">尚未开始标记掌握情况。</p>
               </div>
-              <strong id="progressRate">0%</strong>
+              <strong id="progressRate">0/0</strong>
             </div>
             <div class="progress-track" id="progressTrack" role="progressbar" aria-label="试题掌握进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
               <span id="progressBarFill"></span>
@@ -207,12 +207,12 @@
             <button data-progress-view="mastered" type="button">
               <span class="progress-action-icon mastered">✓</span>
               <strong id="progressMasteredCount">0</strong>
-              <small>查看已掌握试题</small>
+              <small>查看已有证据题目</small>
             </button>
             <button data-progress-view="pending" type="button">
               <span class="progress-action-icon pending">↻</span>
               <strong id="progressPendingCount">0</strong>
-              <small>继续完成待掌握试题</small>
+              <small>继续覆盖未测知识点</small>
             </button>
           </div>
         </section>
@@ -227,7 +227,7 @@
             <button class="secondary-button" data-analysis-view="wrong" type="button">打开错题集</button>
           </header>
           <div class="analysis-metrics">
-            <article><span>掌握率</span><strong id="analysisMasteryRate">0%</strong><small>已掌握 ÷ 收录题目</small></article>
+            <article><span>知识点证据覆盖</span><strong id="analysisMasteryRate">0/0</strong><small>已有证据知识点 ÷ 可评估知识点</small></article>
             <article><span>错题</span><strong id="analysisWrongCount">0</strong><small>当前错题集题数</small></article>
             <article><span>知识点</span><strong id="analysisTopicCount">0</strong><small>题库内不同知识点</small></article>
             <article><span>变式记录</span><strong id="analysisTransferCount">0</strong><small>已保存举一反三记录</small></article>
@@ -253,7 +253,7 @@
             <div>
               <span class="progress-kicker">KNOWLEDGE MAP</span>
               <h2 id="knowledgeTitle" tabindex="-1">知识点掌握情况</h2>
-              <p>掌握率按“该知识点已掌握题数 ÷ 该知识点收录题数”计算。点击知识点可打开对应试题。</p>
+              <p>按知识点显示证据状态、可追溯证据条数和最近证据日期；不以题库题数推断总体能力。点击知识点可打开对应试题。</p>
             </div>
             <button class="secondary-button" data-analysis-view="analysis" type="button">查看学情分析</button>
           </header>
@@ -533,7 +533,7 @@
             <input class="visually-hidden" id="qrImageInput" type="file" accept="image/*,.jpg,.jpeg,.png,.webp" />
             <label class="field">
               <span>也可粘贴二维码中的文字或链接</span>
-              <textarea id="qrManualInput" rows="3" placeholder="支持网页链接、题目文字或物理研习室 JSON"></textarea>
+              <textarea id="qrManualInput" rows="3" placeholder="支持网页链接、题目文字或费曼物理（兼容旧版物理研习室）JSON"></textarea>
             </label>
           </div>
           <div class="camera-actions">
@@ -565,6 +565,7 @@
     <dialog class="modal sync-modal" id="syncModal" aria-label="长沙互联网物理题源"></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
     <script src="activation-public-key.js"></script>
+    <script src="storage-repository.js"></script>
     <script src="activation.js"></script>
     <script src="curriculum-taxonomy.js"></script>
     <script src="curriculum-bank.js"></script>
@@ -577,10 +578,14 @@
     <script src="backup.js"></script>
     <script src="backup-validator.js"></script>
     <script src="ai-tutor.js"></script>
+    <script src="question-answer-service.js"></script>
     <script src="document-import.js"></script>
     <script src="content-catalog.js"></script>
+    <script src="classroom-config.js"></script>
     <script src="classroom-client.js"></script>
     <script src="learning-engine.js"></script>
+    <script src="physics-visuals.js"></script>
+    <script src="teacher-mode-lock.js"></script>
     <script src="vendor/jsQR.js"></script>
     <script src="app.js"></script>
     <script src="learning-lab.js"></script>

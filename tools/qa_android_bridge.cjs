@@ -3,11 +3,10 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_android_bridge.cjs <index.html> <output-directory>");
@@ -20,7 +19,7 @@ if (!appPath || !outputDirectory) {
     projectDirectory,
     "发布",
     "仅限管理员",
-    "物理研习室-激活码管理器-v1.0.0.exe"
+    "费曼物理-激活码管理器-v1.0.0.exe"
   );
   const activationDeviceId = "A1".repeat(32);
   const activationCodePath = path.join(outputDirectory, "android-bridge-activation-code.txt");
@@ -34,9 +33,8 @@ if (!appPath || !outputDirectory) {
   const activationCode = fs.readFileSync(activationCodePath, "utf8").trim();
   assert.match(activationCode, /^PSA1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
 
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -91,7 +89,8 @@ if (!appPath || !outputDirectory) {
     assert.match(androidSource, /isWebUri\(uri\)/);
     assert.match(androidSource, /openWithEdge\(uri\)/);
     assert.match(androidSource, /openWithDefaultHandler\(uri\)/);
-    assert.match(androidSource, /PhysicsStudioAndroid\/2\.6\.0/);
+    assert.doesNotMatch(androidSource, /PhysicsStudioAndroid\/\d+\.\d+\.\d+/,
+      "Android user-agent must use the installed package version");
     assert.match(androidSource, /Manifest\.permission\.CAMERA/);
     assert.match(androidSource, /Manifest\.permission\.RECORD_AUDIO/);
     assert.match(androidSource, /RESOURCE_AUDIO_CAPTURE/);

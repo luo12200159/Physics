@@ -743,6 +743,11 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
         examPaperStatus: "原创训练卷",
         resourceRightsStatus: "应用内原创，可离线使用",
         fullTextIncluded: true,
+        evidenceTier: "diagnostic-anchor",
+        modelDefinitionId: `${exam.key}-model-${String(definition.number).padStart(2, "0")}`,
+        retestGroupId: `${exam.key}-retest-${String(definition.number).padStart(2, "0")}`,
+        diagnosticEligible: true,
+        autoScorable: ["单项选择题", "多项选择题", "填空题", "计算题"].includes(definition.questionType),
         videoType: "none",
         videoUrl: "",
         videoName: "",
@@ -786,6 +791,15 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
     ...buildQuestions(seniorDefinitions, exams[1])
   ];
 
+  const normalizedQuestions = questions.map((question) => ({
+    ...question,
+    knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
+    cognitiveDemand: question.cognitiveDemand || (/实验|探究/.test(String(question.questionType || "")) ? "实验推理" : /计算/.test(String(question.questionType || "")) ? "定量计算" : "基础概念"),
+    representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : /图|图像/.test(String(question.content || "")) ? "图像" : "文字/公式"),
+    independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
+    assessmentPurpose: question.assessmentPurpose || "exam"
+  }));
+
   window.PHYSICS_MOCK_EXAM_BANK = Object.freeze({
     version: 2,
     contentVersion: "2026.07.29-detailed-solutions-r2",
@@ -793,6 +807,6 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
     title: "长沙中考与湖南高考原创物理综合训练题库",
     copyrightNote: COPYRIGHT_NOTE,
     exams: Object.freeze(exams),
-    questions: Object.freeze(questions)
+    questions: Object.freeze(normalizedQuestions.map(Object.freeze))
   });
 })();

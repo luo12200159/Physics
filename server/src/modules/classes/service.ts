@@ -22,6 +22,7 @@ import type {
   MembershipView,
   RosterResponse,
   UpdateMembershipRequest,
+  DeleteClassResponse,
 } from "./contracts.js";
 import { appendMembershipOutbox } from "./outbox.js";
 import {
@@ -29,10 +30,17 @@ import {
   type ClassAccessRecord,
   type MembershipAccessRecord,
 } from "./repository.js";
+import {
+  createOwnerCapability,
+  insertOwnerCapability,
+  insertOwnerUser,
+  type OwnerCapabilityMaterial,
+} from "./owner-capability.js";
 
 export interface ClassServiceOptions {
   pool: Pool;
   auditIpKey: string | Buffer;
+  ownerCapabilitySecret?: string | Buffer;
   syncOutboxRetentionDays: number;
   now?: () => Date;
 }
@@ -41,6 +49,13 @@ export interface ClassMutationContext {
   ip: string;
   requestId: string;
   idempotency: MutationIdempotency;
+}
+
+export interface AnonymousClassCreated {
+  class: ClassView;
+  ownerUserId: string;
+  ownerCapability: string;
+  ownerCapabilityExpiresAt: string;
 }
 
 function apiExpiry(now: Date): Date {
@@ -144,6 +159,13 @@ export class ClassesService {
     this.now = options.now ?? (() => new Date());
   }
 
+  private ownerCapabilitySecret(): string | Buffer {
+    // Production bootstrap always supplies the JWT secret.  The stable test
+    // fallback keeps v2.8 service factories source-compatible; it is not used
+    // by the production `makeBootstrapDependencies` path.
+    return this.options.ownerCapabilitySecret ?? "v3-owner-capability-test-secret-at-least-32";
+  }
+
   private async classAccess(actor: Actor, classId: string): Promise<ClassAccessRecord> {
     const access = await this.repository.findClassAccess(actor.userId, classId);
     if (!access) throw new ApiError(404, "class_not_found", "Class was not found");
@@ -155,8 +177,12 @@ export class ClassesService {
     input: CreateClassRequest,
     context: ClassMutationContext,
   ): Promise<ClassView> {
-    if (actor.role !== "teacher") {
-      throw new ApiError(403, "resource_forbidden", "Only teachers can create classes");
+    // Class creation is the operation that grants class-scoped owner/teacher
+    // authority.  It must not depend on a pre-existing global teacher role or
+    // an administrator-created invitation.  Parent accounts remain excluded
+    // by the authorization policy because their scope is guardian-only.
+    if (actor.role === "parent") {
+      throw new ApiError(403, "resource_forbidden", "Parent accounts cannot create classes");
     }
     const name = trimmed(input.name, 120, "Class name");
     const schoolLabel = input.schoolLabel === undefined || input.schoolLabel === null
@@ -179,7 +205,9 @@ export class ClassesService {
         id: randomUUID(),
         ownerTeacherId: actor.userId,
         name,
-        grade: input.grade,
+        // v2.8 clients always sent grade. v2.9 quick-create may omit it;
+        // keep the persisted ClassView schema valid with a stable default.
+        grade: input.grade || "高一",
         schoolLabel,
         now,
       });
@@ -203,11 +231,129 @@ export class ClassesService {
     return result.body as ClassView;
   }
 
+  /**
+   * Create a class for an offline/local teacher profile without pretending
+   * that the caller has a server password account.  The generated owner
+   * capability is scoped to the synthetic teacher and is returned exactly
+   * once; later management calls use `Authorization: Owner <token>`.
+   */
+  async createAnonymousClass(
+    input: CreateClassRequest,
+    context: Pick<ClassMutationContext, "ip" | "requestId">,
+  ): Promise<AnonymousClassCreated> {
+    const name = trimmed(input.name, 120, "Class name");
+    const schoolLabel = input.schoolLabel === undefined || input.schoolLabel === null
+      ? null
+      : trimmed(input.schoolLabel, 120, "School label");
+    const now = this.now();
+    const ownerUserId = randomUUID();
+    const classId = randomUUID();
+    const material: OwnerCapabilityMaterial = createOwnerCapability(
+      ownerUserId,
+      this.ownerCapabilitySecret(),
+      now,
+    );
+    const created = await withTransaction(this.options.pool, async (tx) => {
+      await insertOwnerUser(tx, ownerUserId, "本机教师", now);
+      const classView = await this.repository.insertClass(tx, {
+        id: classId,
+        ownerTeacherId: ownerUserId,
+        name,
+        grade: input.grade || "\u9ad8\u4e00",
+        schoolLabel,
+        now,
+      });
+      await insertOwnerCapability(tx, { ...material, classId }, now);
+      await appendAudit(tx, {
+        actorId: ownerUserId,
+        actorRole: "teacher",
+        action: "class.create.anonymous",
+        resourceType: "class",
+        resourceId: classView.id,
+        classId: classView.id,
+        result: "succeeded",
+        beforeState: null,
+        afterState: classAuditState(classView),
+        reason: "owner_capability",
+        requestId: context.requestId,
+        ipHash: hashAuditIp(this.options.auditIpKey, context.ip),
+      });
+      return classView;
+    });
+    return {
+      class: created,
+      ownerUserId,
+      ownerCapability: material.token,
+      ownerCapabilityExpiresAt: material.expiresAt.toISOString(),
+    };
+  }
+
   async listClasses(actor: Actor, cursor: string | null): Promise<ClassListResponse> {
     if (actor.role === "parent") {
       throw new ApiError(403, "resource_forbidden", "Class list access is forbidden");
     }
     return this.repository.listAuthorizedClasses(actor.userId, actor.role, cursor);
+  }
+
+  async getClass(actor: Actor, classId: string): Promise<ClassView> {
+    const access = await this.classAccess(actor, classId);
+    assertAuthorized(actor, "class.read", resourceForClass(access));
+    if (access.classView.status !== "active") {
+      throw new ApiError(404, "class_not_found", "Class was not found");
+    }
+    return access.classView;
+  }
+
+  async deleteClass(
+    actor: Actor,
+    classId: string,
+    context: ClassMutationContext,
+  ): Promise<DeleteClassResponse> {
+    const now = this.now();
+    const result = await withTransaction(this.options.pool, async (tx) => executeIdempotently(tx, {
+      ...context.idempotency,
+      actorId: actor.userId,
+      expiresAt: apiExpiry(now),
+    }, async () => {
+      const access = await this.repository.lockClassAccess(tx, actor.userId, classId);
+      if (!access || access.classView.status !== "active") {
+        throw new ApiError(404, "class_not_found", "Class was not found");
+      }
+      assertAuthorized(actor, "class.manage", resourceForClass(access));
+      const archived = await this.repository.archiveClass(tx, classId, now);
+      await this.repository.revokeClassInvites(tx, classId);
+      await this.repository.revokeClassOwnerCapabilities(tx, classId, now);
+      const removedMemberships = await this.repository.removeClassMemberships(tx, classId, now);
+      for (const membership of removedMemberships) {
+        await appendMembershipOutbox(tx, {
+          membership,
+          ownerTeacherId: access.ownerTeacherId,
+          operation: "delete",
+          occurredAt: now,
+          retentionDays: this.options.syncOutboxRetentionDays,
+        });
+      }
+      await appendAudit(tx, {
+        actorId: actor.userId,
+        actorRole: actor.role,
+        action: "class.delete",
+        resourceType: "class",
+        resourceId: classId,
+        classId,
+        result: "succeeded",
+        beforeState: classAuditState(access.classView),
+        afterState: classAuditState(archived),
+        reason: "owner_requested",
+        requestId: context.requestId,
+        ipHash: hashAuditIp(this.options.auditIpKey, context.ip),
+      });
+      return {
+        statusCode: 200,
+        body: { id: classId, status: "archived" as const },
+      };
+    }));
+    if (result.body === null) throw new Error("Delete class response is missing");
+    return result.body as DeleteClassResponse;
   }
 
   async createGroup(
@@ -277,9 +423,6 @@ export class ClassesService {
     classId: string,
     cursor: string | null,
   ): Promise<RosterResponse> {
-    if (actor.role !== "teacher" && actor.role !== "administrator") {
-      throw new ApiError(403, "resource_forbidden", "Roster access is forbidden");
-    }
     const access = await this.classAccess(actor, classId);
     if (actor.role !== "administrator" && access.ownerTeacherId !== actor.userId) {
       throw new ApiError(403, "resource_forbidden", "Roster access is forbidden");

@@ -3,7 +3,7 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { launchBrowser } = require("./browser-launcher.cjs");
 
 const project = path.resolve(__dirname, "..");
 const indexPath = path.join(project, "index.html");
@@ -12,9 +12,8 @@ const managerPath = path.join(
   project,
   "发布",
   "仅限管理员",
-  "物理研习室-激活码管理器-v1.0.0.exe"
+  "费曼物理-激活码管理器-v1.0.0.exe"
 );
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 async function storedQuestions(page) {
   return page.evaluate(async () => {
@@ -36,9 +35,8 @@ async function storedQuestions(page) {
 (async () => {
   fs.mkdirSync(outputDirectory, { recursive: true });
   assert.ok(fs.existsSync(managerPath), "activation manager is missing");
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({ viewport: { width: 1440, height: 960 } });

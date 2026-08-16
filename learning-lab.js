@@ -7,6 +7,33 @@
     return;
   }
 
+  const visuals = window.PHYSICS_VISUALS;
+  const MODEL_DEFAULTS = Object.freeze({
+    projectile: Object.freeze({ v0: 20, angle: 45, g: 9.8, t: 1 }),
+    incline: Object.freeze({ mass: 2, angle: 30, mu: 0.2, g: 9.8, t: 1 }),
+    circuit: Object.freeze({ voltage: 12, r1: 10, r2: 20, mode: "series" }),
+    uniform: Object.freeze({ x0: 0, v0: 5, a: 2, t: 1, duration: 6 }),
+    newton: Object.freeze({ mass: 2, appliedForce: 10, opposingForce: 2, v0: 0, t: 1, duration: 5 }),
+    energy: Object.freeze({ mass: 2, g: 9.8, initialHeight: 10, height: 6, lossPercent: 0 }),
+    collision: Object.freeze({ m1: 1, m2: 2, u1: 4, u2: 0, type: "elastic" }),
+    wave: Object.freeze({ speed: 20, frequency: 5, amplitude: 1, t: 0 })
+  });
+  const MODEL_CATALOG = Object.freeze([
+    ["projectile", "平抛/斜抛", "轨迹与能量"],
+    ["incline", "斜面动力学", "受力与运动图像"],
+    ["circuit", "直流电路", "电流、电压与功率"],
+    ["uniform", "匀变速联动图", "x-t、v-t、a-t"],
+    ["newton", "牛顿第二定律", "合力、加速度与运动"],
+    ["energy", "机械能", "动能、势能与耗散"],
+    ["collision", "一维碰撞", "弹性与完全非弹性"],
+    ["wave", "波速—频率—波长", "v=fλ 与波形"]
+  ]);
+  const ANIMATED_MODELS = new Set(["projectile", "incline", "uniform", "newton", "wave"]);
+
+  function freshModelParams() {
+    return Object.fromEntries(Object.entries(MODEL_DEFAULTS).map(([key, value]) => [key, { ...value }]));
+  }
+
   const lab = {
     dialog: null,
     content: null,
@@ -20,11 +47,8 @@
     diagnosticResult: null,
     lastCompleted: null,
     modelType: "projectile",
-    modelParams: {
-      projectile: { v0: 20, angle: 45, g: 9.8, t: 1 },
-      incline: { mass: 2, angle: 30, mu: 0.2, g: 9.8, t: 1 },
-      circuit: { voltage: 12, r1: 10, r2: 20, mode: "series" }
-    },
+    modelParams: freshModelParams(),
+    rayParams: { mode: "refraction", incidenceAngle: 35, n1: 1, n2: 1.5 },
     animationFrame: 0,
     sessionTimer: 0,
     motionHandler: null,
@@ -34,14 +58,30 @@
     audio: null,
     genericSensors: {},
     sketch: null,
+    renderToken: 0,
     pendingDocumentImport: null,
     documentImportStatus: "",
     contentPackStatus: "",
     aiResult: null,
     aiStatusMessage: "",
+    aiSessionState: null,
     managedStudentId: "",
     planPreview: null,
-    advancedToolsOpen: false
+    tieredAssignmentPreview: null,
+    studentImportDraft: null,
+    examImportDraft: null,
+    matrixTopicKey: "",
+    advancedToolsOpen: false,
+    teacherView: "today",
+    storageEstimate: null,
+    storageEstimatePending: false,
+    // Derived metrics are expensive over the full local question bank. Keep
+    // them per learning-state revision so a tab click does not recompute the
+    // same evidence summary synchronously.
+    derivedLearningCache: null,
+    teacherHydrationPending: false,
+    teacherHydrated: false,
+    teacherViewDrafts: Object.create(null)
   };
 
   const tabs = [
@@ -57,7 +97,8 @@
   ];
 
   function isTeacherRole() {
-    return document.body.classList.contains("role-teacher");
+    return document.body.classList.contains("role-teacher")
+      && (!window.PhysicsStudioTeacherLock || window.PhysicsStudioTeacherLock.isUnlocked());
   }
 
   function visibleTabs() {
@@ -91,6 +132,9 @@
     document.addEventListener("physics-learning-state-changed", (event) => {
       if (!event.detail?.restored) return;
       lab.state = engine.loadState();
+      lab.derivedLearningCache = null;
+      lab.teacherHydrated = false;
+      lab.teacherViewDrafts = Object.create(null);
       lab.session = null;
       if (lab.dialog?.open) renderPanel();
       renderProfileOptions();
@@ -139,34 +183,49 @@
       </div>`;
     lab.panel = document.getElementById("labPanel");
     renderProfileOptions();
+    bindHorizontalScrollers();
   }
 
   function bindEvents() {
     lab.content.addEventListener("click", handleClick);
     lab.content.addEventListener("input", handleInput);
     lab.content.addEventListener("change", handleChange);
+    lab.content.addEventListener("keydown", handleReviewShortcut);
+    lab.dialog.addEventListener("cancel", (event) => {
+      if (lab.tab === "teacher" && !captureTeacherViewDraft()) {
+        event.preventDefault();
+        return;
+      }
+      stopAllLiveActivities();
+    });
     lab.dialog.addEventListener("close", stopAllLiveActivities);
   }
 
   function openLab(tab = "dashboard", questionId = "", diagnosticId = "") {
     lab.app = window.PhysicsStudioApp || lab.app;
+    const wasOpen = Boolean(lab.dialog?.open);
     if (questionId) {
       lab.selectedQuestionId = questionId;
       lab.session = null;
       lab.aiResult = null;
       lab.aiStatusMessage = "";
+      lab.aiSessionState = null;
     }
+    if (tab === "models" && lab.selectedQuestionId) selectModelForQuestion(lab.selectedQuestionId);
     if (diagnosticId && engine.misconceptionCatalog.some((item) => item.diagnostic.id === diagnosticId)) {
       lab.diagnosticId = diagnosticId;
       lab.diagnosticResult = null;
     }
     lab.tab = tab === "teacher" && !isTeacherRole() ? "dashboard" : tab;
+    if (!wasOpen) {
+      lab.dialog.showModal();
+    }
     renderPanel();
-    if (!lab.dialog.open) lab.dialog.showModal();
     document.body.classList.remove("drawer-open");
   }
 
   function closeLab() {
+    if (lab.tab === "teacher" && !captureTeacherViewDraft()) return;
     stopAllLiveActivities();
     lab.dialog.close();
   }
@@ -179,12 +238,52 @@
     return getQuestions().find((question) => question.id === questionId) || null;
   }
 
+  function selectModelForQuestion(questionId) {
+    const question = getQuestion(questionId);
+    const mapped = question && visuals?.modelForQuestion?.(question);
+    if (mapped && MODEL_DEFAULTS[mapped]) lab.modelType = mapped;
+    return mapped || "";
+  }
+
   function saveLearningState() {
     lab.state = engine.saveState(lab.state);
+    lab.derivedLearningCache = null;
+    // A save performed inside the open teacher workspace already has an
+    // interactive shell on screen. Keep it hydrated so form actions do not
+    // flash the opening placeholder again; a later cold open still gets the
+    // lightweight first paint.
+    lab.teacherHydrated = Boolean(lab.dialog?.open && lab.tab === "teacher");
     renderProfileOptions();
     document.dispatchEvent(new CustomEvent("physics-learning-state-changed", {
       detail: { profileId: lab.state.activeProfileId }
     }));
+  }
+
+  function derivedLearningKey(questions) {
+    const first = questions[0]?.id || "";
+    const last = questions.at(-1)?.id || "";
+    return [
+      lab.state?.updatedAt || "",
+      lab.state?.activeProfileId || "",
+      questions.length,
+      first,
+      last
+    ].join("|");
+  }
+
+  function getDerivedLearning(questions = getQuestions(), options = {}) {
+    const key = derivedLearningKey(questions);
+    const wantsCoverage = options.coverage === true;
+    const cached = lab.derivedLearningCache;
+    if (cached?.key === key && (!wantsCoverage || cached.value.coverage)) return cached.value;
+    const value = cached?.key === key ? cached.value : {};
+    if (!value.summary) value.summary = engine.summarizeLearning(lab.state, questions);
+    if (!value.recommendations) value.recommendations = engine.recommendations(lab.state, questions, 6);
+    if (wantsCoverage && !value.coverage) {
+      value.coverage = engine.knowledgePointEvidenceSummary(lab.state, questions);
+    }
+    lab.derivedLearningCache = { key, value };
+    return value;
   }
 
   function renderProfileOptions() {
@@ -196,63 +295,202 @@
       </option>`).join("") + '<option value="__new__">＋ 新建本机档案</option>';
   }
 
+  function bindHorizontalScroller(element) {
+    if (!element || element.dataset.dragScrollBound === "true") return;
+    element.dataset.dragScrollBound = "true";
+    let pointerId = null;
+    let startX = 0;
+    let startScrollLeft = 0;
+    let dragged = false;
+
+    const finish = (event) => {
+      if (pointerId == null || (event?.pointerId != null && event.pointerId !== pointerId)) return;
+      if (dragged) {
+        element.dataset.suppressClick = "true";
+        window.setTimeout(() => {
+          element.dataset.suppressClick = "";
+        }, 0);
+      }
+      try {
+        if (element.hasPointerCapture?.(pointerId)) element.releasePointerCapture(pointerId);
+      } catch (_error) {
+        // Pointer capture may already have been released by the WebView.
+      }
+      pointerId = null;
+      dragged = false;
+      element.classList.remove("is-dragging");
+    };
+
+    element.addEventListener("pointerdown", (event) => {
+      if (event.pointerType === "mouse" && event.button !== 0) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      startScrollLeft = element.scrollLeft;
+      dragged = false;
+      try {
+        element.setPointerCapture?.(event.pointerId);
+      } catch (_error) {
+        // Older WebViews can omit pointer capture; native scrolling still works.
+      }
+    });
+    element.addEventListener("pointermove", (event) => {
+      if (event.pointerId !== pointerId) return;
+      const delta = event.clientX - startX;
+      if (!dragged && Math.abs(delta) < 4) return;
+      dragged = true;
+      element.classList.add("is-dragging");
+      element.scrollLeft = startScrollLeft - delta;
+      event.preventDefault();
+    }, { passive: false });
+    element.addEventListener("pointerup", finish);
+    element.addEventListener("pointercancel", finish);
+    element.addEventListener("lostpointercapture", finish);
+    element.addEventListener("click", (event) => {
+      if (element.dataset.suppressClick !== "true") return;
+      element.dataset.suppressClick = "";
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+  }
+
+  function bindHorizontalScrollers() {
+    lab.content?.querySelectorAll(".lab-tabs, .diagnostic-selector, .model-tabs")
+      .forEach((element) => bindHorizontalScroller(element));
+  }
+
   function renderPanel(options = {}) {
     if (!lab.panel) return;
     const previousScrollTop = lab.panel.scrollTop;
     if (lab.dialog) lab.dialog.scrollTop = 0;
     if (lab.content) lab.content.scrollTop = 0;
     if (lab.tab === "teacher" && !isTeacherRole()) lab.tab = "dashboard";
+    if (lab.tab === "teacher" && !lab.storageEstimate && !lab.storageEstimatePending) refreshStorageEstimate();
     stopModelAnimation();
     stopSessionTimer();
     lab.content.querySelectorAll("[data-lab-tab]").forEach((button) => {
       button.classList.toggle("active", button.dataset.labTab === lab.tab);
     });
-    const renderers = {
-      dashboard: renderDashboard,
-      diagnostic: renderDiagnostic,
-      tutor: renderTutor,
-      models: renderModels,
-      transfer: renderTransfer,
-      review: renderReview,
-      tools: renderTools,
-      teacher: renderTeacher,
-      sensors: renderSensors
-    };
-    lab.panel.innerHTML = (renderers[lab.tab] || renderDashboard)();
-    if (lab.tab === "teacher") arrangeTeacherLayout();
-    if (lab.tab === "models") updateModelOutput();
-    if (lab.tab === "tools") requestAnimationFrame(setupSketchCanvas);
-    if (lab.tab === "sensors") requestAnimationFrame(() => renderMotionChart());
-    if (lab.tab === "tutor" && lab.session) startSessionTimer();
-    if (options.scrollTo || options.preserveScroll) {
-      requestAnimationFrame(() => {
-        if (!lab.panel) return;
-        if (lab.dialog) lab.dialog.scrollTop = 0;
-        if (lab.content) lab.content.scrollTop = 0;
-        if (options.scrollTo) {
-          const target = lab.panel.querySelector(options.scrollTo);
-          if (target) {
-            const panelBox = lab.panel.getBoundingClientRect();
-            const targetBox = target.getBoundingClientRect();
-            const centeredOffset = Math.max(16, (lab.panel.clientHeight - Math.min(targetBox.height, lab.panel.clientHeight)) / 2);
-            lab.panel.scrollTop = Math.max(0, lab.panel.scrollTop + targetBox.top - panelBox.top - centeredOffset);
-          }
-        } else {
-          lab.panel.scrollTop = previousScrollTop;
-        }
-        if (lab.dialog) lab.dialog.scrollTop = 0;
-        if (lab.content) lab.content.scrollTop = 0;
+    const renderToken = ++lab.renderToken;
+    lab.panel.setAttribute("aria-busy", "true");
+    lab.panel.innerHTML = '<div class="lab-opening-state" role="status">正在加载学习测评…</div>';
+    const render = () => {
+      if (renderToken !== lab.renderToken || !lab.dialog?.open) return;
+      if (lab.tab === "teacher" && !lab.teacherHydrated) {
+        lab.panel.innerHTML = renderTeacherOpeningState();
+        lab.panel.removeAttribute("aria-busy");
+        scheduleTeacherHydration(renderToken);
+        return;
+      }
+      const renderers = {
+        dashboard: renderDashboard,
+        diagnostic: renderDiagnostic,
+        tutor: renderTutor,
+        models: renderModels,
+        transfer: renderTransfer,
+        review: renderReview,
+        tools: renderTools,
+        teacher: renderTeacher,
+        sensors: renderSensors
+      };
+      lab.panel.innerHTML = renderers[lab.tab]?.() || renderDashboard();
+      lab.panel.removeAttribute("aria-busy");
+      bindHorizontalScrollers();
+      if (lab.tab === "teacher") {
+        arrangeTeacherLayout();
+        restoreTeacherViewDraft(lab.teacherView);
+      }
+      if (lab.tab === "models") updateModelOutput();
+      if (lab.tab === "tools") requestAnimationFrame(() => {
+        setupSketchCanvas();
+        updateRayOutput();
       });
+      if (lab.tab === "sensors") requestAnimationFrame(() => renderMotionChart());
+      if (lab.tab === "tutor" && lab.session) startSessionTimer();
+      if (options.scrollTo || options.preserveScroll) {
+        requestAnimationFrame(() => {
+          if (!lab.panel) return;
+          if (lab.dialog) lab.dialog.scrollTop = 0;
+          if (lab.content) lab.content.scrollTop = 0;
+          if (options.scrollTo) {
+            const target = lab.panel.querySelector(options.scrollTo);
+            if (target) {
+              const panelBox = lab.panel.getBoundingClientRect();
+              const targetBox = target.getBoundingClientRect();
+              const centeredOffset = Math.max(16, (lab.panel.clientHeight - Math.min(targetBox.height, lab.panel.clientHeight)) / 2);
+              lab.panel.scrollTop = Math.max(0, lab.panel.scrollTop + targetBox.top - panelBox.top - centeredOffset);
+            }
+          } else {
+            lab.panel.scrollTop = previousScrollTop;
+          }
+          if (lab.dialog) lab.dialog.scrollTop = 0;
+          if (lab.content) lab.content.scrollTop = 0;
+        });
+      }
+    };
+    if (typeof window.requestAnimationFrame === "function") window.requestAnimationFrame(render);
+    else window.setTimeout(render, 0);
+  }
+
+  function renderTeacherOpeningState() {
+    return `<section class="teacher-dashboard-opening" aria-live="polite">
+      <nav class="teacher-primary-nav" aria-label="教师中心主导航">
+        <button data-teacher-view="today" type="button" class="active" aria-current="page">今日</button>
+        <button data-teacher-view="students" type="button">学生</button>
+        <button data-teacher-view="class" type="button">班级</button>
+        <button data-teacher-view="manage" type="button">管理</button>
+      </nav>
+      <div class="lab-opening-state" role="status"><strong>正在打开教师中心…</strong><span>先显示操作入口，学情汇总将在后台准备。</span></div>
+    </section>`;
+  }
+
+  function scheduleTeacherHydration(renderToken) {
+    if (lab.teacherHydrationPending) return;
+    lab.teacherHydrationPending = true;
+    // Keep the first paint interactive on low-end Android WebViews and
+    // Windows WebView2. The lightweight "today" view is rendered after the
+    // browser has returned control to input handling instead of inside the
+    // click event.
+    window.setTimeout(() => {
+      lab.teacherHydrationPending = false;
+      if (!lab.dialog?.open || lab.tab !== "teacher") return;
+      lab.teacherHydrated = true;
+      renderPanel({ preserveScroll: true });
+    }, 80);
+  }
+
+  async function refreshStorageEstimate() {
+    if (lab.storageEstimatePending || !navigator.storage?.estimate) return;
+    lab.storageEstimatePending = true;
+    try {
+      const estimate = await navigator.storage.estimate();
+      const usage = Math.max(0, Number(estimate.usage) || 0);
+      const quota = Math.max(0, Number(estimate.quota) || 0);
+      lab.storageEstimate = {
+        usage,
+        quota,
+        ratio: quota > 0 ? usage / quota : null,
+        remaining: quota > 0 ? Math.max(0, quota - usage) : null,
+        checkedAt: new Date().toISOString()
+      };
+      if (lab.dialog?.open && lab.tab === "teacher") renderPanel({ preserveScroll: true });
+    } catch (_error) {
+      lab.storageEstimate = { unavailable: true, checkedAt: new Date().toISOString() };
+    } finally {
+      lab.storageEstimatePending = false;
     }
   }
 
   function arrangeTeacherLayout() {
     const dashboard = lab.panel?.querySelector(".teacher-dashboard");
     if (!dashboard) return;
-    const studentRecords = dashboard.querySelector(".student-manager-card")?.closest(".teacher-records-grid");
+    if (dashboard.dataset.teacherRenderMode === "workspace") {
+      applyTeacherView();
+      return;
+    }
     const targetedPlan = dashboard.querySelector(".targeted-plan-card");
     const historyRecords = dashboard.querySelector(".exam-record-card")?.closest(".teacher-records-grid");
-    if (studentRecords && targetedPlan) studentRecords.after(targetedPlan);
+    const decisionLoop = dashboard.querySelector(".student-decision-loop");
+    if (decisionLoop && targetedPlan) decisionLoop.after(targetedPlan);
     if (!historyRecords) return;
 
     const details = document.createElement("details");
@@ -273,21 +511,123 @@
     const body = details.querySelector(".teacher-advanced-body");
     [
       dashboard.querySelector(".content-coverage-card"),
+      dashboard.querySelector(".data-privacy-center"),
       dashboard.querySelector(".document-import-card")?.closest(".teacher-records-grid"),
       dashboard.querySelector(".teacher-grid"),
       dashboard.querySelector(".content-review-list")?.closest(".lab-card"),
       dashboard.querySelector(".assignment-list")?.closest(".lab-card"),
       dashboard.querySelector(".teacher-boundary")
     ].filter(Boolean).forEach((section) => body.append(section));
+    applyTeacherView();
+  }
+
+  function applyTeacherView() {
+    const dashboard = lab.panel?.querySelector(".teacher-dashboard");
+    if (!dashboard) return;
+    dashboard.querySelectorAll("[data-teacher-view]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.teacherView === lab.teacherView);
+      button.setAttribute("aria-current", button.dataset.teacherView === lab.teacherView ? "page" : "false");
+    });
+    const viewSelectors = {
+      today: [".teacher-todo-card", ".manual-review-workbench", ".teacher-data-health"],
+      students: [".teacher-hero", ".student-decision-loop", ".targeted-plan-card", ".student-manager-card", ".student-import-card", ".exam-record-card", ".growth-record-card"],
+      class: [".class-matrix-card", ".class-evidence-card", ".teacher-prescription"],
+      manage: [".teacher-advanced-tools"]
+    };
+    const controlled = new Set(Object.values(viewSelectors).flatMap((selectors) => selectors.flatMap((selector) => [...dashboard.querySelectorAll(selector)])));
+    controlled.forEach((section) => { section.hidden = true; });
+    (viewSelectors[lab.teacherView] || viewSelectors.today).forEach((selector) => {
+      dashboard.querySelectorAll(selector).forEach((section) => { section.hidden = false; });
+    });
+    const advanced = dashboard.querySelector(".teacher-advanced-tools");
+    if (advanced && lab.teacherView === "manage") advanced.open = true;
+  }
+
+  function teacherWorkspaceFor(view = lab.teacherView) {
+    const dashboard = lab.panel?.querySelector('.teacher-dashboard[data-teacher-render-mode="workspace"]');
+    return dashboard?.dataset.teacherRenderView === view ? dashboard : null;
+  }
+
+  function teacherDraftKey(view = lab.teacherView) {
+    const profileContext = view === "students" || view === "manage"
+      ? `profile:${lab.managedStudentId || lab.state.activeProfileId || "unbound"}`
+      : "shared";
+    return `${view}|${profileContext}`;
+  }
+
+  function teacherDraftFieldKey(field, index) {
+    const documentScopedIds = new Set(["documentReviewConfirmed", "documentImportRights", "documentRemoteUploadConfirmed"]);
+    if (documentScopedIds.has(field.id)) {
+      const documentDraftToken = lab.pendingDocumentImport?.draftToken || "no-document-draft";
+      return `document-confirmation:${documentDraftToken}:${field.id}`;
+    }
+    if (field.id) return `id:${field.id}`;
+    const documentQuestion = field.closest?.("[data-document-question]")?.dataset.documentQuestion;
+    if (field.dataset.docField && documentQuestion != null) {
+      const documentDraftToken = lab.pendingDocumentImport?.draftToken || "no-document-draft";
+      return `document:${documentDraftToken}:${documentQuestion}:${field.dataset.docField}`;
+    }
+    if (field.dataset.rosterDuplicateAction != null) {
+      const rosterDraftToken = lab.studentImportDraft?.draftToken || "no-roster-draft";
+      return `roster-duplicate:${rosterDraftToken}:${field.dataset.rosterDuplicateAction}`;
+    }
+    if (field.dataset.rosterMap) {
+      const rosterDraftToken = lab.studentImportDraft?.draftToken || "no-roster-draft";
+      return `roster-map:${rosterDraftToken}:${field.dataset.rosterMap}`;
+    }
+    if (field.dataset.examTopic != null) return `exam-topic:${field.value}`;
+    if (field.name) return `name:${field.name}:${index}`;
+    return `position:${field.tagName}:${field.type || ""}:${index}`;
+  }
+
+  function captureTeacherViewDraft(view = lab.teacherView) {
+    const dashboard = teacherWorkspaceFor(view);
+    if (!dashboard) return true;
+    const selectedFile = [...dashboard.querySelectorAll('input[type="file"]')]
+      .find((input) => input.files?.length);
+    if (selectedFile) {
+      showLabMessage("已选择的文件无法跨页面保留，请先完成导入或清空文件后再切换。", true);
+      selectedFile.focus();
+      return false;
+    }
+    const fields = {};
+    const draftFields = [...dashboard.querySelectorAll('input:not([type="file"]), select, textarea')];
+    draftFields.forEach((field, index) => {
+      const kind = field.type === "checkbox" || field.type === "radio" ? "checked" : "value";
+      fields[teacherDraftFieldKey(field, index)] = {
+        kind,
+        value: kind === "checked" ? field.checked : field.value
+      };
+    });
+    lab.teacherViewDrafts[teacherDraftKey(view)] = { fields };
+    return true;
+  }
+
+  function restoreTeacherViewDraft(view = lab.teacherView) {
+    const key = teacherDraftKey(view);
+    const draft = lab.teacherViewDrafts[key];
+    if (!draft) return;
+    const dashboard = teacherWorkspaceFor(view);
+    if (!dashboard) return;
+    const fieldsByKey = new Map(
+      [...dashboard.querySelectorAll('input:not([type="file"]), select, textarea')]
+        .map((field, index) => [teacherDraftFieldKey(field, index), field])
+    );
+    Object.entries(draft.fields || {}).forEach(([fieldKey, saved]) => {
+      const field = fieldsByKey.get(fieldKey);
+      if (!field) return;
+      if (saved.kind === "checked") field.checked = Boolean(saved.value);
+      else field.value = String(saved.value ?? "");
+    });
+    delete lab.teacherViewDrafts[key];
   }
 
   function renderDashboard() {
     const questions = getQuestions();
-    const summary = engine.summarizeLearning(lab.state, questions);
-    const recommendations = engine.recommendations(lab.state, questions, 6);
+    const { summary, recommendations } = getDerivedLearning(questions);
     const topRisk = summary.misconceptionProfile.filter((item) => item.status !== "未诊断").slice(0, 3);
     const goal = Number(lab.state.settings.dailyGoal) || 5;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = engine.localCalendarDateKey();
     const todayCount = lab.state.attempts.filter((attempt) => {
       return attempt.profileId === lab.state.activeProfileId && String(attempt.createdAt).startsWith(today);
     }).length;
@@ -324,8 +664,8 @@
         </div>
 
         <div class="lab-metric-grid">
-          ${metricCard("正确率", `${summary.accuracy}%`, `${summary.correct}/${summary.completed || 0} 次闭环作答`)}
-          ${metricCard("独立完成率", `${summary.independenceRate}%`, "正确且未超过第 1 级提示")}
+          ${metricCard("正确率", summary.accuracy == null ? "暂无可评分证据" : `${summary.accuracy}%`, `${summary.correct}/${summary.completed || 0} 次提交 · 待复核 ${summary.pendingReviewCount || 0}`)}
+          ${metricCard("独立完成率", summary.independenceRate == null ? "暂无可评分证据" : `${summary.independenceRate}%`, "正确且未超过第 1 级提示")}
           ${metricCard("提示依赖", `${summary.averageHint} 级`, "数值越低，独立性越强")}
           ${metricCard("待复习", `${summary.dueCount}`, "依据作答表现动态安排")}
           ${metricCard("学习时长", `${summary.learningMinutes} min`, "只统计闭环训练计时")}
@@ -357,9 +697,9 @@
             </div>
             <div class="lab-risk-list">
               ${topRisk.length ? topRisk.map((item) => `
-                <article class="risk-${item.status === "高风险" ? "high" : "watch"}">
+                <article class="risk-${item.status === "稳定误概念风险" ? "high" : "watch"}">
                   <div><strong>${escapeHtml(item.title)}</strong><small>${item.evidenceCount} 条证据</small></div>
-                  <span>${item.status} · ${item.risk}/5</span>
+                  <span>${escapeHtml(item.status)} · ${item.evidenceCount} 条证据</span>
                   <p>${escapeHtml(item.correction)}</p>
                 </article>`).join("") : emptyState("尚未形成误概念画像", "诊断题会同时记录答案、理由和置信度，避免把猜对当成掌握。")}
             </div>
@@ -376,7 +716,7 @@
             ${capability("确定性自动批改", "可靠覆盖选项和数值结果；解释题明确转人工复核。", "ready")}
             ${capability("照片与图示采集", "沿用现有拍照、相册、附件和二维码入口。", "ready")}
             ${capability("手写公式语义识别", "当前未内置 OCR/视觉模型，不宣称已经自动识别。", "planned")}
-            ${capability("跨端同步", "提供学习档案导入导出；自动云同步需要后端账号服务。", "partial")}
+            ${capability("跨端同步", "本机继续离线可用；客户端已具备增量队列与冲突状态，服务端闭环需部署后启用。", "partial")}
             ${capability("生成式 AI", "预留教师审核和来源字段；当前离线导师使用可解释规则。", "partial")}
           </div>
         </section>
@@ -398,7 +738,7 @@
             <div><span>ANSWER + REASON + CONFIDENCE</span><h3>前概念诊断</h3></div>
             <strong>${profiles.filter((item) => item.evidenceCount).length}/${profiles.length}</strong>
           </div>
-          <div class="diagnostic-selector">
+          <div class="diagnostic-selector" role="tablist" aria-label="前概念诊断项目，可左右滑动选择">
             ${profiles.map((item, index) => `
               <button class="${item.diagnostic.id === diagnostic.id ? "active" : ""}" data-diagnostic-id="${item.diagnostic.id}" type="button">
                 <span>${index + 1}</span>
@@ -412,12 +752,12 @@
             <fieldset id="diagnosticAnswerGroup">
               <legend>你的答案</legend>
               ${diagnostic.choices.map(([value, label]) => `
-                <label><input type="radio" name="diagnosticAnswer" value="${value}"><span>${value}</span>${escapeHtml(label)}</label>`).join("")}
+                <label><input type="radio" name="diagnosticAnswer" value="${value}"><span class="diagnostic-choice-key">${value}</span><span class="diagnostic-choice-text">${escapeHtml(label)}</span></label>`).join("")}
             </fieldset>
             <fieldset id="diagnosticReasonGroup">
               <legend>最接近你的理由</legend>
               ${diagnostic.reasons.map(([value, label]) => `
-                <label><input type="radio" name="diagnosticReason" value="${value}"><span>${value.replace("R", "")}</span>${escapeHtml(label)}</label>`).join("")}
+                <label><input type="radio" name="diagnosticReason" value="${value}"><span class="diagnostic-choice-key">${value.replace("R", "")}</span><span class="diagnostic-choice-text">${escapeHtml(label)}</span></label>`).join("")}
             </fieldset>
             <label class="confidence-control">
               <span>作答置信度 <strong id="diagnosticConfidenceValue">3/5</strong></span>
@@ -436,9 +776,9 @@
               <article>
                 <div>
                   <strong>${escapeHtml(item.title)}</strong>
-                  <span class="risk-pill ${item.status === "高风险" ? "high" : item.status === "需观察" ? "watch" : ""}">${item.status}</span>
+                  <span class="risk-pill ${item.status === "稳定误概念风险" ? "high" : item.status.includes("待验证") || item.status.includes("历史规则") ? "watch" : ""}">${escapeHtml(item.status)}</span>
                 </div>
-                <div class="risk-meter"><i style="width:${item.risk / 5 * 100}%"></i></div>
+                <div class="risk-meter"><i style="width:${Math.min(100, item.evidenceCount * 25)}%"></i></div>
                 <p>${escapeHtml(item.correction)}</p>
               </article>`).join("")}
           </div>
@@ -447,13 +787,14 @@
   }
 
   function renderDiagnosticResult(result) {
-    const classification = {
+    const classification = engine.diagnosticClassificationLabel?.(result.attempt) || {
       secure: "概念与理由一致",
       "fragile-correct": "概念正确但信心不足",
       guess: "可能猜对",
       "confident-guess": "高置信度猜对，需纠正理由",
       "not-yet-understood": "尚未理解",
-      "stable-misconception": "稳定错误观念风险"
+      "stable-misconception": "稳定误概念风险（需独立确认）",
+      "high-confidence-error": "高置信错误，待验证误概念"
     }[result.attempt.classification] || result.attempt.classification;
     return `
       <div class="diagnostic-result ${result.attempt.answerCorrect && result.attempt.reasonCorrect ? "correct" : "needs-work"}">
@@ -525,6 +866,7 @@
     const session = lab.session;
     const hints = engine.createHintLadder(question);
     const prompts = engine.socraticPrompts(question);
+    const aiReady = Boolean(window.PhysicsStudioAITutor?.status?.().ready);
     return `
       <section class="tutor-layout">
         <aside class="lab-card tutor-question">
@@ -605,13 +947,13 @@
             ${session.grading ? renderGrading(question, session.grading) : ""}
             <section class="ai-tutor-card">
               <div>
-                <span>CHATGPT 深度解析</span>
-                <strong>${window.PhysicsStudioAITutor?.status?.().ready ? "受控服务端已配置" : "当前为离线规则模式"}</strong>
-                <small>API 密钥不保存在电脑端或安卓端；未配置时不会发送题目。</small>
+                <span>${aiReady ? "CHATGPT 多轮导师" : "离线苏格拉底导师"}</span>
+                <strong>${aiReady ? "受控服务端优先，失败自动回退" : "本机五级提示可继续学习"}</strong>
+                <small>${aiReady ? "每轮只推进一个认知步骤；API 密钥不保存在电脑端或安卓端。" : "未配置或无法连接受控网关时，不发送数据，也不会阻断作答。"}</small>
               </div>
-              <button class="lab-secondary-button" data-lab-action="ai-solve" type="button"${window.PhysicsStudioAITutor?.status?.().ready ? "" : " disabled"}>生成分步解答与物理校验</button>
+              <button class="lab-secondary-button" data-lab-action="ai-solve" type="button">继续一步指导</button>
               ${lab.aiStatusMessage ? `<p>${escapeHtml(lab.aiStatusMessage)}</p>` : ""}
-              ${lab.aiResult ? renderAiSolution(lab.aiResult) : ""}
+              ${lab.aiResult ? renderAiTutorResult(lab.aiResult) : ""}
             </section>
             <div class="reflection-grid">
               <label>
@@ -740,24 +1082,36 @@
       </div>`;
   }
 
+  function renderAiTutorResult(result) {
+    if (!result?.diagnosisType) return renderAiSolution(result);
+    const verification = Array.isArray(result.verification?.checks)
+      ? result.verification.checks
+      : [];
+    return `<div class="ai-solution ai-tutor-turn">
+      <article><strong>当前诊断</strong><p>${escapeHtml(result.diagnosisType)}</p></article>
+      <article><strong>下一步只做这一件事</strong><p>${escapeHtml(result.nextPrompt)}</p></article>
+      <article><strong>即时反馈</strong><p>${escapeHtml(result.feedback)}</p></article>
+      <article><strong>物理校验范围</strong><ul>${verification.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></article>
+      <small>${result.source === "gateway" ? "来自受控导师服务" : "来自本机五级提示"} · 已记录提示等级 ${Number(result.hintLevel) || 0}/5${result.hintLevel >= 5 ? " · 本次不能计为独立完成" : ""}${result.reviewRequired ? " · 待教师复核" : ""}</small>
+    </div>`;
+  }
+
   function renderModels() {
+    const linkedQuestion = getQuestion(lab.selectedQuestionId);
     return `
       <section class="model-lab">
         <div class="lab-card model-sidebar">
           <div class="lab-card-head"><div><span>SYNCHRONIZED MODEL</span><h3>题目—模型—图像—仿真</h3></div></div>
+          ${linkedQuestion ? `<div class="linked-model-context"><span>当前关联题</span><strong>${escapeHtml(linkedQuestion.title)}</strong><small>${escapeHtml(linkedQuestion.topic)} · 已按知识主题选择模型；调整参数不会写入作答或掌握证据。</small></div>` : ""}
           <div class="model-tabs">
-            ${[
-              ["projectile", "平抛/斜抛", "轨迹与能量"],
-              ["incline", "斜面动力学", "受力与运动图像"],
-              ["circuit", "直流电路", "电流、电压与功率"]
-            ].map(([key, label, detail]) => `
+            ${MODEL_CATALOG.map(([key, label, detail]) => `
               <button class="${lab.modelType === key ? "active" : ""}" data-model-type="${key}" type="button">
                 <strong>${label}</strong><small>${detail}</small>
               </button>`).join("")}
           </div>
           ${modelControls()}
           <div class="model-actions">
-            ${lab.modelType !== "circuit" ? '<button class="lab-primary-button" data-lab-action="play-model" type="button">▶ 播放过程</button>' : ""}
+            ${ANIMATED_MODELS.has(lab.modelType) ? '<button class="lab-primary-button" data-lab-action="play-model" type="button">▶ 播放过程</button>' : ""}
             <button class="lab-secondary-button" data-lab-action="reset-model" type="button">恢复默认</button>
           </div>
           <div class="model-principles">
@@ -791,13 +1145,57 @@
           ${rangeControl("t", "观察时刻 t", params.t, 0, 5, 0.05, "s")}
         </div>`;
     }
-    return `
-      <div class="model-controls">
-        ${rangeControl("voltage", "电源电压 U", params.voltage, 1, 36, 1, "V")}
-        ${rangeControl("r1", "电阻 R₁", params.r1, 1, 100, 1, "Ω")}
-        ${rangeControl("r2", "电阻 R₂", params.r2, 1, 100, 1, "Ω")}
-        <label><span>连接方式</span><select data-model-param="mode"><option value="series"${params.mode === "series" ? " selected" : ""}>串联</option><option value="parallel"${params.mode === "parallel" ? " selected" : ""}>并联</option></select></label>
+    if (lab.modelType === "circuit") {
+      return `
+        <div class="model-controls">
+          ${rangeControl("voltage", "电源电压 U", params.voltage, 1, 36, 1, "V")}
+          ${rangeControl("r1", "电阻 R₁", params.r1, 1, 100, 1, "Ω")}
+          ${rangeControl("r2", "电阻 R₂", params.r2, 1, 100, 1, "Ω")}
+          <label><span>连接方式</span><select data-model-param="mode"><option value="series"${params.mode === "series" ? " selected" : ""}>串联</option><option value="parallel"${params.mode === "parallel" ? " selected" : ""}>并联</option></select></label>
+        </div>`;
+    }
+    if (lab.modelType === "uniform") {
+      return `<div class="model-controls">
+        ${rangeControl("x0", "初位置 x₀", params.x0, -20, 20, 1, "m")}
+        ${rangeControl("v0", "初速度 v₀", params.v0, -20, 30, 0.5, "m/s")}
+        ${rangeControl("a", "加速度 a", params.a, -10, 10, 0.5, "m/s²")}
+        ${rangeControl("duration", "图像时长", params.duration, 1, 10, 0.5, "s")}
+        ${rangeControl("t", "同步时刻 t", params.t, 0, params.duration, 0.05, "s")}
       </div>`;
+    }
+    if (lab.modelType === "newton") {
+      return `<div class="model-controls">
+        ${rangeControl("mass", "质量 m", params.mass, 0.5, 10, 0.1, "kg")}
+        ${rangeControl("appliedForce", "向右外力 F", params.appliedForce, 0, 50, 1, "N")}
+        ${rangeControl("opposingForce", "向左阻力 f", params.opposingForce, 0, 50, 1, "N")}
+        ${rangeControl("v0", "初速度 v₀", params.v0, -10, 20, 0.5, "m/s")}
+        ${rangeControl("t", "观察时刻 t", params.t, 0, params.duration, 0.05, "s")}
+      </div>`;
+    }
+    if (lab.modelType === "energy") {
+      return `<div class="model-controls">
+        ${rangeControl("mass", "质量 m", params.mass, 0.5, 10, 0.1, "kg")}
+        ${rangeControl("g", "重力加速度 g", params.g, 1, 15, 0.1, "m/s²")}
+        ${rangeControl("initialHeight", "初始高度 H", params.initialHeight, 1, 30, 0.5, "m")}
+        ${rangeControl("height", "当前高度 h", Math.min(params.height, params.initialHeight), 0, params.initialHeight, 0.1, "m")}
+        ${rangeControl("lossPercent", "已释放能量耗散比例", params.lossPercent, 0, 100, 1, "%")}
+      </div>`;
+    }
+    if (lab.modelType === "collision") {
+      return `<div class="model-controls">
+        ${rangeControl("m1", "质量 m₁", params.m1, 0.5, 10, 0.1, "kg")}
+        ${rangeControl("m2", "质量 m₂", params.m2, 0.5, 10, 0.1, "kg")}
+        ${rangeControl("u1", "初速度 u₁", params.u1, -10, 15, 0.5, "m/s")}
+        ${rangeControl("u2", "初速度 u₂", params.u2, -10, 15, 0.5, "m/s")}
+        <label><span>碰撞类型</span><select data-model-param="type"><option value="elastic"${params.type === "elastic" ? " selected" : ""}>弹性碰撞</option><option value="inelastic"${params.type === "inelastic" ? " selected" : ""}>完全非弹性碰撞</option></select></label>
+      </div>`;
+    }
+    return `<div class="model-controls">
+      ${rangeControl("speed", "波速 v", params.speed, 1, 100, 1, "m/s")}
+      ${rangeControl("frequency", "频率 f", params.frequency, 0.5, 20, 0.5, "Hz")}
+      ${rangeControl("amplitude", "振幅 A", params.amplitude, 0.2, 5, 0.1, "m")}
+      ${rangeControl("t", "观察时刻 t", params.t, 0, 2, 0.01, "s")}
+    </div>`;
   }
 
   function rangeControl(key, label, value, min, max, step, unit) {
@@ -811,12 +1209,32 @@
   function updateModelOutput() {
     const output = document.getElementById("labModelOutput");
     if (!output) return;
-    if (lab.modelType === "projectile") output.innerHTML = projectileModel();
-    else if (lab.modelType === "incline") output.innerHTML = inclineModel();
-    else output.innerHTML = circuitModel();
+    const renderers = {
+      projectile: projectileModel,
+      incline: inclineModel,
+      circuit: circuitModel,
+      uniform: uniformModel,
+      newton: newtonModel,
+      energy: mechanicalEnergyModel,
+      collision: collisionModel,
+      wave: waveRelationModel
+    };
+    output.innerHTML = visuals ? renderers[lab.modelType]?.() || "" : emptyState("多表征模块未加载", "请检查 physics-visuals.js 是否随本地应用一起安装。");
+    if (lab.modelType === "uniform") {
+      const timeInput = lab.content.querySelector('[data-model-param="t"]');
+      if (timeInput) timeInput.max = lab.modelParams.uniform.duration;
+    }
+    if (lab.modelType === "energy") {
+      lab.modelParams.energy.height = Math.min(lab.modelParams.energy.height, lab.modelParams.energy.initialHeight);
+      const heightInput = lab.content.querySelector('[data-model-param="height"]');
+      if (heightInput) {
+        heightInput.max = lab.modelParams.energy.initialHeight;
+        heightInput.value = lab.modelParams.energy.height;
+      }
+    }
     lab.content.querySelectorAll("[data-model-value]").forEach((node) => {
       const key = node.dataset.modelValue;
-      const units = { v0: "m/s", angle: "°", g: "m/s²", t: "s", mass: "kg", mu: "", voltage: "V", r1: "Ω", r2: "Ω" };
+      const units = { x0: "m", v0: "m/s", a: "m/s²", angle: "°", g: "m/s²", t: "s", duration: "s", mass: "kg", mu: "", voltage: "V", r1: "Ω", r2: "Ω", appliedForce: "N", opposingForce: "N", initialHeight: "m", height: "m", lossPercent: "%", m1: "kg", m2: "kg", u1: "m/s", u2: "m/s", speed: "m/s", frequency: "Hz", amplitude: "m" };
       node.textContent = `${formatNumber(lab.modelParams[lab.modelType][key])} ${units[key] || ""}`.trim();
     });
   }
@@ -930,14 +1348,11 @@
 
   function circuitModel() {
     const { voltage, r1, r2, mode } = lab.modelParams.circuit;
-    const totalResistance = mode === "series" ? r1 + r2 : r1 * r2 / (r1 + r2);
-    const totalCurrent = voltage / totalResistance;
-    const i1 = mode === "series" ? totalCurrent : voltage / r1;
-    const i2 = mode === "series" ? totalCurrent : voltage / r2;
-    const u1 = i1 * r1;
-    const u2 = i2 * r2;
-    const p1 = i1 ** 2 * r1;
-    const p2 = i2 ** 2 * r2;
+    const result = visuals.circuit({ voltage, resistances: [r1, r2], mode });
+    const { totalResistance, totalCurrent } = result;
+    const [i1, i2] = result.branchCurrents;
+    const [u1, u2] = result.branchVoltages;
+    const [p1, p2] = result.branchPowers;
     const dimension = engine.validateDimension("P=U*I");
     return `
       <section class="lab-card model-stage">
@@ -945,7 +1360,7 @@
           <div><span>DC CIRCUIT MODEL</span><h3>${mode === "series" ? "串联" : "并联"}电路同步画布</h3></div>
           <div class="model-live-values"><span>R总 = ${formatNumber(totalResistance)} Ω</span><span>I总 = ${formatNumber(totalCurrent)} A</span><span>P总 = ${formatNumber(voltage * totalCurrent)} W</span></div>
         </div>
-        ${mode === "series" ? seriesCircuitSvg(voltage, r1, r2, totalCurrent) : parallelCircuitSvg(voltage, r1, r2, i1, i2)}
+        ${result.svg}
         <div class="model-equation-grid">
           <article><span>电路约束</span><strong>${mode === "series" ? "I = I₁ = I₂" : "U = U₁ = U₂"}</strong><small>${mode === "series" ? `I=${formatNumber(totalCurrent)} A` : `U=${formatNumber(voltage)} V`}</small></article>
           <article><span>元件 1</span><strong>U₁=${formatNumber(u1)} V；I₁=${formatNumber(i1)} A</strong><small>P₁=${formatNumber(p1)} W</small></article>
@@ -960,6 +1375,91 @@
         </div>
         <p class="model-assumption">假设：理想电源、导线电阻忽略、两个电阻为线性纯电阻且温度不变。电动机、灯丝等非恒阻元件不能直接套用本模型。</p>
       </section>`;
+  }
+
+  function uniformModel() {
+    const params = lab.modelParams.uniform;
+    const result = visuals.uniformMotion(params);
+    const dimension = engine.validateDimension("x=v*t+a*t^2");
+    return `<section class="lab-card model-stage visual-model-stage" data-offline-model="uniform">
+      <div class="model-stage-head"><div><span>UNIFORMLY ACCELERATED MOTION</span><h3>匀变速直线运动联动图</h3></div><div class="model-live-values"><span>x=${formatNumber(result.position)} m</span><span>v=${formatNumber(result.velocity)} m/s</span><span>a=${formatNumber(result.acceleration)} m/s²</span></div></div>
+      ${result.svg}
+      <div class="model-equation-grid">
+        <article><span>位置</span><strong>x=x₀+v₀t+½at²</strong><small>${formatNumber(result.position)} m</small></article>
+        <article><span>速度</span><strong>v=v₀+at</strong><small>${formatNumber(result.velocity)} m/s</small></article>
+        <article><span>图像互证</span><strong>dx/dt=v；dv/dt=a</strong><small>v-t 图面积对应位移变化</small></article>
+        <article class="${dimension.valid ? "verified" : "warning"}"><span>量纲校验</span><strong>${dimension.status}</strong><small>${escapeHtml(dimension.message)}</small></article>
+      </div>
+      <p class="model-assumption">假设：一维质点运动、所选时间段内加速度恒定；坐标正方向决定速度和加速度的正负。</p>
+    </section>`;
+  }
+
+  function newtonModel() {
+    const params = lab.modelParams.newton;
+    const result = visuals.newtonSecondLaw(params);
+    const dimension = engine.validateDimension("F=m*a");
+    return `<section class="lab-card model-stage visual-model-stage" data-offline-model="newton">
+      <div class="model-stage-head"><div><span>NEWTON'S SECOND LAW</span><h3>牛顿第二定律多表征模型</h3></div><div class="model-live-values"><span>ΣF=${formatNumber(result.netForce)} N</span><span>a=${formatNumber(result.acceleration)} m/s²</span><span>v=${formatNumber(result.velocity)} m/s</span></div></div>
+      ${result.svg}
+      <div class="model-equation-grid">
+        <article><span>水平方向</span><strong>ΣF=F−f=ma</strong><small>${formatNumber(result.appliedForce)}−${formatNumber(result.opposingForce)}=${formatNumber(result.mass)}×${formatNumber(result.acceleration)}</small></article>
+        <article><span>运动结果</span><strong>v=v₀+at；x=v₀t+½at²</strong><small>t=${formatNumber(result.t)} s，x=${formatNumber(result.position)} m</small></article>
+        <article><span>竖直方向</span><strong>N−mg=0</strong><small>水平面无竖直加速度</small></article>
+        <article class="${dimension.valid ? "verified" : "warning"}"><span>量纲校验</span><strong>${dimension.status}</strong><small>${escapeHtml(dimension.message)}</small></article>
+      </div>
+      <p class="model-assumption">假设：物体视为质点、水平面固定，输入的阻力大小恒定且方向向左；若合力为负，加速度指向左。</p>
+    </section>`;
+  }
+
+  function mechanicalEnergyModel() {
+    const params = lab.modelParams.energy;
+    const result = visuals.mechanicalEnergy({
+      ...params,
+      dissipationRatio: params.lossPercent / 100
+    });
+    return `<section class="lab-card model-stage visual-model-stage" data-offline-model="energy">
+      <div class="model-stage-head"><div><span>MECHANICAL ENERGY</span><h3>机械能转化与耗散</h3></div><div class="model-live-values"><span>Ek=${formatNumber(result.kineticEnergy)} J</span><span>Ep=${formatNumber(result.potentialEnergy)} J</span><span>v=${formatNumber(result.speed)} m/s</span></div></div>
+      ${result.svg}
+      <div class="model-equation-grid">
+        <article><span>初始能量</span><strong>E₀=mgH</strong><small>${formatNumber(result.initialEnergy)} J</small></article>
+        <article><span>当前机械能</span><strong>Em=Ek+Ep</strong><small>${formatNumber(result.mechanicalEnergy)} J</small></article>
+        <article><span>能量账本</span><strong>E₀=Ek+Ep+E耗散</strong><small>${formatNumber(result.initialEnergy)}=${formatNumber(result.kineticEnergy)}+${formatNumber(result.potentialEnergy)}+${formatNumber(result.dissipatedEnergy)} J</small></article>
+        <article><span>速度</span><strong>Ek=½mv²</strong><small>v=${formatNumber(result.speed)} m/s</small></article>
+      </div>
+      <p class="model-assumption">零势能面取在高度 0；耗散比例只作用于从 H 下降到 h 已释放的重力势能。耗散为 0 时机械能守恒。</p>
+    </section>`;
+  }
+
+  function collisionModel() {
+    const result = visuals.collision1D(lab.modelParams.collision);
+    const elastic = result.type === "elastic";
+    return `<section class="lab-card model-stage visual-model-stage" data-offline-model="collision">
+      <div class="model-stage-head"><div><span>ONE-DIMENSIONAL COLLISION</span><h3>${elastic ? "弹性" : "完全非弹性"}一维碰撞</h3></div><div class="model-live-values"><span>v₁=${formatNumber(result.v1)} m/s</span><span>v₂=${formatNumber(result.v2)} m/s</span><span>ΔEk=${formatNumber(result.kineticLoss)} J</span></div></div>
+      ${result.svg}
+      <div class="model-equation-grid">
+        <article><span>动量</span><strong>m₁u₁+m₂u₂=m₁v₁+m₂v₂</strong><small>${formatNumber(result.momentumBefore)}=${formatNumber(result.momentumAfter)} kg·m/s</small></article>
+        <article><span>碰后速度</span><strong>v₁=${formatNumber(result.v1)}；v₂=${formatNumber(result.v2)}</strong><small>正负号对应所选一维正方向</small></article>
+        <article><span>动能</span><strong>${elastic ? "Ek前=Ek后" : "Ek后<Ek前"}</strong><small>${formatNumber(result.kineticBefore)} → ${formatNumber(result.kineticAfter)} J</small></article>
+        <article><span>碰撞类型</span><strong>${elastic ? "恢复系数 e=1" : "共同速度，e=0"}</strong><small>${elastic ? "动量和机械能同时守恒" : "动量守恒，部分机械能转化"}</small></article>
+      </div>
+      <p class="model-assumption">假设：碰撞时间很短且系统所受外力冲量可忽略；只处理完全弹性和完全非弹性两个边界模型。</p>
+    </section>`;
+  }
+
+  function waveRelationModel() {
+    const params = lab.modelParams.wave;
+    const result = visuals.waveModel({ ...params, time: params.t });
+    return `<section class="lab-card model-stage visual-model-stage" data-offline-model="wave">
+      <div class="model-stage-head"><div><span>WAVE RELATION</span><h3>波速—频率—波长联动模型</h3></div><div class="model-live-values"><span>v=${formatNumber(result.speed)} m/s</span><span>f=${formatNumber(result.frequency)} Hz</span><span>λ=${formatNumber(result.wavelength)} m</span></div></div>
+      ${result.svg}
+      <div class="model-equation-grid">
+        <article><span>基本关系</span><strong>v=fλ</strong><small>${formatNumber(result.speed)}=${formatNumber(result.frequency)}×${formatNumber(result.wavelength)}</small></article>
+        <article><span>周期</span><strong>T=1/f</strong><small>${formatNumber(result.period)} s</small></article>
+        <article><span>介质约束</span><strong>同一介质中波速由介质决定</strong><small>改变波源频率时，波长相应变化</small></article>
+        <article><span>相位</span><strong>y=A sin 2π(x/λ−ft)</strong><small>当前 t=${formatNumber(result.time)} s</small></article>
+      </div>
+      <p class="model-assumption">假设：一维简谐行波、介质均匀且无色散；模型显示质点振动状态，不表示介质质点随波迁移。</p>
+    </section>`;
   }
 
   function renderTransfer() {
@@ -1005,7 +1505,7 @@
 
   function renderReview() {
     const questions = getQuestions();
-    const summary = engine.summarizeLearning(lab.state, questions);
+    const { summary, coverage } = getDerivedLearning(questions, { coverage: true });
     const radar = engine.modelingRadar(lab.state);
     return `
       <section class="review-dashboard">
@@ -1018,24 +1518,35 @@
               : '<button data-lab-tab="transfer" type="button">继续迁移练习</button>'}
           </div>` : ""}
         <div class="lab-metric-grid">
-          ${metricCard("作答正确率", `${summary.accuracy}%`, "按闭环训练记录")}
-          ${metricCard("独立完成率", `${summary.independenceRate}%`, "区分独立完成与看答案")}
+          ${metricCard("作答正确率", summary.accuracy == null ? "暂无可评分证据" : `${summary.accuracy}%`, `已评分 ${summary.scoredCount || 0} 次 · 待复核 ${summary.pendingReviewCount || 0} 次`)}
+          ${metricCard("独立完成率", summary.independenceRate == null ? "暂无可评分证据" : `${summary.independenceRate}%`, "区分独立完成与看答案")}
           ${metricCard("平均提示层级", `${summary.averageHint}`, "0 表示未使用提示")}
           ${metricCard("待复习题", `${summary.dueCount}`, "到期或逾期")}
           ${metricCard("累计学习", `${summary.learningMinutes} min`, `${summary.completed} 次闭环训练`)}
         </div>
 
         <section class="lab-card mastery-evidence-summary">
-          <div class="lab-card-head"><div><span>MASTERY EVIDENCE</span><h3>证据化掌握状态</h3></div><strong>${summary.mastery.masteryRate}%</strong></div>
+           <div class="lab-card-head"><div><span>KNOWLEDGE POINT EVIDENCE</span><h3>知识点证据覆盖</h3></div><strong>${coverage.coverageLabel}</strong></div>
           <div class="mastery-state-grid">
-            ${Object.entries(summary.mastery.counts).map(([label, count]) => `<article><strong>${count}</strong><span>${escapeHtml(label)}</span></article>`).join("")}
+            ${Object.entries(summary.mastery.counts).map(([label, count]) => {
+              const displayCode = {
+                "未开始": "not-started",
+                "学习中": "learning",
+                "熟练": "proficient",
+                "已掌握": "mastered",
+                "待复习": "due",
+                "薄弱": "weak"
+              }[label] || label;
+              const displayLabel = engine.masteryDisplayLabel?.(displayCode) || label;
+              return `<article><strong>${count}</strong><span>${escapeHtml(displayLabel)}</span></article>`;
+            }).join("")}
           </div>
-          <p>试运行规则：至少一次低提示正确为“熟练”；不同日期低提示独立正确至少两次并完成一道迁移记录，才进入“已掌握”。迁移质量、阈值和复习间隔仍需结合学生测试校准。</p>
+           <p>当前已有证据 ${coverage.coverageLabel} 个知识点：基本掌握 ${coverage.basic}，可迁移 ${coverage.transferable}，需巩固 ${coverage.reinforce}，证据不足 ${coverage.insufficient}。单题记录仍用于复习调度，不代表总体能力百分数。</p>
         </section>
 
         <div class="report-grid">
           <section class="lab-card">
-            <div class="lab-card-head"><div><span>MODELING ABILITY</span><h3>建模能力雷达</h3></div><strong>${summary.completed ? "基于真实步骤" : "待积累数据"}</strong></div>
+             <div class="lab-card-head"><div><span>MODELING RECORD</span><h3>建模记录完整度（规则值）</h3></div><strong>${summary.completed ? "基于已填写步骤" : "待积累数据"}</strong></div>
             ${radarChart(radar)}
             <div class="radar-legend">${radar.map((axis) => `<span><i style="--value:${axis.value}%"></i>${escapeHtml(axis.label)} ${axis.value}</span>`).join("")}</div>
           </section>
@@ -1054,21 +1565,15 @@
                 <article>
                   <div><span>${escapeHtml(item.question.topic)} · ${formatDate(item.dueAt)}</span><h4>${escapeHtml(item.question.title)}</h4></div>
                   <button data-start-question="${escapeHtml(item.question.id)}" type="button">现在复习</button>
-                  <div class="review-rating">
-                    <button data-review-rating="0" data-question-id="${escapeHtml(item.question.id)}" type="button">忘记</button>
-                    <button data-review-rating="1" data-question-id="${escapeHtml(item.question.id)}" type="button">困难</button>
-                    <button data-review-rating="2" data-question-id="${escapeHtml(item.question.id)}" type="button">顺利</button>
-                    <button data-review-rating="3" data-question-id="${escapeHtml(item.question.id)}" type="button">轻松</button>
-                  </div>
                 </article>`).join("") : emptyState("当前没有到期复习", "完成一道分步训练后，系统会依据正确性和提示依赖安排下次复习。")}
             </div>
           </section>
           <section class="lab-card">
             <div class="lab-card-head"><div><span>TOPIC EVIDENCE</span><h3>知识点表现</h3></div></div>
             <div class="topic-report-table">
-              <div class="table-head"><span>知识点</span><span>次数</span><span>正确率</span><span>提示</span><span>建模</span></div>
+              <div class="table-head"><span>知识点</span><span>次数</span><span>正确率</span><span>提示</span><span>记录完整度（规则值）</span></div>
               ${summary.topics.length ? summary.topics.slice(0, 12).map((topic) => `
-                <div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts}</span><span>${topic.accuracy}%</span><span>${topic.averageHint}</span><span>${topic.modeling}</span></div>`).join("") : emptyState("尚无知识点证据", "完成训练后，这里会按题目知识点汇总，而不是依据聊天印象推断。")}
+                <div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts}</span><span>${topic.accuracy == null ? "暂无可评分证据" : `${topic.accuracy}%`}</span><span>${topic.averageHint}</span><span>${topic.modeling == null ? "无记录/不适用" : topic.modeling}</span></div>`).join("") : emptyState("尚无知识点证据", "完成训练后，这里会按题目知识点汇总，而不是依据聊天印象推断。")}
             </div>
           </section>
         </div>
@@ -1138,6 +1643,18 @@
           <div class="graph-result" id="graphResult"></div>
         </section>
 
+        <section class="lab-card ray-tool">
+          <div class="lab-card-head"><div><span>RAY DIAGRAM</span><h3>基础反射与折射光路</h3></div><strong>实时计算</strong></div>
+          <div class="ray-controls">
+            <label><span>过程</span><select data-ray-param="mode"><option value="reflection"${lab.rayParams.mode === "reflection" ? " selected" : ""}>反射</option><option value="refraction"${lab.rayParams.mode === "refraction" ? " selected" : ""}>折射 / 全反射</option></select></label>
+            ${rayRangeControl("incidenceAngle", "入射角 i", lab.rayParams.incidenceAngle, 0, 80, 1, "°")}
+            ${rayRangeControl("n1", "介质 1 折射率 n₁", lab.rayParams.n1, 0.5, 2.5, 0.05, "")}
+            ${rayRangeControl("n2", "介质 2 折射率 n₂", lab.rayParams.n2, 0.5, 2.5, 0.05, "")}
+          </div>
+          <div class="ray-diagram-output" id="rayDiagramOutput"></div>
+          <p class="tool-help">角度相对法线测量；折射按 n₁sin i=n₂sin r 计算，超出可折射范围时明确显示全反射。</p>
+        </section>
+
         <section class="lab-card constants-tool">
           <div class="lab-card-head"><div><span>CONSTANTS</span><h3>常用物理常数</h3></div></div>
           <div class="constant-list">${engine.constants.map(([name, symbol, value, note]) => `<article><span>${escapeHtml(name)}</span><strong>${escapeHtml(symbol)} = ${escapeHtml(value)}</strong><small>${escapeHtml(note)}</small></article>`).join("")}</div>
@@ -1158,66 +1675,1029 @@
       </section>`;
   }
 
-  function renderTeacher() {
-    const questions = getQuestions();
-    const topics = [...new Set(questions.map((question) => question.topic).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"));
-    const eligible = questions.filter((question) => engine.isPublishedQuestion(question));
-    const reviewQueue = questions.filter((question) => {
-      return /用户自行上传|未填写|仅保存来源链接/.test(question.sourceLicense || "")
-        || question.fullTextIncluded === false
-        || question.contentAudit?.requiresTeacherReview
-        || question.contentReviewStatus === "待教师审核";
-    }).slice(0, 18);
-    const importedTopics = aggregateImportedReports();
-    const coverage = lab.app?.getContentCoverage?.()
-      || window.PhysicsStudioContentCatalog?.getCoverage?.(questions)
-      || { target: 1900, completeQuestions: 0, indexed: 0, teacherVerifiedFullText: 0, pendingReview: 0, remaining: 1900, completionRate: 0, definition: "" };
-    const studentProfiles = lab.state.profiles.filter((item) => item.role === "student");
+  function rayRangeControl(key, label, value, min, max, step, unit) {
+    return `<label><span>${escapeHtml(label)} <strong data-ray-value="${key}">${formatNumber(value)}${unit}</strong></span><input data-ray-param="${key}" type="range" min="${min}" max="${max}" step="${step}" value="${value}"></label>`;
+  }
+
+  function classKnowledgeMatrix(profiles, questions) {
+    const topics = new Map();
+    profiles.forEach((profile) => {
+      questions.filter((question) => !question.grade || question.grade === profile.grade).forEach((question) => {
+        const key = engine.topicKeyForQuestion(question);
+        if (key && !topics.has(key)) topics.set(key, question.topic || key);
+      });
+    });
+    const columns = [...topics.entries()].sort((a, b) => a[1].localeCompare(b[1], "zh-CN"));
+    const rows = profiles.map((profile) => {
+      const gradeQuestions = questions.filter((question) => !question.grade || question.grade === profile.grade);
+      const summary = engine.knowledgePointEvidenceSummary(lab.state, gradeQuestions, profile.id);
+      const byKey = new Map(summary.byTopic.map((item) => [item.key, item]));
+      return {
+        profile,
+        cells: columns.map(([key, label]) => {
+          const item = byKey.get(key);
+          return {
+            key,
+            label,
+            code: item?.sampleSize ? item.code : "not-tested",
+            status: item?.sampleSize ? item.status : "未测",
+            sampleSize: item?.sampleSize || 0
+          };
+        })
+      };
+    });
+    return { columns, rows };
+  }
+
+  function renderClassKnowledgeMatrix(profiles, questions) {
+    const matrix = classKnowledgeMatrix(profiles, questions);
+    const selected = matrix.columns.find(([key]) => key === lab.matrixTopicKey);
+    const selectedStudents = selected
+      ? matrix.rows.filter((row) => {
+        const cell = row.cells.find((item) => item.key === selected[0]);
+        return cell && ["not-tested", "insufficient", "reinforce"].includes(cell.code);
+      })
+      : [];
+    return `<section class="lab-card class-matrix-card">
+      <div class="lab-card-head"><div><span>CLASS KNOWLEDGE MATRIX</span><h3>班级知识点矩阵</h3></div><strong>${profiles.length}×${matrix.columns.length}</strong></div>
+      <p>按学生与知识点显示未测、证据不足、需巩固、基本掌握、可迁移；默认不做排名。点击知识点查看补测对象。</p>
+      <div class="class-matrix-scroll"><table><thead><tr><th>学生</th>${matrix.columns.map(([key, label]) => `<th><button data-lab-action="select-matrix-topic" data-topic-key="${escapeHtml(key)}" type="button">${escapeHtml(label)}</button></th>`).join("")}</tr></thead><tbody>${matrix.rows.map((row) => `<tr><th>${escapeHtml(row.profile.name)}</th>${row.cells.map((cell) => `<td class="matrix-${escapeHtml(cell.code)}">${escapeHtml(cell.status)}</td>`).join("")}</tr>`).join("") || "<tr><td colspan=2>尚无学生档案</td></tr>"}</tbody></table></div>
+      ${selected ? `<section class="matrix-selection"><h4>“${escapeHtml(selected[1])}”需要补测或专项练习的学生</h4><p>${selectedStudents.length ? selectedStudents.map((row) => escapeHtml(row.profile.name)).join("、") : "当前没有需要补测的学生。"}</p>${selectedStudents.length ? `<button class="lab-primary-button" data-lab-action="create-temp-group" data-topic-key="${escapeHtml(selected[0])}" type="button">教师确认建立临时学习小组</button>` : ""}</section>` : ""}
+    </section>`;
+  }
+
+  function createTemporaryLearningGroup(topicKey) {
+    const matrix = classKnowledgeMatrix(lab.state.profiles.filter((item) => item.role === "student"), getQuestions());
+    const rows = matrix.rows.filter((row) => row.cells.some((cell) => cell.key === topicKey && ["not-tested", "insufficient", "reinforce"].includes(cell.code)));
+    if (!rows.length) {
+      showLabMessage("当前知识点没有需要补测的学生。", true);
+      return;
+    }
+    if (!Array.isArray(lab.state.temporaryLearningGroups)) lab.state.temporaryLearningGroups = [];
+    lab.state.temporaryLearningGroups.push({
+      id: engine.createId("temporary-group"),
+      topicKey,
+      studentIds: rows.map((row) => row.profile.id),
+      type: "temporary-teaching-task",
+      teacherConfirmedAt: new Date().toISOString(),
+      status: "active"
+    });
+    saveLearningState();
+    showLabMessage(`已建立临时教学任务分组，共 ${rows.length} 名学生；这不是固定能力标签。`);
+    renderPanel();
+  }
+
+  function parseRosterTable(text) {
+    const source = String(text || "").replace(/^\uFEFF/, "").trim();
+    if (!source) return { headers: [], rows: [], delimiter: "," };
+    const delimiter = source.split(/\r?\n/)[0].includes("\t") ? "\t" : ",";
+    const rows = [];
+    let current = [];
+    let cell = "";
+    let quoted = false;
+    for (let index = 0; index < source.length; index += 1) {
+      const character = source[index];
+      const next = source[index + 1];
+      if (character === '"' && quoted && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (character === '"') {
+        quoted = !quoted;
+      } else if (character === delimiter && !quoted) {
+        current.push(cell.trim());
+        cell = "";
+      } else if ((character === "\n" || character === "\r") && !quoted) {
+        if (character === "\r" && next === "\n") index += 1;
+        current.push(cell.trim());
+        if (current.some(Boolean)) rows.push(current);
+        current = [];
+        cell = "";
+      } else {
+        cell += character;
+      }
+    }
+    current.push(cell.trim());
+    if (current.some(Boolean)) rows.push(current);
+    const headers = rows.shift() || [];
+    return { headers, rows, delimiter };
+  }
+
+  function rosterFieldForHeader(header) {
+    const value = String(header || "").trim().toLocaleLowerCase("zh-CN");
+    if (/姓名|学生|name/.test(value)) return "name";
+    if (/年级|grade/.test(value)) return "grade";
+    if (/目标|goal/.test(value)) return "goal";
+    if (/备注|说明|note|analysis/.test(value)) return "analysisNote";
+    if (/portableprofileid|portable.?id|跨设备.*id/.test(value)) return "portableProfileId";
+    if (/studentnumber|student.?no|学号/.test(value)) return "studentNumber";
+    if (/sourceprofileid|来源.*id|档案.*id|学生id|编号/.test(value)) return "sourceProfileId";
+    return "";
+  }
+
+  function createRosterMapping(headers) {
+    const fields = ["name", "grade", "goal", "analysisNote", "sourceProfileId", "studentNumber", "portableProfileId"];
+    return Object.fromEntries(fields.map((field) => [
+      field,
+      headers.findIndex((header) => rosterFieldForHeader(header) === field)
+    ]));
+  }
+
+  function renderStudentImportPreview() {
+    const draft = lab.studentImportDraft;
+    if (!draft) return "";
+    const options = draft.headers.map((header, index) => `<option value="${index}">${escapeHtml(header || `列${index + 1}`)}</option>`).join("");
+    const mapping = draft.mapping || {};
+    const rows = draft.rows.map((row, index) => {
+      const name = mapping.name >= 0 ? row[mapping.name] || "" : "";
+      const grade = mapping.grade >= 0 ? row[mapping.grade] || "" : "";
+      const duplicate = draft.duplicates.includes(index);
+      const error = draft.errors.find((item) => item.index === index);
+      const candidates = lab.state.profiles.filter((profile) => profile.name.trim().toLocaleLowerCase("zh-CN") === String(name).trim().toLocaleLowerCase("zh-CN"));
+      const identityStatus = duplicate ? "duplicate-name-warning" : error ? "invalid" : "ready";
+      const choice = duplicate ? `<select data-roster-duplicate-action="${index}"><option value="">请选择身份处理</option><option value="new">作为新学生导入</option>${candidates.map((profile) => `<option value="merge:${escapeHtml(profile.id)}">与现有档案合并：${escapeHtml(profile.name)}（${escapeHtml(profile.portableProfileId || profile.id)}）</option>`).join("")}</select>` : "—";
+      return `<tr class="${error ? "invalid" : duplicate ? "duplicate" : ""}" data-identity-status="${identityStatus}"><td>${index + 1}</td><td>${escapeHtml(name)}</td><td>${escapeHtml(grade)}</td><td>${escapeHtml(error?.message || (duplicate ? "同名仅是警告，必须明确选择身份处理" : "待确认"))}</td><td>${choice}</td></tr>`;
+    }).join("");
+    return `<section class="student-import-preview" id="studentImportPreview">
+      <h4>导入预览（尚未写入档案）</h4>
+      <div class="student-import-mapping">${["name", "grade", "goal", "analysisNote", "sourceProfileId", "studentNumber", "portableProfileId"].map((field) => `<label><span>${field === "name" ? "姓名" : field === "grade" ? "年级" : field === "goal" ? "目标" : field === "analysisNote" ? "备注" : field === "sourceProfileId" ? "来源档案ID" : field === "studentNumber" ? "学号" : "跨设备ID"}</span><select data-roster-map="${field}"><option value="-1"${mapping[field] < 0 ? " selected" : ""}>未映射</option>${draft.headers.map((header, index) => `<option value="${index}"${mapping[field] === index ? " selected" : ""}>${escapeHtml(header || `列${index + 1}`)}</option>`).join("")}</select></label>`).join("")}</div>
+       <table><thead><tr><th>#</th><th>姓名</th><th>年级</th><th>检查</th><th>身份处理</th></tr></thead><tbody>${rows || "<tr><td colspan=5>没有可预览的行</td></tr>"}</tbody></table>
+       <p>同名不能证明是同一学生；每个警告行必须选择“作为新学生”或明确的现有档案，错误行不会写入。</p>
+      <button class="lab-primary-button" data-lab-action="confirm-student-import" type="button"${draft.errors.length ? " disabled" : ""}>确认导入并写入</button>
+    </section>`;
+  }
+
+  function previewStudentImport(text) {
+    const parsed = parseRosterTable(text);
+    if (!parsed.headers.length) {
+      showLabMessage("没有识别到表头或数据行。", true);
+      return;
+    }
+    const mapping = createRosterMapping(parsed.headers);
+    const rows = parsed.rows.slice(0, 500);
+    const errors = [];
+    const duplicates = [];
+    const nameCounts = new Map();
+    rows.forEach((row) => {
+      const key = mapping.name >= 0 ? String(row[mapping.name] || "").trim().toLocaleLowerCase("zh-CN") : "";
+      if (key) nameCounts.set(key, (nameCounts.get(key) || 0) + 1);
+    });
+    rows.forEach((row, index) => {
+      const name = mapping.name >= 0 ? String(row[mapping.name] || "").trim() : "";
+      const grade = mapping.grade >= 0 ? String(row[mapping.grade] || "").trim() : "";
+      if (!name) errors.push({ index, message: "姓名为空" });
+      if (grade && !["八年级", "九年级", "高一", "高二", "高三"].includes(grade)) errors.push({ index, message: "年级不在支持范围" });
+      const key = name.toLocaleLowerCase("zh-CN");
+      if (key && ((nameCounts.get(key) || 0) > 1
+        || lab.state.profiles.some((profile) => profile.name.trim().toLocaleLowerCase("zh-CN") === key))) duplicates.push(index);
+    });
+    const identityWarnings = duplicates.map((index) => ({ index, status: "duplicate-name-warning" }));
+    lab.studentImportDraft = {
+      draftToken: engine.createId("roster-draft"),
+      headers: parsed.headers,
+      rows,
+      mapping,
+      errors,
+      duplicates,
+      identityWarnings,
+      text
+    };
+    renderPanel();
+  }
+
+  function confirmStudentImport() {
+    const draft = lab.studentImportDraft;
+    if (!draft) return;
+    const mapping = Object.fromEntries(Object.entries(draft.mapping).map(([field, index]) => {
+      const selected = Number(document.querySelector(`[data-roster-map="${field}"]`)?.value);
+      return [field, Number.isInteger(selected) ? selected : index];
+    }));
+    if (mapping.name < 0) {
+      showLabMessage("请先把姓名字段映射到表格列。", true);
+      return;
+    }
+    const normalizedRows = draft.rows.map((row, index) => ({
+      index,
+      name: String(row[mapping.name] || "").trim(),
+      grade: String(row[mapping.grade] || "").trim(),
+      goal: String(row[mapping.goal] || "").trim(),
+      analysisNote: String(row[mapping.analysisNote] || "").trim(),
+      sourceProfileId: String(row[mapping.sourceProfileId] || "").trim(),
+      studentNumber: String(row[mapping.studentNumber] || "").trim(),
+      portableProfileId: String(row[mapping.portableProfileId] || "").trim()
+    }));
+    const conflicts = [];
+    const planned = [];
+    const seenStableIds = new Set();
+    normalizedRows.forEach((row) => {
+      if (!row.name || (row.grade && !["八年级", "九年级", "高一", "高二", "高三"].includes(row.grade))) return;
+      const stableValues = [...new Set([row.sourceProfileId, row.studentNumber, row.portableProfileId].filter(Boolean))];
+      stableValues.forEach((value) => {
+        if (seenStableIds.has(value)) conflicts.push(`稳定学生ID在本次文件中重复：${value}`);
+        seenStableIds.add(value);
+      });
+      const matchedProfiles = stableValues.map((value) => engine.resolveImportedStudentId(lab.state, value))
+        .filter((result) => result.status === "matched")
+        .map((result) => result.profile);
+      const matchedProfileIds = [...new Set(matchedProfiles.map((profile) => profile.id))];
+      if (matchedProfileIds.length > 1) conflicts.push(`同一行的稳定ID指向不同学生：${row.name}`);
+      const byStable = matchedProfileIds.length === 1 ? matchedProfiles[0] : null;
+      const duplicateAction = draft.duplicates.includes(row.index)
+        ? String(document.querySelector(`[data-roster-duplicate-action="${row.index}"]`)?.value || "")
+        : "new";
+      if (draft.duplicates.includes(row.index) && !duplicateAction && !byStable) conflicts.push(`同名学生未选择身份处理：${row.name}`);
+      const explicitMergeId = duplicateAction.startsWith("merge:") ? duplicateAction.slice(6) : "";
+      const explicitMerge = explicitMergeId ? lab.state.profiles.find((profile) => profile.id === explicitMergeId) : null;
+      if (explicitMergeId && !explicitMerge) conflicts.push(`合并目标不存在：${row.name}`);
+      if (byStable && explicitMerge && byStable.id !== explicitMerge.id) conflicts.push(`稳定ID与选择的合并档案冲突：${row.name}`);
+      if (explicitMerge && row.portableProfileId && explicitMerge.portableProfileId !== row.portableProfileId) {
+        conflicts.push(`跨设备ID与选择的合并档案冲突：${row.name}`);
+      }
+      planned.push({ row, existing: byStable || explicitMerge || null, createNew: !byStable && duplicateAction === "new" });
+    });
+    if (conflicts.length) {
+      showLabMessage(`导入存在冲突，未写入：${conflicts.join("；")}`, true);
+      return;
+    }
+    planned.forEach(({ row, existing, createNew }) => {
+      const changes = {
+        name: row.name,
+        grade: row.grade || existing?.grade || "高一",
+        goal: row.goal || existing?.goal,
+        analysisNote: row.analysisNote || existing?.analysisNote,
+        sourceProfileId: row.sourceProfileId || existing?.sourceProfileId || "",
+        studentNumber: row.studentNumber || existing?.studentNumber || "",
+        portableProfileId: row.portableProfileId || existing?.portableProfileId || engine.createPortableProfileId(),
+        dataSource: "roster-import"
+      };
+      if (existing && !createNew) engine.updateProfile(lab.state, existing.id, changes);
+      else engine.addProfile(lab.state, changes);
+    });
+    lab.studentImportDraft = null;
+    saveLearningState();
+    showLabMessage(`已确认导入 ${planned.length} 名学生；每个身份均按稳定ID或教师明确选择处理。`);
+    renderPanel();
+  }
+
+  function examFieldForHeader(header) {
+    const value = String(header || "").trim().toLocaleLowerCase("zh-CN");
+    if (/studentid|学生id|学生编号|学号/.test(value)) return "studentId";
+    if (/examid|试卷id|试卷编号/.test(value)) return "examId";
+    if (/questionno|题号|小题号/.test(value)) return "questionNo";
+    if (/questionid|题目id|题目编号/.test(value)) return "questionId";
+    if (/maxscore|max|小题满分/.test(value)) return "maxScore";
+    if (/topickey|知识点编号|考点编号/.test(value)) return "topicKey";
+    if (/questiontype|题型/.test(value)) return "questionType";
+    if (/记录id|记录编号|examid|recordid|id/.test(value)) return "sourceRecordId";
+    if (/试卷名称|试卷名|名称|title|exam/.test(value)) return "title";
+    if (/考试日期|日期|date/.test(value)) return "examDate";
+    if (/得分|成绩|score/.test(value)) return "score";
+    if (/总分|满分|maxscore|max/.test(value)) return "totalScore";
+    if (/薄弱|知识点|考点|topic|weak/.test(value)) return "weakTopics";
+    if (/备注|说明|note/.test(value)) return "note";
+    return "";
+  }
+
+  function createExamMapping(headers) {
+    const fields = ["studentId", "examId", "questionNo", "questionId", "sourceRecordId", "title", "examDate", "score", "totalScore", "maxScore", "topicKey", "questionType", "weakTopics", "note"];
+    return Object.fromEntries(fields.map((field) => [
+      field,
+      headers.findIndex((header) => examFieldForHeader(header) === field)
+    ]));
+  }
+
+  function examImportValue(draft, row, field) {
+    const index = Number(draft.mapping?.[field]);
+    return index >= 0 ? String(row[index] || "").trim() : "";
+  }
+
+  function examImportDuplicateKey(record) {
+    return [
+      String(record.title || "").trim().toLocaleLowerCase("zh-CN"),
+      String(record.examDate || "").trim(),
+      String(record.score ?? "").trim(),
+      String(record.totalScore ?? "").trim(),
+      String(record.weakTopics || "").trim().toLocaleLowerCase("zh-CN")
+    ].join("|");
+  }
+
+  function buildExamImportDraft(headers, rows, text = "", mappingOverride = null) {
+    const draft = {
+      headers,
+      rows: rows.slice(0, 500),
+      mapping: mappingOverride || createExamMapping(headers),
+      errors: [],
+      duplicates: [],
+      text
+    };
+    const existing = new Set(lab.state.examRecords
+      .filter((record) => record.profileId === lab.state.activeProfileId)
+      .map(examImportDuplicateKey));
+    const seen = new Map();
+    draft.rows.forEach((row, index) => {
+      const title = examImportValue(draft, row, "title");
+      const examDate = examImportValue(draft, row, "examDate");
+      const scoreRaw = examImportValue(draft, row, "score");
+      const totalRaw = examImportValue(draft, row, "totalScore");
+      const maxRaw = examImportValue(draft, row, "maxScore");
+      const score = Number(scoreRaw);
+      const totalScore = Number(totalRaw || maxRaw);
+      const errors = [];
+      if (!scoreRaw || !Number.isFinite(score)) errors.push("得分无效");
+      if (Number.isFinite(score) && score < 0) errors.push("得分不能小于0");
+      if ((!totalRaw && !maxRaw) || !Number.isFinite(totalScore) || totalScore <= 0) errors.push("总分或小题满分必须大于0");
+      if (Number.isFinite(score) && Number.isFinite(totalScore) && score >= 0 && score > totalScore) errors.push("得分不能超过总分");
+      if (!examDate || Number.isNaN(new Date(examDate).getTime())) errors.push("考试日期无效");
+      if (errors.length) draft.errors.push({ index, message: errors.join("；") });
+      const key = examImportDuplicateKey({
+        title,
+        examDate,
+        score: scoreRaw,
+        totalScore: totalRaw,
+        weakTopics: examImportValue(draft, row, "weakTopics")
+      });
+      if (key !== "||||" && (seen.has(key) || existing.has(key))) draft.duplicates.push(index);
+      if (key !== "||||") seen.set(key, index);
+    });
+    return draft;
+  }
+
+  function renderExamImportPreview() {
+    const draft = lab.examImportDraft;
+    if (!draft) return "";
+    const fields = [
+      ["studentId", "学生ID"],
+      ["examId", "试卷ID"],
+      ["questionNo", "题号"],
+      ["questionId", "题目ID"],
+      ["sourceRecordId", "记录ID"],
+      ["title", "试卷名称"],
+      ["examDate", "考试日期"],
+      ["score", "得分"],
+      ["totalScore", "总分"],
+      ["maxScore", "小题满分"],
+      ["topicKey", "知识点编号"],
+      ["questionType", "题型"],
+      ["weakTopics", "薄弱知识点"],
+      ["note", "备注"]
+    ];
+    const options = (selected) => `<option value="-1"${selected < 0 ? " selected" : ""}>未映射</option>${draft.headers.map((header, index) => `<option value="${index}"${selected === index ? " selected" : ""}>${escapeHtml(header || `列${index + 1}`)}</option>`).join("")}`;
+    const groups = buildExamImportPreviewGroups(draft);
+    const rows = groups.map((group, index) => `<tr class="${group.statusCode === "ready" ? "" : "invalid"}">
+      <td>${index + 1}</td><td>${escapeHtml(group.rawStudentIds.join("、") || "当前档案兼容模式")}</td>
+      <td>${escapeHtml(group.matchedStudentName || "未匹配")}</td><td>${escapeHtml(group.profileId || "—")}</td>
+      <td>${escapeHtml(group.examId)}</td><td>${group.rowCount}</td><td>${group.score}/${group.totalScore}</td>
+      <td>${escapeHtml(group.status)}</td></tr>`).join("");
+    return `<section class="exam-import-preview" id="examImportPreview">
+      <h4>试卷导入预览（尚未写入档案）</h4>
+      <div class="student-import-mapping">${fields.map(([field, label]) => `<label><span>${label}</span><select data-exam-map="${field}">${options(Number(draft.mapping?.[field] ?? -1))}</select></label>`).join("")}</div>
+      <table><thead><tr><th>#</th><th>原学生ID</th><th>匹配学生</th><th>内部 profileId</th><th>试卷ID</th><th>行数</th><th>总得分/总分</th><th>状态</th></tr></thead><tbody>${rows || "<tr><td colspan=8>没有可预览的分组</td></tr>"}</tbody></table>
+      <p>分组键为“内部 profileId + 试卷ID”。未匹配学生或同组题号冲突会阻止写入，绝不回退到当前学生。</p>
+      <button class="lab-primary-button" data-lab-action="confirm-exam-import" type="button"${draft.errors.length || groups.some((group) => group.statusCode !== "ready") ? " disabled" : ""}>确认导入试卷记录</button>
+    </section>`;
+  }
+
+  function buildExamImportPreviewGroups(draft) {
+    const questionLevel = Number(draft.mapping?.questionNo) >= 0
+      || Number(draft.mapping?.questionId) >= 0
+      || Number(draft.mapping?.examId) >= 0;
+    const singleStudentMode = Number(draft.mapping?.studentId) < 0;
+    const groups = new Map();
+    draft.rows.forEach((row, index) => {
+      const rawStudentId = examImportValue(draft, row, "studentId");
+      const resolved = singleStudentMode
+        ? (() => {
+          const profile = lab.state.profiles.find((item) => item.id === lab.state.activeProfileId);
+          return profile ? { status: "matched", profileId: profile.id, profile } : { status: "unresolved" };
+        })()
+        : engine.resolveImportedStudentId(lab.state, rawStudentId);
+      const title = examImportValue(draft, row, "title") || "未命名试卷";
+      const examId = examImportValue(draft, row, "examId")
+        || examImportValue(draft, row, "sourceRecordId")
+        || `${title}|${examImportValue(draft, row, "examDate")}`;
+      const key = resolved.status === "matched"
+        ? `${resolved.profileId}|${examId}`
+        : `unresolved|${index}|${examId}`;
+      const current = groups.get(key) || {
+        rawStudentIds: [], matchedStudentName: resolved.profile?.name || "", profileId: resolved.profileId || "",
+        examId, rowCount: 0, score: 0, totalScore: 0, questionNos: new Set(), conflicts: [], errors: []
+      };
+      if (rawStudentId) current.rawStudentIds.push(rawStudentId);
+      current.rowCount += 1;
+      const score = Number(examImportValue(draft, row, "score"));
+      const maxScore = Number(examImportValue(draft, row, "maxScore") || examImportValue(draft, row, "totalScore"));
+      if (Number.isFinite(score)) current.score += score;
+      if (Number.isFinite(maxScore)) current.totalScore += maxScore;
+      const questionNo = examImportValue(draft, row, "questionNo");
+      if (questionLevel && questionNo && current.questionNos.has(questionNo)) current.conflicts.push(questionNo);
+      if (questionNo) current.questionNos.add(questionNo);
+      const rowError = draft.errors.find((item) => item.index === index);
+      if (rowError) current.errors.push(rowError.message);
+      if (resolved.status !== "matched") current.errors.push(resolved.status === "ambiguous" ? "学生ID匹配到多个档案" : "学生ID未匹配");
+      groups.set(key, current);
+    });
+    return [...groups.values()].map((group) => {
+      const reasons = [...new Set([...group.errors, ...(group.conflicts.length ? [`题号冲突：${group.conflicts.join("、")}`] : [])])];
+      return {
+        ...group,
+        rawStudentIds: [...new Set(group.rawStudentIds)],
+        statusCode: reasons.length ? "blocked" : "ready",
+        status: reasons.length ? `阻止写入：${reasons.join("；")}` : "可写入"
+      };
+    });
+  }
+
+  function previewExamImport(text) {
+    const parsed = parseRosterTable(text);
+    if (!parsed.headers.length) {
+      showLabMessage("没有识别到试卷记录表头或数据行。", true);
+      return;
+    }
+    lab.examImportDraft = buildExamImportDraft(parsed.headers, parsed.rows, text);
+    renderPanel();
+  }
+
+  function previewExamImportRecords(records) {
+    const fields = ["studentId", "examId", "questionNo", "questionId", "sourceRecordId", "title", "examDate", "score", "totalScore", "maxScore", "topicKey", "questionType", "weakTopics", "note"];
+    const headers = ["学生ID", "试卷ID", "题号", "题目ID", "记录ID", "试卷名称", "考试日期", "得分", "总分", "小题满分", "知识点编号", "题型", "薄弱知识点", "备注"];
+    const rows = records.slice(0, 500).map((record) => fields.map((field) => {
+      if (field === "weakTopics") return Array.isArray(record[field]) ? record[field].join("、") : String(record[field] || "");
+      return String(record[field] ?? "");
+    }));
+    lab.examImportDraft = buildExamImportDraft(
+      headers,
+      rows,
+      "json",
+      Object.fromEntries(fields.map((field, index) => [field, index]))
+    );
+    renderPanel();
+  }
+
+  function confirmExamImport() {
+    const draft = lab.examImportDraft;
+    if (!draft) return;
+    const mapping = Object.fromEntries(Object.keys(createExamMapping(draft.headers)).map((field) => {
+      const selected = Number(document.querySelector(`[data-exam-map="${field}"]`)?.value);
+      return [field, Number.isInteger(selected) ? selected : -1];
+    }));
+    if (mapping.score < 0 || mapping.examDate < 0 || (mapping.totalScore < 0 && mapping.maxScore < 0)) {
+      showLabMessage("请先映射考试日期、得分，以及总分或小题满分字段。", true);
+      return;
+    }
+    const read = (row, field) => examImportValue({ mapping }, row, field);
+    const questionMap = new Map(getQuestions().map((question) => [question.id, question]));
+    const questionLevel = mapping.questionNo >= 0 || mapping.questionId >= 0 || mapping.examId >= 0;
+    const singleStudentMode = mapping.studentId < 0;
+    const unresolved = [];
+    const resolveRowProfile = (row, index) => {
+      const rawStudentId = read(row, "studentId");
+      if (!rawStudentId && singleStudentMode) {
+        const profile = lab.state.profiles.find((item) => item.id === lab.state.activeProfileId);
+        return profile ? { status: "matched", profileId: profile.id, profile, rawStudentId: "(当前档案兼容模式)" } : { status: "unresolved", profileId: "" };
+      }
+      const resolved = engine.resolveImportedStudentId?.(lab.state, rawStudentId)
+        || { status: "unresolved", profileId: "" };
+      if (resolved.status !== "matched") unresolved.push({ index, rawStudentId, status: resolved.status });
+      return resolved;
+    };
+    const rowProfiles = draft.rows.map(resolveRowProfile);
+    if (unresolved.length) {
+      const detail = unresolved.slice(0, 5).map((item) => `第${item.index + 1}行学生ID“${item.rawStudentId || "空"}”${item.status === "ambiguous" ? "对应多个档案" : "无法匹配"}`).join("；");
+      showLabMessage(`导入已阻止：${detail}。请补充稳定学生ID/学号/portableProfileId，不能按姓名静默归档。`, true);
+      return;
+    }
+    let records;
+    if (questionLevel) {
+      const grouped = new Map();
+      draft.rows.forEach((row, index) => {
+        const resolved = rowProfiles[index];
+        if (!resolved?.profileId) return;
+        const title = read(row, "title") || "未命名试卷";
+        const examDate = read(row, "examDate");
+        const sourceRecordId = read(row, "sourceRecordId");
+        const examId = read(row, "examId") || sourceRecordId || `${title}|${examDate}`;
+        const groupKey = `${resolved.profileId}|${examId}`;
+        const group = grouped.get(groupKey) || {
+          sourceRecordId: sourceRecordId || examId,
+          profileId: resolved.profileId,
+          matchedStudentName: resolved.profile.name,
+          examId,
+          title,
+          examDate,
+          score: 0,
+          totalScore: 0,
+          weakTopics: [],
+          questionEvidence: [],
+          note: read(row, "note"),
+          sourceStudentId: read(row, "studentId"),
+          questionNos: new Set(),
+          conflictRows: []
+        };
+        const score = Number(read(row, "score"));
+        const maxScore = Number(read(row, "maxScore"));
+        const examTotal = Number(read(row, "totalScore"));
+        const effectiveMax = Number.isFinite(maxScore) && maxScore > 0 ? maxScore : (group.questionEvidence.length ? 0 : examTotal);
+        if (Number.isFinite(score)) group.score += score;
+        if (Number.isFinite(effectiveMax) && effectiveMax > 0) group.totalScore += effectiveMax;
+        const questionId = read(row, "questionId");
+        const questionNo = read(row, "questionNo");
+        if (questionNo && group.questionNos.has(questionNo)) group.conflictRows.push(index);
+        if (questionNo) group.questionNos.add(questionNo);
+        const question = questionMap.get(questionId);
+        const topicKey = read(row, "topicKey") || (question ? engine.topicKeyForQuestion(question) : "");
+        const questionType = read(row, "questionType") || question?.questionType || "";
+        if (topicKey && Number.isFinite(score) && Number.isFinite(effectiveMax) && score < effectiveMax) group.weakTopics.push(topicKey);
+        group.questionEvidence.push({
+          rowIndex: index,
+          studentId: read(row, "studentId"),
+          examId,
+          questionNo,
+          questionId,
+          score: Number.isFinite(score) ? score : null,
+          maxScore: Number.isFinite(effectiveMax) ? effectiveMax : null,
+          topicKey,
+          questionType
+        });
+        grouped.set(groupKey, group);
+      });
+      const conflicted = [...grouped.values()].filter((record) => record.conflictRows.length);
+      if (conflicted.length) {
+        showLabMessage(`导入已阻止：${conflicted.map((record) => `${record.matchedStudentName}/${record.examId} 存在重复题号`).join("；")}`, true);
+        return;
+      }
+      records = [...grouped.values()].map((record) => ({
+        ...record,
+        questionNos: undefined,
+        conflictRows: undefined,
+        weakTopics: [...new Set(record.weakTopics)],
+        totalScore: record.totalScore > 0 ? record.totalScore : Number(record.score) || 0,
+        questionLevel: true
+      }));
+    } else {
+      records = draft.rows.map((row, index) => ({
+        profileId: rowProfiles[index].profileId,
+        sourceStudentId: read(row, "studentId"),
+        sourceRecordId: read(row, "sourceRecordId"),
+        title: read(row, "title") || "未命名试卷",
+        examDate: read(row, "examDate"),
+        score: Number(read(row, "score")),
+        totalScore: Number(read(row, "totalScore") || read(row, "maxScore")),
+        weakTopics: read(row, "weakTopics").split(/[、,，;；\n\r]+/).map((item) => item.trim()).filter(Boolean),
+        note: read(row, "note")
+      }));
+    }
+    const result = engine.importExamRecords(lab.state, records, singleStudentMode ? lab.state.activeProfileId : null);
+    const importedProfileIds = new Set(records.map((record) => record.profileId).filter(Boolean));
+    lab.state.examRecords = lab.state.examRecords.map((record) => {
+      return importedProfileIds.has(record.profileId)
+        ? engine.resolveExamRecordTopics(record, getQuestions())
+        : record;
+    });
+    lab.examImportDraft = null;
+    saveLearningState();
+    showLabMessage(`已确认导入 ${result.added.length} 条试卷记录；重复 ${result.skipped.length} 条，冲突 ${result.conflicts.length} 条，无效 ${result.errors.length} 条。`, result.errors.length > 0 || result.conflicts.length > 0);
+    renderPanel();
+  }
+
+  async function loadStudentRosterFile(file) {
+    if (!file) return;
+    try {
+      if (file.size > 5 * 1024 * 1024) throw new Error("学生名单文件不能超过5 MB。");
+      previewStudentImport(await file.text());
+    } catch (error) {
+      showLabMessage(error.message, true);
+    }
+  }
+
+  function buildTeacherTodoItems(profiles, questions) {
+    const items = [];
+    profiles.forEach((profile) => {
+      const attempts = lab.state.attempts.filter((item) => item.profileId === profile.id);
+      const pendingAttemptReviews = attempts.filter((item) => engine.isPendingManualReview?.(item)).length;
+      const diagnostics = lab.state.diagnosticAttempts.filter((item) => item.profileId === profile.id);
+      const pendingDiagnostic = diagnostics.find((item) => {
+        return item.classification === "high-confidence-error";
+      });
+      const due = engine.dueReviews(lab.state, Date.now(), profile.id);
+      const activePlan = engine.activeLearningPlan(lab.state, profile.id);
+      const planProgress = engine.learningPlanProgress(lab.state, activePlan);
+      const exams = lab.state.examRecords.filter((item) => item.profileId === profile.id);
+      const latestPlanAt = activePlan ? new Date(activePlan.createdAt || 0).getTime() : 0;
+      const newExam = exams.find((item) => new Date(item.createdAt || item.examDate || 0).getTime() > latestPlanAt);
+      const placement = engine.placementStatus?.(lab.state, profile.id)
+        || { status: "legacy-unknown", label: "需补做摸底" };
+      if (["not-started", "in-progress", "legacy-unknown"].includes(placement.status)) items.push({
+        profileId: profile.id,
+        tone: "diagnostic",
+        actionId: placement.status === "in-progress" ? "placement.resume" : "placement.start",
+        title: `${profile.name}${placement.status === "in-progress" ? "正在进行摸底" : placement.status === "legacy-unknown" ? "历史档案尚未形成明确摸底证据" : "尚未开始摸底"}`,
+        detail: placement.status === "in-progress" ? `已提交 ${placement.submittedCount || 0} 题，请继续完成同一会话。` : "普通练习、诊断或阶段检测不会被自动视为摸底完成。",
+        action: placement.status === "in-progress" ? "继续摸底" : "开始摸底"
+      });
+      if (pendingAttemptReviews) items.push({
+        profileId: profile.id,
+        tone: "warning",
+        actionId: "answer.review",
+        title: `${profile.name}有${pendingAttemptReviews}条作答待人工复核`,
+        detail: "开放题、实验题和建模证据保留原始回答，不计入正确率或错题推荐。",
+        action: "查看证据"
+      });
+      if (pendingDiagnostic) items.push({
+        profileId: profile.id,
+        tone: "warning",
+        actionId: "answer.review",
+        title: `${profile.name}有待验证高置信错误`,
+        detail: "单次高置信错误不能直接称为稳定误概念，需要教师查看原始证据。",
+        action: "查看证据"
+      });
+      if (activePlan && planProgress.total > 0 && planProgress.completed >= planProgress.total) items.push({
+        profileId: profile.id,
+        tone: "review",
+        actionId: "retest.schedule",
+        title: `${profile.name}专项方案已完成`,
+        detail: "专项题目已完成，等待迁移或延迟复测。",
+        action: "安排复测"
+      });
+      if (due.length >= 3) items.push({
+        profileId: profile.id,
+        tone: "review",
+        actionId: "review.overdue",
+        title: `${profile.name}有${due.length}条复习积压`,
+        detail: "到期复习数量达到提醒阈值。",
+        action: "处理复习"
+      });
+      if (newExam && (!activePlan || planProgress.completed >= planProgress.total)) items.push({
+        profileId: profile.id,
+        tone: "exam",
+        actionId: "exam.create-plan",
+        title: `${profile.name}有新试卷尚未形成方案`,
+        detail: `最近试卷：${newExam.title || "未命名试卷"}。`,
+        action: "确认专项方案"
+      });
+    });
+    const manualReviewCount = Object.values(lab.state.contentReviews || {})
+      .filter((item) => item && !["approved", "teacher-approved"].includes(item.status)).length;
+    if (manualReviewCount) items.push({
+      profileId: lab.managedStudentId || lab.state.activeProfileId,
+      tone: "warning",
+      actionId: "content.review",
+      title: `题库内容待审核 ${manualReviewCount} 项`,
+      detail: "这是题库来源与解析审核，不是学生作答批阅。",
+      action: "审核内容"
+    });
+    return items.slice(0, 12);
+  }
+
+  function renderTeacherTodoItems(items) {
+    return items.length ? items.map((item) => `
+      <article class="teacher-todo-item todo-${escapeHtml(item.tone)}">
+        <div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></div>
+        <button class="lab-primary-button" data-lab-action="select-student" data-profile-id="${escapeHtml(item.profileId)}" data-todo-action="${escapeHtml(item.action)}" data-action-id="${escapeHtml(item.actionId || "student.open")}" type="button">${escapeHtml(item.action)}</button>
+      </article>`).join("") : `<p class="teacher-todo-empty">今日没有需要立即处理的待办；仍可从下方高级工具查看完整记录。</p>`;
+  }
+
+  function renderQuestionBankCoverage(coverage) {
+    return `
+      <section class="lab-card content-coverage-card teacher-advanced-section">
+        <div class="lab-card-head"><div><span>LOCAL QUESTION COVERAGE</span><h3>八年级至高三本地题库</h3></div><strong>${coverage.completeQuestions}/${coverage.target}</strong></div>
+        <div class="coverage-track" role="progressbar" aria-valuemin="0" aria-valuemax="${coverage.target}" aria-valuenow="${coverage.completeQuestions}"><i style="width:${coverage.completionRate}%"></i></div>
+        <div class="coverage-metrics">
+          <article><strong>${coverage.indexed}</strong><span>已核对题号与考点索引</span></article>
+          <article><strong>${coverage.completeQuestions}</strong><span>完整题干、答案与解析</span></article>
+          <article><strong>${coverage.teacherVerifiedFullText}</strong><span>教师已核验中高考真题</span></article>
+          <article><strong>${coverage.remaining}</strong><span>距1900题目标</span></article>
+        </div>
+        <p>${escapeHtml(coverage.definition)}</p>
+        <div class="content-pack-import">
+          <label class="lab-secondary-button file-label" for="contentPackImport">导入受控内容包</label>
+          <input class="visually-hidden" id="contentPackImport" type="file" accept=".pscontent,.json,application/json,application/zip">
+          <small>内容包需含可追溯来源、权利依据、考点分类和完整解析；通过结构与哈希校验后仍进入教师审核。</small>
+        </div>
+        ${lab.contentPackStatus ? `<p class="teacher-operation-status">${escapeHtml(lab.contentPackStatus)}</p>` : ""}
+      </section>`;
+  }
+
+  function renderStudentDecisionLoop(profile, analysis, state) {
+    const coverage = analysis?.evidenceCoverage || {
+      coverageLabel: "0/0",
+      levelLabel: "证据不足",
+      reason: "尚未形成可追溯的知识点证据覆盖。",
+      byTopic: []
+    };
+    const priorities = (analysis?.weakest || []).slice(0, 3);
+    const profileId = profile?.id || "";
+    const placement = engine.placementStatus(state, profileId);
+    const evidenceForTopic = (topic) => {
+      const topicKey = topic.topicKey || window.PHYSICS_LEARNING_ENGINE?.normalizeTopic?.(topic.topic)?.key || "";
+      const attempts = (state.attempts || []).filter((item) => {
+        if (item.profileId !== profileId) return false;
+        return item.topicKey === topicKey
+          || window.PHYSICS_LEARNING_ENGINE?.normalizeTopic?.(item.topic)?.key === topicKey;
+      });
+      const exams = (state.examRecords || []).filter((item) => {
+        if (item.profileId !== profileId) return false;
+        const keys = item.weakTopicKeys || [];
+        return keys.includes(topicKey)
+          || (item.weakTopics || []).some((label) => window.PHYSICS_LEARNING_ENGINE?.normalizeTopic?.(label)?.key === topicKey);
+      });
+      const diagnostics = (state.diagnosticAttempts || []).filter((item) => {
+        if (item.profileId !== profileId) return false;
+        return item.topicKey === topicKey || item.topic === topic.topic;
+      });
+      const raw = [
+        ...attempts.slice(0, 3).map((item) => `正式作答 ${item.id || "无ID"} · ${formatDate(item.completedAt || item.createdAt)}`),
+        ...exams.slice(0, 3).map((item) => `试卷 ${item.id || "无ID"} · ${item.title || "未命名"} · ${Number(item.score)}/${Number(item.totalScore)}`),
+        ...diagnostics.slice(0, 3).map((item) => `诊断 ${item.id || "无ID"} · ${formatDate(item.createdAt)}`)
+      ];
+      return { attempts, exams, diagnostics, raw: raw.length ? raw : ["暂无可追溯原始记录"] };
+    };
+    return `
+      <section class="lab-card student-decision-loop">
+        <div class="lab-card-head"><div><span>STUDENT DECISION LOOP</span><h3>${escapeHtml(profile?.name || "当前学生")}当前证据与优先问题</h3></div><strong>${escapeHtml(coverage.levelLabel || "证据不足")}</strong></div>
+        <div class="decision-evidence-quality">
+          <strong>摸底基线：${escapeHtml(placement.label || placement.status)}</strong>
+          ${placement.status === "legacy-unknown" ? `<p>历史普通练习不能自动等同学期初摸底。请选择补做正式摸底，或明确记录“以现有证据开始教学”；后者不会伪造摸底已完成。</p><div class="teacher-inline-actions"><button type="button" data-lab-action="placement-baseline-decision" data-decision="supplement-placement">补做摸底</button><button type="button" data-lab-action="placement-baseline-decision" data-decision="use-existing-evidence">以现有证据开始教学</button></div>` : ""}
+          <strong>1. 当前证据质量：${escapeHtml(coverage.levelLabel || "证据不足")}</strong>
+          <span>知识点证据覆盖 ${escapeHtml(coverage.coverageLabel || "0/0")}（已有证据/可评估知识点）</span>
+          <p>${escapeHtml(coverage.reason || "证据不足，不能形成总体能力结论。")}</p>
+        </div>
+        <div class="decision-priority-list">
+          <h4>2. 最多三个优先问题</h4>
+          ${priorities.length ? priorities.map((topic) => `<article>
+            <div><strong>${escapeHtml(topic.topic)}</strong><span>${escapeHtml(topic.status || "证据不足")} · ${topic.sampleSize || topic.attempts || 0} 条证据</span></div>
+            <p>${escapeHtml((topic.reasons || ["需要教师结合原始证据确认"]).slice(0, 3).join("；"))}</p>
+          </article>`).join("") : "<p>当前没有达到优先问题门槛的知识点；证据不足不等于已掌握。</p>"}
+        </div>
+        <div class="decision-raw-evidence">
+          <h4>3. 每个问题的原始证据</h4>
+          ${priorities.length ? priorities.map((topic) => {
+            const evidence = evidenceForTopic(topic);
+            return `<article><strong>${escapeHtml(topic.topic)}</strong><span>正式作答 ${evidence.attempts.length} 次 · 试卷 ${evidence.exams.length} 份 · 诊断 ${evidence.diagnostics.length} 条</span><ul>${evidence.raw.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul><small>${topic.examMentions ? "已确认：试卷记录明确标记该知识点。" : "待验证：需要教师结合原始作答、错误理由或迁移表现复核。"}</small></article>`;
+          }).join("") : "<p>尚无可展示的原始问题证据。</p>"}
+        </div>
+      </section>`;
+  }
+
+  function renderTargetedRetestStatus(state, profileId, plan, planProgress) {
+    if (!plan) return "";
+    const transfers = (state.experimentRecords || []).filter((item) => item.profileId === profileId && item.type === "transfer");
+    const planStartedAt = new Date(plan.createdAt || 0).getTime();
+    const retestAttempts = (state.attempts || []).filter((item) => item.profileId === profileId
+      && new Date(item.completedAt || item.createdAt || 0).getTime() >= planStartedAt);
+    const verifiedTransfers = transfers.filter((item) => ["教师已通过", "自动判定正确"].includes(item.verificationStatus));
+    return `<section class="targeted-retest-status">
+      <header><strong>6—8. 完成进度、复测与达标条件</strong><span>${planProgress.completed}/${planProgress.total} 已完成</span></header>
+      <p>专项完成 ${planProgress.completed}/${planProgress.total}；方案后正式作答 ${retestAttempts.length} 次；迁移记录 ${transfers.length} 条，其中 ${verifiedTransfers.length} 条已有质量核验。</p>
+      <small>预定达标条件：${escapeHtml(plan.target || "教师需复核跨日期独立正确与迁移证据")}。未满足条件时保持待复测，不自动标记为已掌握。</small>
+    </section>`;
+  }
+
+  function renderManualReviewQueue(state, questions, profileId) {
+    const questionMap = new Map((questions || []).map((question) => [question.id, question]));
+    const pending = (state.attempts || [])
+      .filter((attempt) => engine.isPendingManualReview?.(attempt))
+      .slice(-100)
+      .reverse();
+    const groups = new Map();
+    pending.forEach((attempt) => {
+      const question = questionMap.get(attempt.questionId) || {};
+      const rubricKey = `${attempt.questionId}|${question.rubricId || question.questionType || attempt.questionType || "开放题"}`;
+      const group = groups.get(rubricKey) || { question, attempts: [] };
+      group.attempts.push(attempt);
+      groups.set(rubricKey, group);
+    });
+    const profiles = new Map((state.profiles || []).map((profile) => [profile.id, profile]));
+    return `<section class="lab-card manual-review-queue manual-review-workbench" id="teacher-manual-review">
+      <div class="lab-card-head"><div><span>STUDENT ANSWER REVIEW</span><h3>学生作答待批阅</h3></div><strong>${pending.length}</strong></div>
+      <p>按题目与评分量规分组连续批阅。聚焦某份答案后可按 1/2/3 快捷选择正确、部分正确、需订正；教师确认前不进入正式正确率。</p>
+      ${pending.length ? `<div class="manual-review-list">${[...groups.values()].map(({ question, attempts }) => `
+        <section class="manual-review-group"><header><strong>${escapeHtml(question?.title || attempts[0].questionId)}</strong><span>${escapeHtml(question?.questionType || attempts[0].questionType || "开放题")} · ${attempts.length} 份</span></header>
+        ${attempts.map((attempt) => {
+          const student = profiles.get(attempt.profileId);
+          const suggestion = attempt.reviewSuggestion;
+          return `<article tabindex="0" data-review-attempt="${escapeHtml(attempt.id)}"><div><strong>${escapeHtml(student?.name || "未知学生")}</strong><span>${escapeHtml(attempt.topic || question?.topic || "未标注知识点")} · ${escapeHtml(attempt.createdAt || "")}</span><p>${escapeHtml(attempt.finalAnswer || attempt.answer || "未填写作答")}</p>${suggestion ? `<small>AI 仅供参考：${escapeHtml(suggestion.suggestedComment || "无评语")}；不确定项：${escapeHtml((suggestion.uncertainties || []).join("、") || "未说明")}。尚未写入正式评分。</small>` : ""}</div><div class="teacher-inline-actions"><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="correct" data-review-score="1" data-review-comment="关键规律、过程与结论符合评分量规。" type="button">1 正确</button><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="partial" data-review-score="0.5" data-review-comment="方法部分正确，需补全关键步骤或条件。" type="button">2 部分正确</button><button class="lab-secondary-button" data-lab-action="complete-manual-review" data-attempt-id="${escapeHtml(attempt.id)}" data-review-status="incorrect" data-review-score="0" data-review-comment="关键建模或结论不符合评分量规，需重新订正。" type="button">3 需订正</button></div></article>`;
+        }).join("")}</section>`).join("")}</div>` : `<p class="teacher-todo-empty">当前没有学生作答待人工复核。</p>`}
+    </section>`;
+  }
+
+  function buildDataHealthIssues(profiles, questions) {
+    const issues = [];
+    const add = (issue) => issues.push({ severity: "warning", ...issue });
+    const invalidIdentity = profiles.filter((profile) => !String(profile.portableProfileId || "").trim());
+    if (invalidIdentity.length) add({ code: "identity.missing", title: `${invalidIdentity.length} 名学生缺少稳定跨设备ID`, action: "修复学生档案", targetView: "students", profileId: invalidIdentity[0].id, selector: ".student-manager-card" });
+    const byName = new Map();
+    profiles.forEach((profile) => {
+      const key = String(profile.name || "").trim().toLocaleLowerCase("zh-CN");
+      if (key) byName.set(key, [...(byName.get(key) || []), profile]);
+    });
+    const duplicateNames = [...byName.values()].filter((items) => items.length > 1).flat();
+    if (duplicateNames.length) add({ code: "identity.duplicate-name", title: `发现 ${duplicateNames.length} 个同名档案，需核对稳定ID`, action: "核对同名学生", targetView: "students", profileId: duplicateNames[0].id, selector: ".student-manager-card" });
+    const unresolvedReports = lab.state.importedReports.filter((report) => report.identityStatus === "unresolved-legacy" && !report.boundProfileId);
+    if (unresolvedReports.length) add({ code: "report.unbound", title: `${unresolvedReports.length} 份旧报告尚未绑定学生`, action: "绑定报告身份", targetView: "class", selector: ".class-evidence-card" });
+    const profileIds = new Set(profiles.map((profile) => profile.id));
+    const unmatchedExamRecords = lab.state.examRecords.filter((record) => !profileIds.has(record.profileId));
+    if (unmatchedExamRecords.length) add({ code: "exam.unmatched-student", title: `${unmatchedExamRecords.length} 份试卷未匹配到有效学生`, action: "检查试卷导入", targetView: "students", selector: ".exam-record-card" });
+    const blockedExamGroups = lab.examImportDraft ? buildExamImportPreviewGroups(lab.examImportDraft)
+      .filter((group) => group.statusCode !== "ready").length : 0;
+    if (blockedExamGroups) add({ code: "exam.import-blocked", title: `${blockedExamGroups} 个试卷导入组存在学生或题号异常`, action: "处理异常项", targetView: "students", selector: ".exam-import-preview" });
+    const incompletePlacements = profiles.filter((profile) => engine.placementStatus(lab.state, profile.id).actionable);
+    if (incompletePlacements.length) add({ code: "placement.incomplete", title: `${incompletePlacements.length} 名学生摸底未完成或状态未知`, action: "处理摸底", targetView: "students", profileId: incompletePlacements[0].id, selector: ".student-decision-loop" });
+    const pendingReviews = lab.state.attempts.filter(engine.isPendingManualReview).length;
+    if (pendingReviews) add({ code: "review.pending", title: `${pendingReviews} 份学生作答等待人工复核`, action: "进入批阅", targetView: "today", selector: "#teacher-manual-review" });
+    const unresolvedTopics = lab.state.examRecords.reduce((sum, record) => sum + (record.unresolvedWeakTopics?.length || 0), 0)
+      + questions.filter((question) => !engine.topicKeyForQuestion(question)).length;
+    if (unresolvedTopics) add({ code: "taxonomy.unresolved", title: `${unresolvedTopics} 项知识点尚未解析`, action: "检查导入与题库", targetView: "manage", selector: ".teacher-advanced-tools" });
+    const duplicateStudents = profiles.filter((profile, index) => profiles.some((other, otherIndex) => otherIndex < index
+      && ((profile.studentNumber && profile.studentNumber === other.studentNumber)
+        || (profile.sourceProfileId && profile.sourceProfileId === other.sourceProfileId))));
+    if (duplicateStudents.length) add({ code: "identity.duplicate-record", title: `${duplicateStudents.length} 个档案疑似重复`, action: "核对档案", targetView: "students", profileId: duplicateStudents[0].id, selector: ".student-manager-card" });
+    const freshnessLimit = Date.now() - 45 * 24 * 60 * 60 * 1000;
+    const staleProfiles = profiles.filter((profile) => {
+      const timestamps = [
+        ...lab.state.attempts.filter((item) => item.profileId === profile.id).map((item) => item.completedAt || item.createdAt),
+        ...lab.state.diagnosticAttempts.filter((item) => item.profileId === profile.id).map((item) => item.createdAt),
+        ...lab.state.examRecords.filter((item) => item.profileId === profile.id).map((item) => item.examDate || item.createdAt)
+      ].map((value) => new Date(value || 0).getTime()).filter((value) => Number.isFinite(value) && value > 0);
+      return timestamps.length > 0 && Math.max(...timestamps) < freshnessLimit;
+    });
+    if (staleProfiles.length) add({ code: "evidence.stale", title: `${staleProfiles.length} 名学生的最近证据已超过45天`, action: "安排重新确认", targetView: "students", profileId: staleProfiles[0].id, selector: ".student-decision-loop" });
+    const examConflicts = lab.state.examRecords.filter((record) => {
+      const seen = new Set();
+      return (record.questionEvidence || []).some((item) => {
+        const key = String(item.questionNo || item.questionId || "");
+        if (!key) return false;
+        if (seen.has(key)) return true;
+        seen.add(key);
+        return false;
+      });
+    });
+    if (examConflicts.length) add({ code: "exam.question-conflict", title: `${examConflicts.length} 份试卷存在题号冲突`, action: "检查试卷", targetView: "students", profileId: examConflicts[0].profileId, selector: ".exam-record-card" });
+    const storageRisk = lab.storageEstimate && !lab.storageEstimate.unavailable && (
+      Number(lab.storageEstimate.ratio) >= 0.8
+      || (Number.isFinite(lab.storageEstimate.remaining) && lab.storageEstimate.remaining < 50 * 1024 * 1024)
+    );
+    if (storageRisk) add({ code: "storage.capacity-risk", title: "本机存储空间接近上限，继续保存可能失败", action: "导出备份并清理", targetView: "manage", selector: ".teacher-advanced-tools" });
+    return issues;
+  }
+
+  function renderDataHealth(issues) {
+    return `<section class="lab-card teacher-data-health"><div class="lab-card-head"><div><span>DATA HEALTH</span><h3>数据健康检查</h3></div><strong>${issues.length ? `${issues.length} 项异常` : "正常"}</strong></div>
+      ${issues.length ? `<div class="teacher-todo-list">${issues.map((issue) => `<article class="teacher-todo-item todo-warning"><div><strong>${escapeHtml(issue.title)}</strong><span>异常代码：${escapeHtml(issue.code)}</span></div><button type="button" data-lab-action="open-data-health-target" data-target-view="${escapeHtml(issue.targetView)}" data-profile-id="${escapeHtml(issue.profileId || "")}" data-target-selector="${escapeHtml(issue.selector || "")}">${escapeHtml(issue.action)}</button></article>`).join("")}</div>` : `<p class="teacher-todo-empty">当前没有需要教师处理的数据异常。</p>`}
+    </section>`;
+  }
+
+  function renderDataPrivacyCenter(profile) {
+    const aiStatus = window.PhysicsStudioAITutor?.status?.() || { ready: false };
+    const cloudMode = lab.state.settings?.dataMode === "cloud-classroom";
+    const experienceState = window.PhysicsExperience?.getState?.() || {};
+    return `<section class="lab-card data-privacy-center teacher-advanced-section">
+      <div class="lab-card-head"><div><span>DATA & PRIVACY</span><h3>数据与隐私</h3></div><strong>${cloudMode ? "云班级模式" : "本机模式"}</strong></div>
+      <ul><li><strong>仅本机：</strong>学习作答、诊断、试卷、复核与方案默认保存在本机 IndexedDB；本机模式不表示已经云同步。</li><li><strong>完整备份：</strong>.pslab 会包含题库、学习档案及附件，文件由导出者自行保管。</li><li><strong>班级服务器：</strong>${cloudMode ? "仅在教师明确登录并同步时发送班级所需结构化记录；服务端权限仍以后端账号角色为准。" : "当前未标记为云班级模式，不会把本机档案描述为已同步。"}</li><li><strong>AI 服务：</strong>${aiStatus.ready ? "只发送教师明确提交到已配置受控网关的内容，并先对姓名、学号、班级、电话、邮箱等常见标识脱敏。" : "当前未配置可用受控网关，使用离线规则。"}</li></ul>
+      <div class="teacher-form"><label><span>年龄授权场景</span><select id="privacyMinorAgeBand"><option value="unknown"${profile?.minorAgeBand === "unknown" ? " selected" : ""}>未确认</option><option value="under14"${profile?.minorAgeBand === "under14" ? " selected" : ""}>未满14周岁</option><option value="14plus"${profile?.minorAgeBand === "14plus" ? " selected" : ""}>14周岁及以上</option></select></label><label><span>监护人授权状态</span><select id="privacyGuardianConsent"><option value="unknown"${profile?.guardianConsentStatus === "unknown" ? " selected" : ""}>未确认</option><option value="pending"${profile?.guardianConsentStatus === "pending" ? " selected" : ""}>待授权</option><option value="granted"${profile?.guardianConsentStatus === "granted" ? " selected" : ""}>已授权</option><option value="withdrawn"${profile?.guardianConsentStatus === "withdrawn" ? " selected" : ""}>已撤回</option></select></label></div>
+      <div class="teacher-inline-actions"><button type="button" data-lab-action="save-privacy-consent">保存授权记录</button><button type="button" data-lab-action="withdraw-privacy-consent">撤回同意</button><button type="button" data-lab-action="export-complete-backup">导出全部数据</button><button type="button" data-lab-action="open-profile-correction">更正学生资料</button><button type="button" data-lab-action="delete-profile-learning-data">删除当前学生学习数据</button></div>
+      <hr><h4>管理 / 高级入口</h4><label><input id="manageStudentExternalLinks" type="checkbox"${experienceState.studentExternalLinks ? " checked" : ""}> 允许学生从明确按钮打开外部题源（始终交给 Edge 优先或系统默认浏览器，不在含原生桥的主 WebView 内加载）</label><div class="teacher-inline-actions"><button type="button" data-lab-action="open-classroom-management">班级管理</button><button type="button" data-lab-action="open-validation-metrics">上线验证指标</button><button type="button" data-lab-action="open-user-feedback">用户反馈</button><button type="button" data-lab-action="save-external-link-setting">保存外链设置</button></div>
+      <p class="tool-help">本地 PIN 不能替代服务器鉴权；当前页面说明产品边界，不使用“已完全合规”表述。</p>
+    </section>`;
+  }
+
+  function renderTeacherPrescription(prescription) {
+    return `<section class="lab-card teacher-prescription"><div class="lab-card-head"><div><span>TEACHER PRESCRIPTION</span><h3>班级教学处方（待教师确认）</h3></div><strong>${prescription.profileIds.length} 名学生</strong></div>
+      <p>${escapeHtml(prescription.boundary)}</p>
+      <div class="class-weakness">${prescription.commonWeaknesses.slice(0, 5).map((item) => `<article><strong>${escapeHtml(item.topic)}</strong><span>${item.profileIds.length} 名学生 · ${item.evidenceIds.length} 条可追溯证据</span><button type="button" data-lab-action="create-temp-group" data-topic-key="${escapeHtml(item.topicKey)}">教师确认建立临时组</button></article>`).join("") || "<p>当前没有至少两名学生共同满足“需巩固”证据门槛。</p>"}</div>
+      <p>证据不足知识点 ${prescription.insufficientKnowledgePoints.length} 个；等待人工复核学生 ${prescription.pendingManualReview.length} 名；专项完成待复测学生 ${prescription.awaitingRetest.length} 名。AI 如启用只能改写说明，不会自动创建分组或改变学生评价。</p>
+      <div class="teacher-inline-actions"><button type="button" data-lab-action="preview-tiered-assignment">按薄弱点生成分层作业预览</button></div>
+      ${renderTieredAssignmentPreview()}
+    </section>`;
+  }
+
+  function renderTieredAssignmentPreview() {
+    const preview = lab.tieredAssignmentPreview;
+    if (!preview) return "";
+    if (preview.status !== "teacher-confirmation-required") {
+      return `<div class="targeted-plan-empty"><strong>暂不生成作业</strong><p>${escapeHtml(preview.boundary)}</p></div>`;
+    }
+    return `<section class="targeted-plan-preview tiered-assignment-preview">
+      <header><div><span>教师确认前不发布</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount} 题</strong></header>
+      <p><strong>建议学生范围：</strong>${preview.studentScope.map((item) => `${escapeHtml(item.name)}（${escapeHtml(item.grade)}）`).join("、")}</p>
+      <p><strong>知识点：</strong>${preview.knowledgePointIds.map(escapeHtml).join("、")} · <strong>依据：</strong>${preview.evidenceIds.length} 条原始 evidence IDs</p>
+      <ol>${preview.questionCandidates.map((item) => `<li><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.difficulty)} · ${escapeHtml(item.variantRole || "未标注迁移角色")} · 来源：${escapeHtml(item.source)}</span><small>${escapeHtml(item.reason)}</small></div></li>`).join("")}</ol>
+      <p>${escapeHtml(preview.structureLabel)}。${escapeHtml(preview.boundary)}</p>
+      <div class="teacher-inline-actions"><button class="lab-primary-button" type="button" data-lab-action="confirm-tiered-assignment">教师确认并生成待发布作业</button><button class="lab-secondary-button" type="button" data-lab-action="discard-tiered-assignment">取消预览</button></div>
+    </section>`;
+  }
+
+  function handleReviewShortcut(event) {
+    if (!/[123]/.test(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
+    const article = event.target.closest?.("[data-review-attempt]");
+    if (!article || ["INPUT", "TEXTAREA", "SELECT"].includes(event.target.tagName)) return;
+    const button = article.querySelectorAll('[data-lab-action="complete-manual-review"]')[Number(event.key) - 1];
+    if (button) {
+      event.preventDefault();
+      button.click();
+    }
+  }
+
+  function renderTeacherPrimaryNav(activeView = lab.teacherView) {
+    return `<nav class="teacher-primary-nav" aria-label="教师中心主导航">
+      ${[
+        ["today", "今日"],
+        ["students", "学生"],
+        ["class", "班级"],
+        ["manage", "管理"]
+      ].map(([view, label]) => `<button data-teacher-view="${view}" type="button"${activeView === view ? ' class="active" aria-current="page"' : ""}>${label}</button>`).join("")}
+    </nav>`;
+  }
+
+  function activeManagedStudent(studentProfiles) {
     if (!studentProfiles.some((item) => item.id === lab.managedStudentId)) {
       const activeStudent = studentProfiles.find((item) => item.id === lab.state.activeProfileId);
       lab.managedStudentId = activeStudent?.id || studentProfiles[0]?.id || "";
     }
-    const profile = studentProfiles.find((item) => item.id === lab.managedStudentId)
+    return studentProfiles.find((item) => item.id === lab.managedStudentId)
       || engine.activeProfile(lab.state);
-    const analysis = engine.studentAnalysis(lab.state, questions, profile?.id);
-    const activePlan = engine.activeLearningPlan(lab.state, profile?.id);
-    const planProgress = engine.learningPlanProgress(lab.state, activePlan);
-    const preview = lab.planPreview?.profileId === profile?.id ? lab.planPreview : null;
-    const questionMap = new Map(questions.map((question) => [question.id, question]));
-    const gradeTopics = [...new Set(eligible
+  }
+
+  function renderTeacherToday() {
+    const questions = getQuestions();
+    const studentProfiles = lab.state.profiles.filter((item) => item.role === "student");
+    const profile = activeManagedStudent(studentProfiles);
+    const todoItems = buildTeacherTodoItems(studentProfiles, questions);
+    const dataHealthIssues = buildDataHealthIssues(studentProfiles, questions);
+    return `<section class="teacher-dashboard" data-teacher-render-mode="today">
+      ${renderTeacherPrimaryNav("today")}
+      <section class="lab-card teacher-todo-card">
+        <div class="lab-card-head"><div><span>TODAY TODO</span><h3>今日待办</h3></div><strong>${todoItems.length}</strong></div>
+        <p>只显示需要教师处理的事项；每条待办都保留原始证据入口，自动分析不能替代教师确认。</p>
+        <div class="teacher-todo-list">${renderTeacherTodoItems(todoItems)}</div>
+      </section>
+      ${renderDataHealth(dataHealthIssues)}
+      ${renderManualReviewQueue(lab.state, questions, profile?.id)}
+    </section>`;
+  }
+
+  function renderTeacher() {
+    return lab.teacherView === "today" ? renderTeacherToday() : renderTeacherWorkspace();
+  }
+
+  function renderTeacherWorkspace() {
+    const questions = getQuestions();
+    const needsStudents = lab.teacherView === "students";
+    const needsClass = lab.teacherView === "class";
+    const needsManage = lab.teacherView === "manage";
+    const topics = needsManage
+      ? [...new Set(questions.map((question) => question.topic).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"))
+      : [];
+    const eligible = needsStudents || needsManage
+      ? questions.filter((question) => engine.isPublishedQuestion(question))
+      : [];
+    const reviewQueue = needsManage ? questions.filter((question) => {
+      return /用户自行上传|未填写|仅保存来源链接/.test(question.sourceLicense || "")
+        || question.fullTextIncluded === false
+        || question.contentAudit?.requiresTeacherReview
+        || question.contentReviewStatus === "待教师审核";
+    }).slice(0, 18) : [];
+    const importedTopics = needsClass ? aggregateImportedReports() : [];
+    const unresolvedLegacyReports = needsClass
+      ? lab.state.importedReports.filter((report) => report.identityStatus === "unresolved-legacy" && !report.boundProfileId)
+      : [];
+    const coverage = needsManage
+      ? (lab.app?.getContentCoverage?.()
+        || window.PhysicsStudioContentCatalog?.getCoverage?.(questions)
+        || { target: 1900, completeQuestions: 0, indexed: 0, teacherVerifiedFullText: 0, pendingReview: 0, remaining: 1900, completionRate: 0, definition: "" })
+      : null;
+    const studentProfiles = lab.state.profiles.filter((item) => item.role === "student");
+    const teacherPrescription = needsClass
+      ? engine.buildTeacherPrescription(lab.state, questions, studentProfiles.map((item) => item.id))
+      : null;
+    const profile = activeManagedStudent(studentProfiles);
+    const analysis = needsStudents ? engine.studentAnalysis(lab.state, questions, profile?.id) : null;
+    const activePlan = needsStudents ? engine.activeLearningPlan(lab.state, profile?.id) : null;
+    const planProgress = needsStudents ? engine.learningPlanProgress(lab.state, activePlan) : null;
+    const preview = needsStudents && lab.planPreview?.profileId === profile?.id ? lab.planPreview : null;
+    const questionMap = needsStudents ? new Map(questions.map((question) => [question.id, question])) : new Map();
+    const gradeTopics = needsStudents ? [...new Set(eligible
       .filter((question) => question.grade === profile?.grade)
       .map((question) => question.topic)
       .filter(Boolean))]
-      .sort((a, b) => a.localeCompare(b, "zh-CN"));
-    const aiStatus = window.PhysicsStudioAITutor?.status?.() || { ready: false, endpoint: "", model: "gpt-5.6-sol", boundary: "离线规则模式" };
+      .sort((a, b) => a.localeCompare(b, "zh-CN")) : [];
+    const aiStatus = needsManage
+      ? (window.PhysicsStudioAITutor?.status?.() || { ready: false, endpoint: "", model: "gpt-5.6-sol", boundary: "离线规则模式" })
+      : { ready: false, endpoint: "", model: "gpt-5.6-sol", boundary: "离线规则模式" };
+    const studentDecisionLoop = needsStudents ? renderStudentDecisionLoop(profile, analysis, lab.state) : "";
+    const contentCoverage = needsManage ? renderQuestionBankCoverage(coverage) : "";
     return `
-      <section class="teacher-dashboard">
+      <section class="teacher-dashboard" data-teacher-render-mode="workspace" data-teacher-render-view="${lab.teacherView}">
+        ${renderTeacherPrimaryNav()}
+        ${needsStudents ? `
         <div class="lab-hero-card teacher-hero">
           <div><span class="lab-section-index">STUDENT → EVIDENCE → PLAN → REVIEW</span><h3>学生专项学习工作台</h3><p>先选择学生，再依据真实作答、试卷薄弱点、提示依赖和建模证据确认一个小目标；每个方案只安排3—7题，并包含迁移或反例。</p></div>
           <div class="teacher-stat"><strong>${studentProfiles.length}</strong><span>本机学生档案</span></div>
         </div>
-        <section class="lab-card content-coverage-card">
-          <div class="lab-card-head"><div><span>LOCAL QUESTION COVERAGE</span><h3>八年级至高三本地题库</h3></div><strong>${coverage.completeQuestions}/${coverage.target}</strong></div>
-          <div class="coverage-track" role="progressbar" aria-valuemin="0" aria-valuemax="${coverage.target}" aria-valuenow="${coverage.completeQuestions}"><i style="width:${coverage.completionRate}%"></i></div>
-          <div class="coverage-metrics">
-            <article><strong>${coverage.indexed}</strong><span>已核对题号与考点索引</span></article>
-            <article><strong>${coverage.completeQuestions}</strong><span>完整题干、答案与解析</span></article>
-            <article><strong>${coverage.teacherVerifiedFullText}</strong><span>教师已核验中高考真题</span></article>
-            <article><strong>${coverage.remaining}</strong><span>距1900题目标</span></article>
-          </div>
-          <p>${escapeHtml(coverage.definition)}</p>
-          <div class="content-pack-import">
-            <label class="lab-secondary-button file-label" for="contentPackImport">导入受控内容包</label>
-            <input class="visually-hidden" id="contentPackImport" type="file" accept=".pscontent,.json,application/json,application/zip">
-            <small>内容包需含可追溯来源、权利依据、考点分类和完整解析；通过结构与哈希校验后仍进入教师审核。</small>
-          </div>
-          ${lab.contentPackStatus ? `<p class="teacher-operation-status">${escapeHtml(lab.contentPackStatus)}</p>` : ""}
-        </section>
+        ${studentDecisionLoop}
 
         <section class="lab-card targeted-plan-card">
           <div class="lab-card-head">
             <div><span>PERSONALIZED MICRO-CYCLE</span><h3>为${escapeHtml(profile?.name || "当前学生")}确认专项方案</h3></div>
-            <strong>${escapeHtml(analysis.evidenceLevel || "不足")}证据</strong>
+            <strong>${escapeHtml(analysis.evidenceCoverage?.levelLabel || analysis.evidenceLevel || "证据不足")}</strong>
           </div>
           <p class="targeted-plan-intro">方案严格限定${escapeHtml(profile?.grade || "当前年级")}，默认5题；系统说明推荐依据，教师确认后才下发。题目结构优先采用母题、条件变化、跨情境迁移、反例辨析和复测。</p>
           <div class="teacher-form targeted-plan-form">
@@ -1238,7 +2718,7 @@
           </div>
           ${preview ? `
             <section class="targeted-plan-preview">
-              <header><div><span>预览 · ${escapeHtml(preview.evidenceLevel)}证据</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount}题 / 约${preview.expectedMinutes}分钟</strong></header>
+              <header><div><span>预览 · ${escapeHtml(preview.evidenceCoverage?.levelLabel || preview.evidenceLevel || "证据不足")}</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount}题 / 约${preview.expectedMinutes}分钟</strong></header>
               <p>${escapeHtml(preview.evidenceReason)}</p>
               <ol>${preview.items.map((item) => {
                 const question = questionMap.get(item.questionId);
@@ -1251,10 +2731,25 @@
             <section class="active-targeted-plan">
               <header><div><span>已下发方案</span><h4>${escapeHtml(activePlan.title)}</h4></div><strong>${planProgress.completed}/${planProgress.total} 已完成</strong></header>
               <div class="coverage-track" role="progressbar" aria-valuemin="0" aria-valuemax="${planProgress.total}" aria-valuenow="${planProgress.completed}"><i style="width:${planProgress.percent}%"></i></div>
-              <p>${escapeHtml(activePlan.evidenceReason)}${activePlan.teacherNote ? ` · 教师说明：${escapeHtml(activePlan.teacherNote)}` : ""}</p>
+               <p>${escapeHtml(activePlan.evidenceReason)}${activePlan.teacherNote ? ` · 教师说明：${escapeHtml(activePlan.teacherNote)}` : ""}</p>
+               <small>${activePlan.confirmationStatus === "teacher-confirmed" ? `教师已确认：${escapeHtml(activePlan.teacherConfirmedAt || activePlan.approvedAt || "")}` : "旧方案或未记录教师确认时间，建议复核"}</small>
             </section>` : ""}
-        </section>
+          ${activePlan ? renderTargetedRetestStatus(lab.state, profile?.id, activePlan, planProgress) : ""}
+        </section>` : ""}
 
+        ${needsManage ? `<details class="teacher-advanced-tools" open>
+          <summary>
+            <div><span>ADVANCED TOOLS</span><h3>管理与高级工具</h3><p>题库维护、文件解析、AI 网关、组卷、班级汇总与内容审核。</p></div>
+            <strong>收起</strong>
+          </summary>
+          <div class="teacher-advanced-body">
+        ${contentCoverage}
+        ${renderDataPrivacyCenter(profile)}` : ""}
+
+        ${needsClass ? `${renderClassKnowledgeMatrix(studentProfiles, questions)}
+        ${renderTeacherPrescription(teacherPrescription)}` : ""}
+
+        ${needsStudents ? `
         <section class="teacher-records-grid">
           <section class="lab-card student-manager-card">
             <div class="lab-card-head"><div><span>STUDENT RECORDS</span><h3>学生与学情档案</h3></div><strong>${lab.state.profiles.filter((item) => item.role === "student").length} 名学生</strong></div>
@@ -1278,20 +2773,33 @@
             </div>
           </section>
 
+          <section class="lab-card student-import-card">
+            <div class="lab-card-head"><div><span>ROSTER IMPORT</span><h3>学生名单导入</h3></div><strong>预览后确认</strong></div>
+            <p>支持 CSV，或直接粘贴从 Excel 复制的多行表格。系统先预览、映射字段并检查重复，确认后才写入学生档案。</p>
+            <textarea id="studentRosterPaste" rows="4" placeholder="姓名\t年级\t近期目标\t备注\n张三\t高一\t查漏补缺\t"></textarea>
+            <div class="teacher-inline-actions">
+              <button class="lab-secondary-button" data-lab-action="preview-student-import" type="button">预览粘贴内容</button>
+              <label class="lab-secondary-button file-label" for="studentRosterCsv">选择 CSV</label>
+              <input class="visually-hidden" id="studentRosterCsv" type="file" accept=".csv,text/csv,.txt,text/plain">
+            </div>
+            ${renderStudentImportPreview()}
+          </section>
+
           <section class="lab-card student-analysis-card">
             <div class="lab-card-head"><div><span>EVIDENCE REPORT</span><h3>${escapeHtml(profile?.name || "学生")}学情分析</h3></div><strong>${analysis.summary.completed} 次作答</strong></div>
             <div class="teacher-analysis-metrics">
-              <article><strong>${analysis.summary.accuracy}%</strong><span>正确率</span></article>
-              <article><strong>${analysis.summary.independenceRate}%</strong><span>独立完成率</span></article>
+              <article><strong>${analysis.summary.accuracy == null ? "暂无" : `${analysis.summary.accuracy}%`}</strong><span>正确率</span></article>
+              <article><strong>${analysis.summary.independenceRate == null ? "暂无" : `${analysis.summary.independenceRate}%`}</strong><span>独立完成率</span></article>
               <article><strong>${analysis.summary.averageHint}</strong><span>平均提示</span></article>
               <article><strong>${analysis.summary.dueCount}</strong><span>到期复习</span></article>
+              <article><strong>${analysis.evidenceCoverage?.coverageLabel || "0/0"}</strong><span>知识点证据覆盖</span></article>
             </div>
             <h4>下一步建议</h4>
             <ul>${analysis.priorities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
-            <p>${escapeHtml(analysis.conclusion)}</p>
+            <p>${escapeHtml(analysis.evidenceCoverage?.reason || analysis.conclusion)}</p>
             <small>${escapeHtml(analysis.boundary)}</small>
             <div class="teacher-inline-actions">
-              <button class="lab-primary-button" data-lab-action="export-report-html" type="button">导出学生分析报告</button>
+              <button class="lab-primary-button" data-lab-action="export-report-html" type="button">导出学情与专项提升报告</button>
               <button class="lab-secondary-button" data-lab-action="export-profile" type="button">导出成长档案 JSON</button>
             </div>
           </section>
@@ -1302,18 +2810,37 @@
             <div class="lab-card-head"><div><span>EXAM RECORDS</span><h3>试卷记录导入、导出</h3></div><strong>${lab.state.examRecords.filter((item) => item.profileId === profile?.id).length} 份</strong></div>
             <div class="teacher-form">
               <label><span>试卷名称</span><input id="examRecordTitle" value="课后物理测试"></label>
-              <label><span>考试日期</span><input id="examRecordDate" type="date" value="${new Date().toISOString().slice(0, 10)}"></label>
-              <label><span>得分</span><input id="examRecordScore" type="number" min="0" step="0.5" value="80"></label>
-              <label><span>总分</span><input id="examRecordTotal" type="number" min="1" step="0.5" value="100"></label>
-              <label class="wide"><span>薄弱知识点（顿号或逗号分隔）</span><input id="examRecordWeakTopics" placeholder="例如：浮力、欧姆定律"></label>
+              <label><span>考试日期</span><input id="examRecordDate" type="date" value="${engine.localCalendarDateKey()}"></label>
+              <label><span>得分</span><input id="examRecordScore" type="number" min="0" step="0.5" value="" placeholder="请输入分数"></label>
+              <label><span>总分</span><input id="examRecordTotal" type="number" min="1" step="0.5" value="" placeholder="请输入总分"></label>
+              <label class="wide"><span>薄弱知识点（当前年级，可搜索多选）</span>
+                <input id="examRecordWeakTopicSearch" type="search" placeholder="搜索知识点名称">
+                <div class="exam-topic-options" id="examRecordTopicOptions">
+                  ${gradeTopics.map((topic) => `<label><input type="checkbox" data-exam-topic value="${escapeHtml(topic)}"><span>${escapeHtml(topic)}</span></label>`).join("") || "<small>当前年级没有可用知识点。</small>"}
+                </div>
+              </label>
+              ${(() => {
+                const unresolved = lab.state.examRecords
+                  .filter((item) => item.profileId === profile?.id)
+                  .flatMap((item) => item.unresolvedWeakTopics || []);
+                return unresolved.length
+                  ? `<p class="teacher-warning">有无法自动映射的旧试卷知识点：${escapeHtml([...new Set(unresolved)].join("、"))}。请在上方知识点列表中确认，系统不会静默丢弃这些值。 <button class="lab-secondary-button" data-lab-action="resolve-exam-topics" type="button">尝试映射旧知识点</button></p>`
+                  : "";
+              })()}
               <label class="wide"><span>备注</span><textarea id="examRecordNote" rows="2"></textarea></label>
             </div>
             <div class="teacher-inline-actions">
               <button class="lab-primary-button" data-lab-action="add-exam-record" type="button">添加试卷记录</button>
               <button class="lab-secondary-button" data-lab-action="export-exam-records" type="button">导出试卷记录</button>
               <label class="lab-secondary-button file-label" for="examRecordImport">导入试卷记录</label>
-              <input class="visually-hidden" id="examRecordImport" type="file" accept=".json,application/json">
+              <input class="visually-hidden" id="examRecordImport" type="file" accept=".json,.csv,.txt,application/json,text/csv,text/plain">
             </div>
+            <label class="wide"><span>批量导入试卷记录（CSV 或从 Excel 复制后粘贴）</span><textarea id="examRecordPaste" rows="4" placeholder="试卷名称\t考试日期\t得分\t总分\t薄弱知识点\t备注\n期中测试\t2026-08-08\t80\t100\t牛顿运动定律\t"></textarea></label>
+            <p class="teacher-import-hint">也支持题目级列：studentId、examId、questionNo、questionId、score、maxScore、topicKey、questionType。系统会按 questionId 自动补齐知识点和题型，只把未识别项列为异常。</p>
+            <div class="teacher-inline-actions">
+              <button class="lab-secondary-button" data-lab-action="preview-exam-import" type="button">预览批量导入</button>
+            </div>
+            ${renderExamImportPreview()}
           </section>
           <section class="lab-card growth-record-card">
             <div class="lab-card-head"><div><span>GROWTH TIMELINE</span><h3>学生成长档案</h3></div><strong>${analysis.growthTimeline.length} 条证据</strong></div>
@@ -1322,8 +2849,9 @@
             <button class="lab-secondary-button" data-lab-action="add-growth-record" type="button">添加教师记录</button>
             <div class="growth-record-list">${analysis.growthTimeline.slice(0, 8).map((item) => `<article><time>${formatDate(item.date)}</time><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></article>`).join("") || emptyState("暂无成长记录", "练习、试卷和教师记录会按时间形成档案。")}</div>
           </section>
-        </section>
+        </section>` : ""}
 
+        ${needsManage ? `
         <section class="teacher-records-grid">
           <section class="lab-card document-import-card">
             <div class="lab-card-head"><div><span>DOCUMENT ANALYSIS</span><h3>PDF、Word与扫描卷解析</h3></div><strong>导入后必审</strong></div>
@@ -1332,10 +2860,11 @@
               <label><span>年级</span><select id="documentImportGrade">${["八年级", "九年级", "高一", "高二", "高三"].map((grade) => `<option>${grade}</option>`).join("")}</select></label>
               <label class="wide"><span>来源说明</span><input id="documentImportSource" maxlength="200" placeholder="试卷名称、学校、年份或自有讲义"></label>
               <label class="wide"><span><input id="documentImportRights" type="checkbox"> 我已确认本人有权上传并在本机教学中使用该文件</span></label>
+              <label class="wide"><span><input id="documentRemoteUploadConfirmed" type="checkbox"> 若本机无法解析，我确认文件将发送到已配置的受控服务；文件不含姓名、学号、班级、家庭信息等身份数据，也不是未公开或无权处理的试卷</span></label>
             </div>
             <label class="lab-primary-button file-label" for="documentQuestionImport">选择 PDF / DOCX / DOC / 图片并解析</label>
             <input class="visually-hidden" id="documentQuestionImport" type="file" accept=".pdf,.doc,.docx,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document">
-            <p>DOCX 纯文本和设备 OCR 可离线预解析；PDF、旧版 Word 和复杂扫描件使用已配置的受控服务端。所有不确定字符、图形和公式必须人工确认。</p>
+            <p>DOCX 纯文本和设备 OCR 优先离线预解析；只有勾选网络上传确认后，PDF、旧版 Word 和复杂扫描件才可发送到已配置的受控服务端。所有不确定字符、图形和公式必须人工确认。</p>
             ${renderPendingDocumentImport()}
           </section>
           <section class="lab-card ai-gateway-card">
@@ -1367,18 +2896,28 @@
             <button class="lab-primary-button" data-lab-action="generate-assignment" type="button">生成待审核作业</button>
             <p class="tool-help">只选取完整题干记录；只有来源链接的真题索引不会被混入试卷。</p>
           </section>
+        </div>` : ""}
 
-          <section class="lab-card">
+        ${needsClass ? `<div class="teacher-grid">
+          <section class="lab-card class-evidence-card">
             <div class="lab-card-head"><div><span>CLASS EVIDENCE</span><h3>班级薄弱点</h3></div><strong>${lab.state.importedReports.length} 份档案</strong></div>
             <div class="class-weakness">
               ${importedTopics.length ? importedTopics.slice(0, 8).map((item) => `
-                <article><strong>${escapeHtml(item.topic)}</strong><span>${item.students} 人有记录</span><i style="width:${100 - item.score}%"></i><small>综合表现 ${item.score}%</small></article>`).join("") : emptyState("尚未导入学生档案", "学生可从“复习报告”导出学习档案；教师导入后只汇总结构化学习证据。")}
+                <article><strong>${escapeHtml(item.topic)}</strong><span>${item.students} 名学生 · ${item.evidenceTotal} 条证据</span><small>${escapeHtml(item.statusSummary)}</small></article>`).join("") : emptyState("尚未导入学生档案", "学生可从“复习报告”导出学习档案；教师导入后只汇总结构化学习证据。")}
             </div>
+            ${unresolvedLegacyReports.length ? `<div class="lab-inline-warning"><strong>${unresolvedLegacyReports.length} 份旧版报告尚未绑定学生，未计入班级学情。</strong>${unresolvedLegacyReports.map((report) => `
+              <div class="lab-inline-actions">
+                <span>${escapeHtml(report.profile?.name || "旧版 student-default")} · ${escapeHtml(report.exportedAt || "无导出时间")}</span>
+                <select id="reportBinding-${escapeHtml(report.id)}" aria-label="选择要绑定的学生"><option value="">选择已有学生</option>${studentProfiles.map((profile) => `<option value="${escapeHtml(profile.id)}">${escapeHtml(profile.name)} · ${escapeHtml(profile.portableProfileId)}</option>`).join("")}</select>
+                <button type="button" data-lab-action="bind-imported-report" data-report-id="${escapeHtml(report.id)}">绑定</button>
+                <button type="button" data-lab-action="create-profile-for-report" data-report-id="${escapeHtml(report.id)}">建立新学生</button>
+              </div>`).join("")}</div>` : ""}
             <label class="lab-secondary-button file-label" for="studentReportImport">导入学生学习档案</label>
             <input class="visually-hidden" id="studentReportImport" type="file" accept="application/json,.json" multiple>
           </section>
-        </div>
+        </div>` : ""}
 
+        ${needsManage ? `
         <section class="lab-card">
           <div class="lab-card-head"><div><span>REVIEW QUEUE</span><h3>内容来源与审核队列</h3></div><strong>${reviewQueue.length} 条待核查</strong></div>
           <div class="content-review-list">
@@ -1412,8 +2951,10 @@
 
         <section class="lab-capability-card teacher-boundary">
           <div><span class="lab-section-index">SERVICE BOUNDARY</span><h3>学校部署仍需的服务端能力</h3></div>
-          <p>当前版本支持本机教师审核、组卷、档案导入和离线备份。真实班级账号、自动跨端同步、权限分级、集中内容审核和生成式 AI 调用需要独立后端、身份认证、审计日志与数据保护方案，本安装包未虚构这些能力。</p>
+          <p>当前版本支持本机教师审核、组卷、档案导入和离线备份；服务端代码已提供班级绑定、增量作答/试卷同步、专项方案、提交复核和报告快照的最小 API。安装包仍以本机数据为默认来源，云端启用前必须完成部署、迁移和集成验收。</p>
         </section>
+          </div>
+        </details>` : ""}
       </section>`;
   }
 
@@ -1508,6 +3049,21 @@
   }
 
   async function handleClick(event) {
+    const teacherView = event.target.closest("[data-teacher-view]");
+    if (teacherView && isTeacherRole()) {
+      const nextView = ["today", "students", "class", "manage"].includes(teacherView.dataset.teacherView)
+        ? teacherView.dataset.teacherView
+        : "today";
+      const currentMode = lab.panel?.querySelector(".teacher-dashboard")?.dataset.teacherRenderMode || "";
+      const currentView = lab.panel?.querySelector(".teacher-dashboard")?.dataset.teacherRenderView || "";
+      const nextMode = nextView === "today" ? "today" : "workspace";
+      if (nextView !== lab.teacherView && !captureTeacherViewDraft(lab.teacherView)) return;
+      lab.teacherView = nextView;
+      if (currentMode !== nextMode || (nextMode === "workspace" && currentView !== nextView)) renderPanel();
+      else applyTeacherView();
+      lab.panel?.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
     const actionTarget = event.target.closest("[data-lab-action]");
     const tabTarget = event.target.closest("[data-lab-tab]");
     const startQuestion = event.target.closest("[data-start-question]");
@@ -1517,9 +3073,12 @@
     }
     if (tabTarget) {
       captureSessionForm();
-      lab.tab = tabTarget.dataset.labTab === "teacher" && !isTeacherRole()
+      const nextTab = tabTarget.dataset.labTab === "teacher" && !isTeacherRole()
         ? "dashboard"
         : tabTarget.dataset.labTab;
+      if (lab.tab === "teacher" && nextTab !== "teacher" && !captureTeacherViewDraft(lab.teacherView)) return;
+      if (nextTab === "models" && lab.selectedQuestionId) selectModelForQuestion(lab.selectedQuestionId);
+      lab.tab = nextTab;
       renderPanel();
       return;
     }
@@ -1528,6 +3087,7 @@
       lab.session = null;
       lab.aiResult = null;
       lab.aiStatusMessage = "";
+      lab.aiSessionState = null;
       lab.tab = startQuestion.dataset.questionTarget || "tutor";
       renderPanel();
       return;
@@ -1564,20 +3124,6 @@
     const saveTransfer = event.target.closest("[data-save-transfer]");
     if (saveTransfer) {
       saveTransferRecord(Number(saveTransfer.dataset.saveTransfer));
-      return;
-    }
-    const rating = event.target.closest("[data-review-rating]");
-    if (rating) {
-      engine.scheduleReview(lab.state, rating.dataset.questionId, Number(rating.dataset.reviewRating));
-      saveLearningState();
-      document.dispatchEvent(new CustomEvent("physics-learning-event", {
-        detail: {
-          type: "review-rated",
-          questionId: rating.dataset.questionId,
-          reviewRating: Number(rating.dataset.reviewRating)
-        }
-      }));
-      renderPanel();
       return;
     }
     const viewSource = event.target.closest("[data-view-source-question]");
@@ -1640,6 +3186,12 @@
     else if (action === "clear-sketch") clearSketch();
     else if (action === "export-sketch") exportSketch();
     else if (action === "generate-assignment") generateAssignment();
+    else if (action === "preview-tiered-assignment") previewTieredAssignment();
+    else if (action === "confirm-tiered-assignment") confirmTieredAssignment();
+    else if (action === "discard-tiered-assignment") {
+      lab.tieredAssignmentPreview = null;
+      renderPanel();
+    }
     else if (action === "export-profile") exportProfile();
     else if (action === "stop-sensors") stopAllSensors(true);
     else if (action === "export-sensor-csv") exportSensorCsv();
@@ -1650,14 +3202,140 @@
     else if (action === "import-document-questions") importParsedDocumentQuestions();
     else if (action === "add-student") saveStudentProfile(true);
     else if (action === "save-student") saveStudentProfile(false);
-    else if (action === "select-student") selectStudentProfile(target?.dataset.profileId);
+    else if (action === "preview-student-import") previewStudentImport(document.getElementById("studentRosterPaste")?.value);
+    else if (action === "confirm-student-import") confirmStudentImport();
+    else if (action === "preview-exam-import") previewExamImport(document.getElementById("examRecordPaste")?.value);
+    else if (action === "confirm-exam-import") confirmExamImport();
+    else if (action === "select-matrix-topic") {
+      lab.matrixTopicKey = target?.dataset.topicKey || "";
+      renderPanel();
+    } else if (action === "create-temp-group") createTemporaryLearningGroup(target?.dataset.topicKey || lab.matrixTopicKey);
+    else if (action === "select-student") selectStudentProfile(target?.dataset.profileId, target?.dataset.todoAction, target?.dataset.actionId);
     else if (action === "delete-student") removeStudentProfile(target?.dataset.profileId);
     else if (action === "add-exam-record") saveExamRecord();
+    else if (action === "resolve-exam-topics") resolveExamTopics();
     else if (action === "export-exam-records") exportExamRecords();
     else if (action === "export-report-html") exportStudentReportHtml();
     else if (action === "add-growth-record") saveGrowthRecord();
     else if (action === "preview-targeted-plan") previewTargetedPlan();
     else if (action === "approve-targeted-plan") approveTargetedPlan();
+    else if (action === "complete-manual-review") completeManualReviewAction(target);
+    else if (action === "bind-imported-report") resolveImportedReportIdentity(target, false);
+    else if (action === "create-profile-for-report") resolveImportedReportIdentity(target, true);
+    else if (action === "open-data-health-target") openDataHealthTarget(target);
+    else if (action === "save-privacy-consent") savePrivacyConsent(false);
+    else if (action === "withdraw-privacy-consent") savePrivacyConsent(true);
+    else if (action === "export-complete-backup") document.getElementById("fullBackupButton")?.click();
+    else if (action === "open-profile-correction") { lab.teacherView = "students"; renderPanel({ scrollTo: ".student-manager-card" }); }
+    else if (action === "delete-profile-learning-data") deleteProfileLearningData();
+    else if (action === "open-classroom-management") window.PhysicsExperience?.openClassroom?.();
+    else if (action === "open-validation-metrics") window.PhysicsExperience?.showMetrics?.();
+    else if (action === "open-user-feedback") window.PhysicsExperience?.openFeedbackEmail?.();
+    else if (action === "save-external-link-setting") {
+      const enabled = Boolean(document.getElementById("manageStudentExternalLinks")?.checked);
+      window.PhysicsExperience?.setStudentExternalLinks?.(enabled);
+      showLabMessage(`学生外部题源访问已${enabled ? "允许" : "关闭"}。`, false);
+    }
+    else if (action === "placement-baseline-decision") setPlacementBaselineDecision(target?.dataset.decision);
+  }
+
+  function setPlacementBaselineDecision(decision) {
+    const profile = lab.state.profiles.find((item) => item.id === lab.managedStudentId) || engine.activeProfile(lab.state);
+    if (!profile || !["supplement-placement", "use-existing-evidence"].includes(decision)) return;
+    engine.updateProfile(lab.state, profile.id, { placementBaselineDecision: decision });
+    saveLearningState();
+    if (decision === "supplement-placement") {
+      lab.tab = "diagnostic";
+      renderPanel();
+    } else {
+      showLabMessage("已记录教师决定：从现有证据开始教学；正式摸底仍标记为未完成。", false);
+      renderPanel();
+    }
+  }
+
+  function savePrivacyConsent(withdraw) {
+    const profile = engine.activeProfile(lab.state);
+    if (!profile) return;
+    const status = withdraw ? "withdrawn" : String(document.getElementById("privacyGuardianConsent")?.value || "unknown");
+    const now = new Date().toISOString();
+    engine.updateProfile(lab.state, profile.id, {
+      minorAgeBand: String(document.getElementById("privacyMinorAgeBand")?.value || profile.minorAgeBand || "unknown"),
+      guardianConsentStatus: status,
+      consentVersion: status === "granted" ? "privacy-v1" : profile.consentVersion,
+      consentedAt: status === "granted" ? now : profile.consentedAt,
+      withdrawnAt: status === "withdrawn" ? now : ""
+    });
+    saveLearningState();
+    showLabMessage(status === "withdrawn" ? "已记录撤回同意；未满14周岁场景的云同步和 AI 请求将被阻止。" : "授权记录已保存。", false);
+    renderPanel();
+  }
+
+  function deleteProfileLearningData() {
+    const profile = engine.activeProfile(lab.state);
+    if (!profile || !window.confirm(`删除“${profile.name}”的作答、诊断、试卷、复习、方案和实验记录？学生基本档案将保留。`)) return;
+    ["attempts", "diagnosticAttempts", "examRecords", "growthRecords", "experimentRecords", "learningPlans", "assessmentSessions", "broadCoverageChecks"].forEach((name) => {
+      lab.state[name] = (lab.state[name] || []).filter((record) => record.profileId !== profile.id);
+    });
+    Object.keys(lab.state.reviews || {}).forEach((key) => {
+      if (lab.state.reviews[key]?.profileId === profile.id || key.startsWith(`${profile.id}::`)) delete lab.state.reviews[key];
+    });
+    saveLearningState();
+    showLabMessage("当前学生的学习数据已删除；基本档案仍保留，可继续使用。", false);
+    renderPanel();
+  }
+
+  function openDataHealthTarget(target) {
+    const profileId = String(target?.dataset.profileId || "");
+    if (lab.tab === "teacher" && !captureTeacherViewDraft(lab.teacherView)) return;
+    if (profileId && lab.state.profiles.some((profile) => profile.id === profileId)) {
+      lab.state.activeProfileId = profileId;
+      lab.managedStudentId = profileId;
+    }
+    lab.teacherView = ["today", "students", "class", "manage"].includes(target?.dataset.targetView)
+      ? target.dataset.targetView
+      : "today";
+    if (lab.teacherView === "manage") lab.advancedToolsOpen = true;
+    saveLearningState();
+    renderPanel({ scrollTo: String(target?.dataset.targetSelector || "") });
+  }
+
+  function resolveImportedReportIdentity(target, createNew) {
+    const reportId = String(target?.dataset.reportId || "");
+    const profileId = createNew ? "" : String(document.getElementById(`reportBinding-${reportId}`)?.value || "");
+    try {
+      engine.bindImportedReportIdentity(lab.state, reportId, { profileId, createNew });
+      saveLearningState();
+      showLabMessage(createNew ? "已建立独立学生档案并绑定旧报告。" : "旧报告已绑定到明确的学生档案。", false);
+      renderPanel();
+    } catch (error) {
+      showLabMessage(error.message || "旧报告身份绑定失败。", true);
+    }
+  }
+
+  function completeManualReviewAction(target) {
+    const attemptId = target?.dataset.attemptId;
+    const status = target?.dataset.reviewStatus;
+    if (!attemptId || !["correct", "partial", "incorrect"].includes(status)) return;
+    // Open responses are reviewed from the visible grouped workbench.  Avoid a
+    // blocking prompt: the fixed rubric comment is persisted with the evidence
+    // and can be edited through the teacher review form before submission.
+    const summary = target?.dataset.reviewComment
+      || (status === "correct" ? "教师按评分量规复核：关键规律与结论正确。"
+        : status === "partial" ? "教师按评分量规复核：方法或结论部分正确，需订正缺失步骤。"
+          : "教师按评分量规复核：结论或关键推理不正确，需重新建模。");
+    try {
+      engine.completeManualReview(lab.state, attemptId, {
+        status,
+        score: Number(target.dataset.reviewScore),
+        summary,
+        reviewedBy: "本机教师"
+      });
+      saveLearningState();
+      showLabMessage("人工复核已保存，相关统计将在刷新后更新。", false);
+      renderPanel();
+    } catch (error) {
+      showLabMessage(error.message || "人工复核保存失败", true);
+    }
   }
 
   function handleInput(event) {
@@ -1685,6 +3363,26 @@
       filterQuestionPicker(event.target.value);
     } else if (event.target.id === "formulaSearch") {
       filterFormulas(event.target.value);
+    } else if (event.target.id === "examRecordWeakTopicSearch") {
+      const query = String(event.target.value || "").trim().toLocaleLowerCase("zh-CN");
+      document.querySelectorAll("#examRecordTopicOptions > label").forEach((label) => {
+        label.hidden = query && !label.textContent.toLocaleLowerCase("zh-CN").includes(query);
+      });
+    } else if (event.target.matches("[data-exam-map]")) {
+      if (!lab.examImportDraft) return;
+      const field = event.target.dataset.examMap;
+      const mapping = { ...lab.examImportDraft.mapping, [field]: Number(event.target.value) };
+      lab.examImportDraft = buildExamImportDraft(
+        lab.examImportDraft.headers,
+        lab.examImportDraft.rows,
+        lab.examImportDraft.text,
+        mapping
+      );
+      renderPanel();
+    } else if (event.target.matches("[data-ray-param]")) {
+      const key = event.target.dataset.rayParam;
+      lab.rayParams[key] = event.target.type === "range" ? Number(event.target.value) : event.target.value;
+      updateRayOutput();
     } else if (event.target.matches("[data-model-param]")) {
       const key = event.target.dataset.modelParam;
       lab.modelParams[lab.modelType][key] = event.target.type === "range"
@@ -1743,9 +3441,16 @@
     } else if (event.target.id === "examRecordImport") {
       importExamRecordFile(event.target.files?.[0]);
       event.target.value = "";
+    } else if (event.target.id === "studentRosterCsv") {
+      loadStudentRosterFile(event.target.files?.[0]);
+      event.target.value = "";
     } else if (event.target.id === "labDraftUpload") {
       importDraftImage(event.target.files?.[0]);
       event.target.value = "";
+    } else if (event.target.matches("[data-ray-param]")) {
+      const key = event.target.dataset.rayParam;
+      lab.rayParams[key] = event.target.type === "range" ? Number(event.target.value) : event.target.value;
+      updateRayOutput();
     } else if (event.target.matches("[data-model-param]")) {
       const key = event.target.dataset.modelParam;
       lab.modelParams[lab.modelType][key] = event.target.type === "range" ? Number(event.target.value) : event.target.value;
@@ -1909,6 +3614,9 @@
     const attempt = engine.recordAttempt(lab.state, {
       questionId: question.id,
       topic: question.topic,
+      knowledgePointId: question.knowledgePointId || question.topicKey || "",
+      modelDefinitionId: question.modelDefinitionId || question.modelFamilyId || "",
+      independenceGroupId: question.independenceGroupId || question.modelDefinitionId || question.modelFamilyId || "",
       stage: question.stage,
       startedAt: new Date(lab.session.startedAt).toISOString(),
       durationSeconds,
@@ -1924,9 +3632,17 @@
       draftImageName: lab.session.draftImageName,
       model: lab.session.model
     });
-    const automaticRating = attempt.grading.status === "correct"
-      ? attempt.hintLevel <= 1 ? 2 : 1
-      : attempt.grading.status === "partial" || attempt.grading.status === "review-required" ? 1 : 0;
+    const activePlan = engine.activeLearningPlan(lab.state, lab.state.activeProfileId);
+    if (activePlan && new Date(attempt.createdAt || 0).getTime() >= new Date(activePlan.createdAt || 0).getTime()
+      && engine.isValidAccuracyEvidence?.(attempt)
+      && !activePlan.baselineEvidenceIds?.includes(attempt.id)) {
+      activePlan.retestEvidenceIds = Array.isArray(activePlan.retestEvidenceIds)
+        ? [...new Set([...activePlan.retestEvidenceIds, attempt.id])].slice(-100)
+        : [attempt.id];
+      activePlan.comparisonStatus = "insufficient";
+      activePlan.updatedAt = new Date().toISOString();
+    }
+    const review = engine.scheduleReviewFromAttempt(lab.state, question.id, attempt.id);
     saveLearningState();
     if (attempt.grading.status === "incorrect" || attempt.grading.status === "partial") {
       await lab.app?.updateQuestion?.(question.id, {
@@ -1936,7 +3652,7 @@
         mastered: false
       });
     }
-    lab.lastCompleted = { title: question.title, review: null, attempt, automaticRating };
+    lab.lastCompleted = { title: question.title, review, attempt };
     lab.session = null;
     lab.tab = "transfer";
     document.dispatchEvent(new CustomEvent("physics-learning-event", {
@@ -1985,13 +3701,6 @@
         createdAt: new Date().toISOString()
       });
     }
-    if (lab.lastCompleted?.attempt?.questionId === question.id && !lab.lastCompleted.review) {
-      lab.lastCompleted.review = engine.scheduleReview(
-        lab.state,
-        question.id,
-        lab.lastCompleted.automaticRating
-      );
-    }
     saveLearningState();
     document.dispatchEvent(new CustomEvent("physics-learning-event", {
       detail: { type: "transfer-completed", questionId: question.id, variantIndex: index }
@@ -2002,10 +3711,14 @@
 
   function playModel() {
     stopModelAnimation();
+    if (!ANIMATED_MODELS.has(lab.modelType)) return;
     const start = performance.now();
+    const params = lab.modelParams[lab.modelType];
     const duration = lab.modelType === "projectile"
-      ? 2 * lab.modelParams.projectile.v0 * Math.sin(lab.modelParams.projectile.angle * Math.PI / 180) / lab.modelParams.projectile.g
-      : 5;
+      ? 2 * params.v0 * Math.sin(params.angle * Math.PI / 180) / params.g
+      : lab.modelType === "wave"
+        ? 1 / params.frequency
+        : Number(params.duration) || 5;
     const animate = (now) => {
       const elapsed = (now - start) / 1000;
       const loopTime = elapsed % Math.max(0.1, duration);
@@ -2042,11 +3755,7 @@
   function resetModel() {
     lab.modelParams = {
       ...lab.modelParams,
-      [lab.modelType]: lab.modelType === "projectile"
-        ? { v0: 20, angle: 45, g: 9.8, t: 1 }
-        : lab.modelType === "incline"
-          ? { mass: 2, angle: 30, mu: 0.2, g: 9.8, t: 1 }
-          : { voltage: 12, r1: 10, r2: 20, mode: "series" }
+      [lab.modelType]: { ...MODEL_DEFAULTS[lab.modelType] }
     };
     renderPanel();
   }
@@ -2091,17 +3800,42 @@
       return { x, y };
     }).filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
     const target = document.getElementById("graphResult");
-    if (points.length < 2) {
-      target.innerHTML = '<div class="tool-result warning">至少需要两组有效的 x,y 数据。</div>';
+    if (!target) return;
+    if (!visuals?.scatterFit) {
+      target.innerHTML = '<div class="tool-result warning">线性拟合组件未加载。</div>';
       return;
     }
-    const regression = engine.linearRegression(points);
+    const regression = visuals.scatterFit({ points });
+    if (!regression.valid) {
+      target.innerHTML = `${regression.svg}<div class="tool-result warning"><strong>当前数据不能完成线性拟合</strong><p>${escapeHtml(regression.reason)}</p></div>`;
+      return;
+    }
     target.innerHTML = `
-      ${scatterPlot(points, regression)}
+      ${regression.svg}
       <div class="tool-result success">
         <strong>y = ${formatNumber(regression.slope, 5)}x ${regression.intercept >= 0 ? "+" : "−"} ${formatNumber(Math.abs(regression.intercept), 5)}</strong>
         <p>R² = ${formatNumber(regression.r2, 5)}；样本数 n = ${regression.count}。拟合优度不能替代残差、系统误差和物理模型检查。</p>
       </div>`;
+  }
+
+  function updateRayOutput() {
+    const target = document.getElementById("rayDiagramOutput");
+    if (!target) return;
+    if (!visuals?.rayDiagram) {
+      target.innerHTML = '<div class="tool-result warning">基础光路组件未加载。</div>';
+      return;
+    }
+    const result = visuals.rayDiagram(lab.rayParams);
+    const conclusion = result.totalInternalReflection
+      ? "n₁sin i > n₂，当前条件发生全反射。"
+      : result.mode === "reflection"
+        ? `反射角 r = ${formatNumber(result.reflectionAngle)}°，满足 i=r。`
+        : `折射角 r = ${formatNumber(result.refractionAngle)}°，满足 n₁sin i=n₂sin r。`;
+    target.innerHTML = `${result.svg}<div class="tool-result success"><strong>${escapeHtml(conclusion)}</strong><p>入射角 i=${formatNumber(result.incidenceAngle)}°；n₁=${formatNumber(result.n1)}，n₂=${formatNumber(result.n2)}。</p></div>`;
+    lab.content?.querySelectorAll("[data-ray-value]").forEach((node) => {
+      const key = node.dataset.rayValue;
+      node.textContent = `${formatNumber(lab.rayParams[key])}${key === "incidenceAngle" ? "°" : ""}`;
+    });
   }
 
   function filterQuestionPicker(query) {
@@ -2203,6 +3937,43 @@
     renderPanel();
   }
 
+  function previewTieredAssignment() {
+    const profiles = lab.state.profiles.filter((profile) => profile.role === "student");
+    lab.tieredAssignmentPreview = engine.buildTieredAssignmentDraft(lab.state, getQuestions(), {
+      profileIds: profiles.map((profile) => profile.id)
+    });
+    renderPanel();
+  }
+
+  function confirmTieredAssignment() {
+    const preview = lab.tieredAssignmentPreview;
+    if (!preview || preview.status !== "teacher-confirmation-required" || !preview.questionIds?.length) return;
+    const firstStudent = preview.studentScope[0];
+    const assignment = {
+      id: `assignment-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      title: preview.title,
+      stage: /^高/.test(firstStudent?.grade || "") ? "高中" : "初中",
+      grade: firstStudent?.grade || "全部",
+      topic: preview.knowledgePointIds.join("、"),
+      knowledgePointIds: preview.knowledgePointIds.slice(),
+      targetProfileIds: preview.studentScope.map((item) => item.profileId),
+      evidenceIds: preview.evidenceIds.slice(),
+      questionIds: preview.questionIds.slice(),
+      questionCount: preview.questionCount,
+      reviewStatus: "教师已确认·待发布",
+      publishStatus: "ready-for-classroom-publish",
+      teacherConfirmedAt: new Date().toISOString(),
+      createdAt: new Date().toISOString()
+    };
+    lab.state.assignments.push(assignment);
+    engine.saveState(lab.state);
+    document.dispatchEvent(new CustomEvent("physics-studio-tiered-assignment-confirmed", {
+      detail: { assignment: { ...assignment } }
+    }));
+    lab.tieredAssignmentPreview = null;
+    renderPanel();
+  }
+
   function exportAssignment(assignmentId) {
     const assignment = lab.state.assignments.find((item) => item.id === assignmentId);
     if (!assignment) return;
@@ -2234,22 +4005,39 @@
     captureSessionForm();
     const question = getQuestion(lab.selectedQuestionId);
     if (!question || !lab.session) return;
+    if (!window.PhysicsStudioAITutor?.tutorTurn) return;
     lab.aiResult = null;
-    lab.aiStatusMessage = "正在请求受控服务端进行分步解答和物理校验……";
+    lab.aiStatusMessage = window.PhysicsStudioAITutor.status?.().ready
+      ? "正在请求受控导师；若服务不可达会自动切换到本机提示……"
+      : "正在生成本机下一步提示……";
     renderPanel();
     try {
-      lab.aiResult = await window.PhysicsStudioAITutor.solveQuestion({
+      const activeStudent = engine.activeProfile(lab.state);
+      const offlineHints = engine.createHintLadder(question).map((item) => item.text);
+      lab.aiResult = await window.PhysicsStudioAITutor.tutorTurn({
         question,
         studentWork: [
           lab.session.model?.equations,
           lab.session.finalAnswer,
           lab.session.reflection
         ].filter(Boolean).join("\n"),
-        hintLevelUsed: lab.session.hintLevel
+        hintLevelUsed: lab.session.hintLevel,
+        modeling: lab.session.model,
+        sessionState: lab.aiSessionState,
+        offlineHints,
+        personalIdentifiers: [activeStudent?.name, activeStudent?.studentNumber, activeStudent?.className].filter(Boolean),
+        minorUnder14: activeStudent?.minorAgeBand === "under14",
+        guardianConsentStatus: activeStudent?.guardianConsentStatus
       });
-      lab.aiStatusMessage = "结构化解答已返回；请继续核对题设条件和教师复核标记。";
+      lab.aiSessionState = lab.aiResult.sessionState || null;
+      lab.session.hintLevel = Math.max(lab.session.hintLevel, Number(lab.aiResult.hintLevel) || 0);
+      lab.aiStatusMessage = lab.aiResult.source === "gateway"
+        ? "受控导师已返回一个思考步骤。"
+        : lab.aiResult.gatewayUnavailable
+          ? "受控导师暂不可用，已无缝切换到本机五级提示。"
+          : "当前使用本机五级提示。";
     } catch (error) {
-      lab.aiStatusMessage = `ChatGPT 解题失败：${error.message}`;
+      lab.aiStatusMessage = `本次指导未启动：${error.message}`;
     }
     renderPanel();
   }
@@ -2292,7 +4080,8 @@
       stage: document.getElementById("documentImportStage")?.value || "初中",
       grade: document.getElementById("documentImportGrade")?.value || "八年级",
       source: document.getElementById("documentImportSource")?.value.trim() || file.name,
-      rightsConfirmed: document.getElementById("documentImportRights")?.checked
+      rightsConfirmed: document.getElementById("documentImportRights")?.checked,
+      uploadConfirmed: document.getElementById("documentRemoteUploadConfirmed")?.checked
     };
     if (!context.rightsConfirmed) {
       showLabMessage("请先确认有权上传并在本机教学中使用该文件。", true);
@@ -2305,6 +4094,7 @@
       const result = await window.PhysicsStudioDocumentImport.analyze(file, context);
       lab.pendingDocumentImport = {
         ...result,
+        draftToken: engine.createId("document-draft"),
         context,
         originalFileName: file.name
       };
@@ -2442,13 +4232,24 @@
     }
   }
 
-  function selectStudentProfile(profileId) {
+  function selectStudentProfile(profileId, todoAction = "", actionId = "") {
     if (!lab.state.profiles.some((profile) => profile.id === profileId)) return;
+    if (lab.tab === "teacher" && !captureTeacherViewDraft(lab.teacherView)) return;
     lab.state.activeProfileId = profileId;
     lab.managedStudentId = profileId;
     lab.planPreview = null;
+    let scrollTo = "";
+    if (["placement.start", "placement.resume"].includes(actionId)) lab.tab = "diagnostic";
+    else if (actionId === "review.overdue") lab.tab = "review";
+    else {
+      lab.tab = "teacher";
+      if (actionId === "answer.review") { lab.teacherView = "today"; scrollTo = "#teacher-manual-review"; }
+      else if (actionId === "content.review") { lab.teacherView = "manage"; lab.advancedToolsOpen = true; scrollTo = ".content-review-list"; }
+      else if (["retest.schedule", "plan.review", "exam.create-plan"].includes(actionId)) { lab.teacherView = "students"; scrollTo = ".targeted-plan-card"; }
+      else lab.teacherView = "students";
+    }
     saveLearningState();
-    renderPanel();
+    renderPanel(scrollTo ? { scrollTo } : {});
   }
 
   function removeStudentProfile(profileId) {
@@ -2468,12 +4269,28 @@
 
   function saveExamRecord() {
     try {
+      const scoreRaw = document.getElementById("examRecordScore")?.value?.trim() || "";
+      const totalRaw = document.getElementById("examRecordTotal")?.value?.trim() || "";
+      const score = Number(scoreRaw);
+      const totalScore = Number(totalRaw);
+      if (!scoreRaw || !totalRaw || !Number.isFinite(score) || !Number.isFinite(totalScore)
+        || totalScore <= 0 || score < 0 || score > totalScore) {
+        throw new Error("请先填写有效得分和总分：总分必须大于 0，得分必须在 0 到总分之间。");
+      }
+      const profile = engine.activeProfile(lab.state);
+      const catalog = engine.topicCatalog(getQuestions(), profile?.grade || "");
+      const selectedWeakTopics = [...document.querySelectorAll("[data-exam-topic]:checked")]
+        .map((input) => input.value);
+      const selectedWeakTopicKeys = selectedWeakTopics
+        .map((topic) => engine.normalizeTopic(topic, { catalog }).key)
+        .filter(Boolean);
       engine.addExamRecord(lab.state, {
         title: document.getElementById("examRecordTitle")?.value,
         examDate: document.getElementById("examRecordDate")?.value,
-        score: document.getElementById("examRecordScore")?.value,
-        totalScore: document.getElementById("examRecordTotal")?.value,
-        weakTopics: document.getElementById("examRecordWeakTopics")?.value,
+        score,
+        totalScore,
+        weakTopics: selectedWeakTopics,
+        weakTopicKeys: selectedWeakTopicKeys,
         note: document.getElementById("examRecordNote")?.value,
         sourceFileName: ""
       });
@@ -2483,6 +4300,20 @@
     } catch (error) {
       showLabMessage(error.message, true);
     }
+  }
+
+  function resolveExamTopics() {
+    const profile = engine.activeProfile(lab.state);
+    let resolved = 0;
+    lab.state.examRecords = lab.state.examRecords.map((record) => {
+      if (record.profileId !== profile?.id || !(record.unresolvedWeakTopics || []).length) return record;
+      const next = engine.resolveExamRecordTopics(record, getQuestions());
+      if (!(next.unresolvedWeakTopics || []).length) resolved += 1;
+      return next;
+    });
+    saveLearningState();
+    showLabMessage(resolved ? `已确认 ${resolved} 份试卷的知识点映射。` : "仍有知识点无法映射，请先检查年级或保留为待确认值。", !resolved);
+    renderPanel();
   }
 
   function exportExamRecords() {
@@ -2502,14 +4333,17 @@
     if (!file) return;
     try {
       if (file.size > 5 * 1024 * 1024) throw new Error("试卷记录文件不能超过 5 MB。");
-      const payload = JSON.parse(await file.text());
-      if (payload?.format !== "physics-exam-records" || Number(payload.version) !== 1 || !Array.isArray(payload.records)) {
-        throw new Error("不是受支持的试卷记录文件。");
+      const text = await file.text();
+      try {
+        const payload = JSON.parse(text);
+        if (payload?.format !== "physics-exam-records" || Number(payload.version) !== 1 || !Array.isArray(payload.records)) {
+          throw new Error("不是受支持的试卷记录 JSON 文件。");
+        }
+        previewExamImportRecords(payload.records);
+      } catch (jsonError) {
+        if (jsonError instanceof SyntaxError) previewExamImport(text);
+        else throw jsonError;
       }
-      const result = engine.importExamRecords(lab.state, payload.records);
-      saveLearningState();
-      showLabMessage(`导入 ${result.added.length} 条试卷记录；${result.errors.length} 条无效记录已跳过。`, !result.added.length);
-      renderPanel();
     } catch (error) {
       showLabMessage(`试卷记录导入失败：${error.message}`, true);
     }
@@ -2528,23 +4362,170 @@
     }
   }
 
+  function exportStudentReportHtmlV2() {
+    const report = engine.createReportPayload(lab.state, getQuestions());
+    const analysis = report.analysis || {};
+    const profile = report.profile;
+    const coverage = analysis.evidenceCoverage || {
+      coverageLabel: "0/0",
+      levelLabel: "证据不足",
+      byTopic: [],
+      reason: "证据不足：尚未形成可追溯知识点覆盖。"
+    };
+    const plan = lab.state.learningPlans
+      .filter((item) => item.profileId === profile.id)
+      .sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0))[0] || null;
+    const planProgress = engine.learningPlanProgress(lab.state, plan);
+    const questionMap = new Map(getQuestions().map((question) => [question.id, question]));
+    const priorityTopics = (analysis.weakest || []).slice(0, 3);
+    const topicEvidence = new Map((analysis.knowledgePoints || []).map((item) => [item.topicKey || engine.normalizeTopic(item.topic).key, item]));
+    const evidenceForTopic = (topic) => topicEvidence.get(topic.topicKey || engine.normalizeTopic(topic.topic).key);
+    const evidenceAnchor = (id) => `evidence-${String(id || "unknown").replace(/[^A-Za-z0-9_-]/g, "_")}`;
+    const teacherNotes = lab.state.growthRecords
+      .filter((item) => item.profileId === profile.id && item.type === "teacher-note")
+      .slice(-20);
+    const referencedEvidenceIds = new Set();
+    const priorityHtml = priorityTopics.length ? priorityTopics.map((topic, index) => {
+      const evidence = evidenceForTopic(topic);
+      const attempts = report.attempts.filter((attempt) => {
+        return (attempt.topicKey && attempt.topicKey === (topic.topicKey || evidence?.topicKey))
+          || (!attempt.topicKey && attempt.topic === topic.topic);
+      });
+      const exams = report.examRecords.filter((record) => {
+        return (record.weakTopicKeys || []).includes(topic.topicKey)
+          || (record.weakTopics || []).includes(topic.topic);
+      });
+      const diagnostic = report.diagnosticAttempts?.filter((item) => (item.topics || []).includes(topic.topic)) || [];
+      const evidenceIds = [...new Set([
+        ...(evidence?.evidenceIds || []),
+        ...attempts.map((item) => item.id),
+        ...exams.map((item) => item.id),
+        ...diagnostic.map((item) => item.id)
+      ].filter(Boolean))];
+      evidenceIds.forEach((id) => referencedEvidenceIds.add(id));
+      const modelGroups = new Set();
+      let unclassifiedModelCount = 0;
+      attempts.forEach((attempt) => {
+        const question = questionMap.get(attempt.questionId) || {};
+        const group = attempt.independenceGroupId || question.independenceGroupId
+          || attempt.modelDefinitionId || question.modelDefinitionId
+          || attempt.modelFamilyId || question.modelFamilyId;
+        if (group) modelGroups.add(group);
+        else unclassifiedModelCount += 1;
+      });
+      const highHintCount = attempts.filter((attempt) => Number(attempt.hintLevel || 0) >= 3).length;
+      const freshness = evidence?.evidenceFreshness || {};
+      const confirmation = teacherNotes.find((note) => {
+        const text = `${note.title || ""} ${note.detail || ""} ${note.evidence || ""}`;
+        return text.includes(topic.topic) || evidenceIds.some((id) => text.includes(id));
+      });
+      const uncertainties = [];
+      if (!evidence || Number(evidence.sampleSize || 0) < 2) uncertainties.push("样本量不足，不能形成稳定能力结论");
+      if (Number(evidence?.pendingReviewCount || 0)) uncertainties.push(`仍有 ${evidence.pendingReviewCount} 条作答待人工复核`);
+      if (freshness.needsReconfirmation) uncertainties.push("证据较旧或缺少日期，需要重新确认");
+      if (!modelGroups.size && attempts.length) uncertainties.push("现有作答缺少可识别模型组，不能判断证据独立性");
+      const evidenceLinks = evidenceIds.length
+        ? evidenceIds.map((id) => `<a href="#${evidenceAnchor(id)}">${escapeHtml(id)}</a>`).join("、")
+        : "无";
+      return `<article class="priority-evidence" id="priority-${index + 1}"><h3>${index + 1}. ${escapeHtml(topic.topic)}</h3>
+        <p><strong>事实：</strong>${evidence?.submittedCount ?? attempts.length} 条提交，${evidence?.scoredCount ?? 0} 条已评分，${evidence?.correctCount ?? 0} 条正确，${evidence?.pendingReviewCount ?? 0} 条待人工复核；试卷证据 ${exams.length} 条，诊断证据 ${diagnostic.length} 条，迁移成功证据 ${Number(evidence?.transferSuccessCount || 0)} 条。</p>
+        <p><strong>证据独立性：</strong>正式作答 ${attempts.length} 次，可识别为 ${modelGroups.size} 个模型/独立组${unclassifiedModelCount ? `，另有 ${unclassifiedModelCount} 条无法确认独立性` : ""}；高提示作答 ${highHintCount} 次。</p>
+        <p><strong>系统推断：</strong>${escapeHtml(evidence?.status || "证据不足")}。${escapeHtml((evidence?.reasons || ["尚无足够证据形成推断"]).join("；"))}</p>
+        <p><strong>教师确认：</strong>${confirmation ? `已记录（${escapeHtml(confirmation.recordedAt || confirmation.createdAt || "未记录时间")}）：${escapeHtml(confirmation.detail || confirmation.title)}` : "待确认"}</p>
+        <p><strong>证据新鲜度：</strong>${freshness.latestEvidenceAt ? `${escapeHtml(evidence.latestEvidenceDate || freshness.latestEvidenceAt)}，距今约 ${freshness.ageDays} 天` : "尚无有效日期"}${freshness.needsReconfirmation ? "；建议重新确认" : ""}</p>
+        <p><strong>不确定性：</strong>${escapeHtml(uncertainties.join("；") || "当前未发现额外不确定性，但本结论仍属于形成性判断")}</p>
+        <p><strong>原始证据 ID：</strong>${evidenceLinks}</p></article>`;
+    }).join("") : "<p>当前没有达到优先问题门槛的知识点；这不等于所有领域都已掌握。</p>";
+    const untested = coverage.byTopic.filter((item) => !item.sampleSize).map((item) => item.label);
+    const recentDates = coverage.byTopic.map((item) => item.latestEvidenceDate).filter(Boolean).sort();
+    const transferRecords = lab.state.experimentRecords.filter((item) => item.profileId === profile.id && item.type === "transfer");
+    const planQuestions = plan?.questionIds?.map((id) => questionMap.get(id)?.title || id) || [];
+    const comparison = plan
+      ? engine.buildComparableInterventionOutcome(lab.state, plan, getQuestions())
+      : { comparisonStatus: "insufficient", comparisonReason: "尚未生成专项方案。", preScoredCount: 0, postScoredCount: 0, pendingReviewCount: 0, matchedPairCount: 0, preAccuracy: null, postAccuracy: null, delta: null, conclusion: "证据不足" };
+    (comparison.pairs || []).forEach((pair) => {
+      referencedEvidenceIds.add(pair.beforeEvidenceId);
+      referencedEvidenceIds.add(pair.retestEvidenceId);
+    });
+    const comparisonText = comparison.comparisonStatus === "comparable"
+      ? `配对证据前 ${comparison.pairedPreAccuracy}% → 后 ${comparison.pairedPostAccuracy}%（前后变化 ${comparison.pairedDelta >= 0 ? "+" : ""}${comparison.pairedDelta} 个百分点；${comparison.matchedPairCount} 对；结论：${comparison.conclusion}）。这是一项形成性比较，不代表因果性能力提升。`
+      : comparison.comparisonStatus === "emerging"
+        ? `已有 ${comparison.matchedPairCount} 对可比证据，出现${Number(comparison.pairedPostAccuracy) > Number(comparison.pairedPreAccuracy) ? "改善迹象" : "阶段性表现"}，尚需复测；按产品规则不计算百分点变化。`
+        : `干预后表现：${comparison.postAccuracy == null ? "暂无可评分证据" : `${comparison.postAccuracy}%（${comparison.postScoredCount} 条）`}。当前前后证据不可直接比较，暂不计算提升幅度。`;
+    const pendingReviews = report.attempts.filter((attempt) => engine.isPendingManualReview?.(attempt));
+    pendingReviews.forEach((attempt) => referencedEvidenceIds.add(attempt.id));
+    const rawEvidence = [
+      ...report.attempts.map((item) => ({
+        id: item.id,
+        type: "作答",
+        date: item.completedAt || item.createdAt,
+        title: questionMap.get(item.questionId)?.title || item.questionId,
+        detail: `评分状态：${item.grading?.status || "未记录"}；提示等级：${Number(item.hintLevel || 0)}；信心：${item.confidenceBefore ?? "未记录"}；错误类型：${item.errorType || "未记录"}`
+      })),
+      ...(report.diagnosticAttempts || []).map((item) => ({
+        id: item.id,
+        type: "诊断",
+        date: item.createdAt,
+        title: item.misconceptionCode || item.diagnosticId || "诊断记录",
+        detail: `答案是否正确：${typeof item.answerCorrect === "boolean" ? (item.answerCorrect ? "是" : "否") : "待复核"}；信心：${item.confidence ?? "未记录"}`
+      })),
+      ...(report.examRecords || []).map((item) => ({
+        id: item.id,
+        type: "试卷",
+        date: item.examDate || item.createdAt,
+        title: item.title || item.examId || "试卷记录",
+        detail: `得分：${item.score ?? "未记录"}/${item.totalScore ?? "未记录"}；知识点：${(item.weakTopics || []).join("、") || "未标注"}`
+      })),
+      ...(report.experimentRecords || []).map((item) => ({
+        id: item.id,
+        type: item.type === "transfer" ? "迁移" : "实验",
+        date: item.completedAt || item.createdAt,
+        title: questionMap.get(item.questionId)?.title || item.questionId || "实验记录",
+        detail: `核验状态：${item.verificationStatus || "待复核"}`
+      }))
+    ];
+    const evidenceAppendix = rawEvidence
+      .filter((item) => item.id && referencedEvidenceIds.has(item.id))
+      .map((item) => `<article class="raw-evidence" id="${evidenceAnchor(item.id)}"><h3>${escapeHtml(item.type)} · ${escapeHtml(item.title || item.id)}</h3><p>Evidence ID：<code>${escapeHtml(item.id)}</code> · 日期：${escapeHtml(item.date || "未记录")}</p><p>${escapeHtml(item.detail || "未记录")}</p></article>`)
+      .join("") || "<p>当前优先结论尚无可列出的原始证据。</p>";
+    const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(profile.name)}学情与专项提升报告</title>
+      <style>body{font:16px/1.7 system-ui,sans-serif;color:#1c2824;max-width:980px;margin:36px auto;padding:0 24px}h1,h2,h3{color:#174f3e}a{color:#11634d}code{overflow-wrap:anywhere}header{border-bottom:3px solid #174f3e;margin-bottom:24px}.summary{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}.summary div{background:#f2f6f1;padding:14px;border-radius:10px}.summary strong{display:block;font-size:22px}.priority-evidence,.raw-evidence{border:1px solid #ccd8d2;padding:12px;margin:10px 0;border-radius:8px}.boundary{background:#fff4dc;padding:14px;border-left:4px solid #986115}li{margin:5px 0}@media(max-width:700px){.summary{grid-template-columns:1fr}}@media print{body{margin:0}.core-summary{break-after:page}}</style>
+      </head><body><section class="core-summary"><header><h1>学情与专项提升报告</h1><p>学生：${escapeHtml(profile.name)} · 年级：${escapeHtml(profile.grade)} · 报告时间：${escapeHtml(new Date(report.exportedAt).toLocaleString("zh-CN"))}</p></header>
+      <section class="summary"><div><strong>${escapeHtml(coverage.coverageLabel || "0/0")}</strong>知识点证据覆盖（已有证据/可评估）</div><div><strong>${escapeHtml(coverage.levelLabel || "证据不足")}</strong>全局证据质量</div><div><strong>${report.attempts.length}</strong>正式作答记录（本机）</div></section>
+      <h2>最多三个优先问题及原始证据</h2>${priorityHtml}
+      <h2>建议与教师确认</h2><p>${escapeHtml(analysis.priorities?.slice(0, 3).join("；") || "先补充独立作答证据，再决定专项训练。")}</p><p>${teacherNotes.length ? `已记录 ${teacherNotes.length} 条教师备注；详见后文。` : "教师尚未确认系统推断。"}</p>
+      <h2>专项干预与可比复测</h2>${plan ? `<p><strong>${escapeHtml(plan.title)}</strong> · ${plan.questionCount}题 · 总计约 ${plan.totalExpectedMinutes || plan.expectedMinutes || "未记录"} 分钟，分 ${plan.sessions?.filter((item) => item.status !== "not-required").length || 1} 次完成 · ${plan.confirmationStatus === "teacher-confirmed" ? `教师已确认（${escapeHtml(plan.teacherConfirmedAt || plan.approvedAt || "")}）` : "未发现教师确认时间"}</p><p>完成情况：${planProgress.completed}/${planProgress.total}（${planProgress.percent}%）；结构：${escapeHtml(plan.structureLabel || "按现有题目元数据如实组织")}</p>` : "<p>尚未生成或确认3/5/7题专项方案。</p>"}<p>${escapeHtml(comparisonText)}</p><p>比较状态：${escapeHtml(comparison.comparisonStatus)}；前后配对 ${comparison.matchedPairCount} 对；待人工复核 ${comparison.pendingReviewCount} 条。${escapeHtml(comparison.comparisonReason)}</p>
+      <h2>待人工复核</h2><p>${pendingReviews.length ? `${pendingReviews.length} 条开放题/建模作答仍待教师确认，尚未进入正式正确率。` : "当前没有待人工复核作答。"}</p>
+      <h2>分析边界</h2><p class="boundary">${escapeHtml(analysis.boundary || "所有结论均为形成性证据，不能替代教师对开放题、迁移题和长期困难的确认。")} 前后变化仅在满足产品可比规则时显示；该规则不是标准化测评阈值，也不构成因果性能力提升结论。</p></section>
+      <h2>证据覆盖与未测范围</h2><p>${escapeHtml(coverage.reason || "证据不足")}</p><p>未测试领域：${escapeHtml(untested.length ? untested.join("、") : "当前可评估知识点均有至少一条记录")}</p><p>最近证据日期：${escapeHtml(recentDates.at(-1) || "无")}</p>
+      <h2>已执行专项方案明细</h2>${plan ? `<p>预定达标条件：${escapeHtml(plan.target || "教师需在复测后确认跨日期独立正确与迁移证据")}</p><p>方案题目：${escapeHtml(planQuestions.join("；") || "无")}</p><p>迁移记录：${transferRecords.length} 条；是否达到质量要求仍以 verificationStatus 和教师复核为准。</p>` : "<p>无。</p>"}
+      <h2>教师最终备注与确认时间</h2>${teacherNotes.length ? `<ul>${teacherNotes.map((item) => `<li>${escapeHtml(item.recordedAt || item.createdAt || "")}：${escapeHtml(item.title)}；${escapeHtml(item.detail)}${item.evidence ? `（证据：${escapeHtml(item.evidence)}）` : ""}</li>`).join("")}</ul>` : "<p>尚无教师最终备注。</p>"}
+      <h2>原始证据附录</h2>${evidenceAppendix}</body></html>`;
+    downloadText(`学情与专项提升报告-${safeFileName(profile.name)}-${dateFileName()}.html`, html, "text/html");
+  }
+
   function exportStudentReportHtml() {
+    return exportStudentReportHtmlV2();
+  }
+    /* Legacy renderer retained below only as a reference for old exports.
     const report = engine.createReportPayload(lab.state, getQuestions());
     const analysis = report.analysis;
     const profile = report.profile;
     const rows = analysis.weakest.map((topic) => `
-      <tr><td>${escapeHtml(topic.topic)}</td><td>${topic.attempts}</td><td>${topic.accuracy}%</td><td>${topic.averageHint}</td><td>${topic.modeling}</td></tr>`).join("");
+      <tr><td>${escapeHtml(topic.topic)}</td><td>${topic.attempts}</td><td>${topic.accuracy == null ? "暂无可评分证据" : `${topic.accuracy}%`}</td><td>${topic.averageHint}</td><td>${topic.modeling}</td></tr>`).join("");
     const timeline = engine.growthTimeline(lab.state, profile.id, 30).map((item) => `
       <li><time>${escapeHtml(formatDate(item.date))}</time><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></li>`).join("");
     const html = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>${escapeHtml(profile.name)}物理学情分析报告</title>
       <style>body{font:16px/1.7 system-ui,sans-serif;color:#1c2824;max-width:920px;margin:40px auto;padding:0 24px}h1,h2{color:#174f3e}header{border-bottom:3px solid #174f3e;margin-bottom:24px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}.metrics div{background:#f2f6f1;padding:16px;border-radius:10px}.metrics strong{display:block;font-size:24px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccd8d2;padding:8px;text-align:left}li{margin:8px 0}li strong,li span{display:block}.boundary{background:#fff4dc;padding:14px;border-left:4px solid #986115}@media print{body{margin:0}.no-print{display:none}}</style>
       </head><body><header><h1>物理学情分析报告</h1><p>${escapeHtml(profile.name)} · ${escapeHtml(profile.grade)} · 物理</p><p>生成时间：${escapeHtml(new Date(report.exportedAt).toLocaleString("zh-CN"))}</p></header>
-      <section class="metrics"><div><strong>${report.summary.completed}</strong>正式作答</div><div><strong>${report.summary.accuracy}%</strong>正确率</div><div><strong>${report.summary.independenceRate}%</strong>独立完成率</div><div><strong>${report.summary.averageHint}</strong>平均提示等级</div></section>
+      <section class="metrics"><div><strong>${report.summary.completed}</strong>正式作答</div><div><strong>${report.summary.accuracy == null ? "暂无可评分证据" : `${report.summary.accuracy}%`}</strong>正确率</div><div><strong>${report.summary.independenceRate == null ? "暂无可评分证据" : `${report.summary.independenceRate}%`}</strong>独立完成率</div><div><strong>${report.summary.averageHint}</strong>平均提示等级</div></section>
       <h2>分析结论</h2><p>${escapeHtml(analysis.conclusion)}</p><h2>下一步建议</h2><ol>${analysis.priorities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>
       <h2>薄弱知识点证据</h2><table><thead><tr><th>知识点</th><th>次数</th><th>正确率</th><th>平均提示</th><th>建模</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">暂无足够记录</td></tr>"}</tbody></table>
       <h2>成长时间线</h2><ul>${timeline || "<li>暂无记录</li>"}</ul><p class="boundary">${escapeHtml(analysis.boundary)}</p></body></html>`;
     downloadText(`物理学情分析报告-${safeFileName(profile.name)}-${dateFileName()}.html`, html, "text/html");
   }
+
+  */
 
   function exportProfile() {
     const payload = engine.createReportPayload(lab.state, getQuestions());
@@ -2560,26 +4541,36 @@
         throw new Error("文件不是有效的物理学习档案");
       }
       if (parsed.attempts.length > 10000) throw new Error("学习档案作答记录超过 10000 条上限");
-      const profile = engine.addProfile(lab.state, {
-        name: `${String(parsed.profile.name || "导入学生").slice(0, 24)}（导入）`,
-        grade: parsed.profile.grade,
-        goal: parsed.profile.goal,
-        analysisNote: parsed.profile.analysisNote
-      });
-      const profileId = profile.id;
-      parsed.attempts.forEach((attempt) => {
-        lab.state.attempts.push({ ...attempt, id: engine.createId("attempt"), profileId });
-      });
-      if (Array.isArray(parsed.examRecords)) {
-        engine.importExamRecords(lab.state, parsed.examRecords.slice(0, 500), profileId);
+      if (!String(parsed.profile.id || "").trim()) {
+        throw new Error("导入档案缺少稳定的 profile.id，已拒绝写入。");
       }
-      if (Array.isArray(parsed.growthRecords)) {
-        parsed.growthRecords.slice(0, 500).forEach((record) => {
-          engine.addGrowthRecord(lab.state, { ...record, profileId });
-        });
+      if (!String(parsed.profile.portableProfileId || "").trim()
+        && String(parsed.profile.sourceProfileId || parsed.profile.id) === "student-default") {
+        const staged = engine.importStudentReport(lab.state, parsed);
+        saveLearningState();
+        showLabMessage(staged.status === "duplicate"
+          ? "该旧版档案已经导入过；请在班级证据区完成学生身份绑定。"
+          : "旧版档案只有 student-default，已安全暂存；请在班级证据区明确绑定已有学生或建立新学生后再写入证据。", true);
+        renderPanel();
+        return;
       }
-      lab.state.activeProfileId = profileId;
+      const result = engine.importLearningProfile(lab.state, {
+        ...parsed,
+        attempts: parsed.attempts.slice(0, 10000),
+        examRecords: Array.isArray(parsed.examRecords) ? parsed.examRecords.slice(0, 500) : [],
+        growthRecords: Array.isArray(parsed.growthRecords) ? parsed.growthRecords.slice(0, 500) : []
+      });
+      lab.state.examRecords = lab.state.examRecords.map((record) => {
+        return record.profileId === result.profile.id
+          ? engine.resolveExamRecordTopics(record, getQuestions())
+          : record;
+      });
       saveLearningState();
+      const addedAttempts = result.collections.attempts.added.length;
+      const addedExams = result.collections.examRecords.added.length;
+      const conflicts = Object.values(result.collections)
+        .reduce((count, item) => count + (item.conflicts?.length || 0), 0);
+      showLabMessage(`${result.profileAction === "created" ? "已新增学生" : "已合并到已有学生"}；新增作答 ${addedAttempts} 条、试卷 ${addedExams} 条${conflicts ? `；有 ${conflicts} 条冲突待复核` : ""}。`);
       renderPanel();
     } catch (error) {
       showLabMessage(error.message || "学习档案导入失败。", true);
@@ -2588,40 +4579,88 @@
 
   async function importStudentReports(files) {
     let imported = 0;
+    let duplicates = 0;
+    let identityRequired = 0;
     for (const file of files) {
       try {
         const parsed = JSON.parse(await file.text());
-        if (parsed.format !== "physics-learning-profile" || !parsed.summary) continue;
-        lab.state.importedReports.push({
-          id: engine.createId("student-report"),
-          profile: parsed.profile,
-          summary: parsed.summary,
-          importedAt: new Date().toISOString()
-        });
-        imported += 1;
+        const result = engine.importStudentReport(lab.state, parsed);
+        if (result.status === "duplicate") duplicates += 1;
+        else {
+          imported += 1;
+          if (result.status === "identity-required") identityRequired += 1;
+        }
       } catch (error) {
         console.warn("忽略无效学生档案", file.name, error);
       }
     }
     saveLearningState();
-    showLabMessage(`已导入 ${imported} 份有效学习档案。`, imported === 0);
+    showLabMessage(`已导入 ${imported} 份有效学习档案${duplicates ? `，跳过 ${duplicates} 份重复版本` : ""}${identityRequired ? `；${identityRequired} 份旧报告需先绑定学生身份，暂未计入班级结论` : ""}。`, imported === 0 && duplicates === 0);
     renderPanel();
   }
 
   function aggregateImportedReports() {
     const map = new Map();
+    const importedVersions = new Set();
+    const statusLabels = {
+      insufficient: "证据不足",
+      reinforce: "需巩固",
+      basic: "基本掌握",
+      transferable: "可迁移"
+    };
     lab.state.importedReports.forEach((report) => {
-      (report.summary?.topics || []).forEach((topic) => {
-        const current = map.get(topic.topic) || { topic: topic.topic, students: 0, scoreTotal: 0 };
-        current.students += 1;
-        current.scoreTotal += Number(topic.averageScore ?? topic.accuracy) || 0;
-        map.set(topic.topic, current);
+      const portableProfileId = String(report.profile?.portableProfileId || report.portableProfileId || "").trim();
+      const boundProfile = report.boundProfileId
+        ? lab.state.profiles.find((profile) => profile.id === report.boundProfileId)
+        : null;
+      if (report.identityStatus === "unresolved-legacy" || (!portableProfileId && !boundProfile)) return;
+      const identityStatus = "resolved";
+      const identityKey = portableProfileId || boundProfile.portableProfileId || boundProfile.id;
+      const exportedAt = String(report.exportedAt || report.updatedAt || "").trim();
+      const versionKey = portableProfileId && exportedAt ? `${portableProfileId}|${exportedAt}` : "";
+      if (versionKey && importedVersions.has(versionKey)) return;
+      if (versionKey) importedVersions.add(versionKey);
+      const evidenceTopics = report.summary?.evidenceCoverage?.byTopic
+        || report.summary?.knowledgePointEvidence?.byTopic
+        || report.summary?.topics
+        || [];
+      const studentId = identityKey;
+      const seenTopics = new Set();
+      evidenceTopics.forEach((topic) => {
+        const label = String(topic.label || topic.topic || "未分类").trim() || "未分类";
+        const key = String(topic.key || topic.topicKey || label).trim();
+        const current = map.get(key) || {
+          topic: label,
+          studentIds: new Set(),
+          evidenceTotal: 0,
+          statusCounts: {},
+          identityStatuses: new Set()
+        };
+        if (!seenTopics.has(key)) current.studentIds.add(studentId);
+        current.identityStatuses.add(identityStatus);
+        seenTopics.add(key);
+        const evidenceCount = Number(topic.sampleSize ?? topic.attempts ?? topic.attemptCount ?? 0);
+        const code = String(topic.code || "insufficient");
+        const status = String(topic.status || statusLabels[code] || "证据不足");
+        current.evidenceTotal += Number.isFinite(evidenceCount) ? Math.max(0, evidenceCount) : 0;
+        current.statusCounts[status] = (current.statusCounts[status] || 0) + 1;
+        map.set(key, current);
       });
     });
-    return [...map.values()].map((item) => ({
-      ...item,
-      score: item.students ? Math.round(item.scoreTotal / item.students) : 0
-    })).sort((a, b) => a.score - b.score);
+    const statusOrder = ["需巩固", "证据不足", "基本掌握", "可迁移"];
+    return [...map.values()].map((item) => {
+      const statusSummary = statusOrder
+        .filter((status) => item.statusCounts[status])
+        .map((status) => `${status} ${item.statusCounts[status]}`)
+        .join(" · ") || "证据不足";
+      return {
+        topic: item.topic,
+        students: item.studentIds.size,
+        evidenceTotal: item.evidenceTotal,
+        statusSummary,
+        identityStatus: item.identityStatuses.has("unresolved-legacy") ? "unresolved-legacy" : "resolved"
+      };
+    }).sort((a, b) => a.statusSummary.localeCompare(b.statusSummary, "zh-CN") || b.evidenceTotal - a.evidenceTotal);
   }
 
   async function startSensor(kind) {

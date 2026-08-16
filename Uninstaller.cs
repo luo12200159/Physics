@@ -7,16 +7,16 @@ using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: AssemblyTitle("卸载物理研习室")]
-[assembly: AssemblyDescription("物理研习室卸载程序")]
-[assembly: AssemblyProduct("物理研习室")]
+[assembly: AssemblyTitle("卸载费曼物理")]
+[assembly: AssemblyDescription("费曼物理卸载程序")]
+[assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("2.7.0.0")]
-[assembly: AssemblyFileVersion("2.7.0.0")]
+[assembly: AssemblyVersion("3.2.0.0")]
+[assembly: AssemblyFileVersion("3.2.0.0")]
 
 internal static class UninstallerProgram
 {
-    private const string AppName = "物理研习室";
+    private const string AppName = "费曼物理";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PhysicsStudio";
     private const int MoveFileDelayUntilReboot = 0x4;
 
@@ -42,7 +42,7 @@ internal static class UninstallerProgram
         if (!silent)
         {
             DialogResult answer = MessageBox.Show(
-                "确定卸载“物理研习室”吗？\n\n"
+                "确定卸载“费曼物理”吗？\n\n"
                 + "应用文件和快捷方式将被移除。浏览器中保存的个人题库数据不会主动清除，重新安装后仍可继续使用。",
                 "卸载" + AppName,
                 MessageBoxButtons.YesNo,
@@ -122,7 +122,7 @@ internal static class UninstallerProgram
 
             if (!silent)
             {
-                MessageBox.Show("“物理研习室”已卸载。", "卸载" + AppName,
+                MessageBox.Show("“费曼物理”已卸载。", "卸载" + AppName,
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
 
@@ -138,6 +138,7 @@ internal static class UninstallerProgram
     private static bool RequiredFilesExist(string directory)
     {
         return File.Exists(Path.Combine(directory, "物理研习室.exe"))
+            && File.Exists(Path.Combine(directory, "物理研习室-班级服务.exe"))
             && File.Exists(Path.Combine(directory, "index.html"))
             && File.Exists(Path.Combine(directory, "styles.css"))
             && File.Exists(Path.Combine(directory, "learning-lab.css"))
@@ -145,6 +146,7 @@ internal static class UninstallerProgram
             && File.Exists(Path.Combine(directory, "activation.css"))
             && File.Exists(Path.Combine(directory, "activation-public-key.js"))
             && File.Exists(Path.Combine(directory, "activation.js"))
+            && File.Exists(Path.Combine(directory, "storage-repository.js"))
             && File.Exists(Path.Combine(directory, "curriculum-taxonomy.js"))
             && File.Exists(Path.Combine(directory, "curriculum-bank.js"))
             && File.Exists(Path.Combine(directory, "exam-question-index.js"))
@@ -160,6 +162,8 @@ internal static class UninstallerProgram
             && File.Exists(Path.Combine(directory, "document-import.js"))
             && File.Exists(Path.Combine(directory, "content-catalog.js"))
             && File.Exists(Path.Combine(directory, "learning-engine.js"))
+            && File.Exists(Path.Combine(directory, "physics-visuals.js"))
+            && File.Exists(Path.Combine(directory, "teacher-mode-lock.js"))
             && File.Exists(Path.Combine(directory, "app.js"))
             && File.Exists(Path.Combine(directory, "learning-lab.js"))
             && File.Exists(Path.Combine(directory, "experience-shell.js"))

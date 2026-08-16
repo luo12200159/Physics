@@ -27,7 +27,20 @@
     return items[((index % items.length) + items.length) % items.length];
   }
 
-  function buildQuestion(grade, sequence, templateResult) {
+  function inferQuestionType(templateResult = {}) {
+    const explicit = String(templateResult.questionType || "").trim();
+    if (explicit) return explicit;
+    const text = [templateResult.title, templateResult.content, templateResult.solution].join(" ");
+    if (/选择题|单选|多选|[A-D][.、)]/.test(text)) return "单项选择题";
+    if (/填空|（\s*）|\(\s*\)|____|横线上/.test(text)) return "填空题";
+    if (/实验|探究|器材|测量|装置|数据处理/.test(text)) return "实验题";
+    if (/判断/.test(text)) return "判断题";
+    if (/简答|说明|解释|为什么|论述/.test(text)) return "简答题";
+    if (/求|计算|速度|质量|电流|电压|功率|能量|周期|距离|时间/.test(text)) return "计算题";
+    return "未标注";
+  }
+
+  function buildQuestion(grade, sequence, templateResult, templateIndex = 0) {
     const stage = /^高/.test(grade) ? "高中" : "初中";
     const gradeCode = {
       "八年级": "g8",
@@ -51,7 +64,7 @@
       grade,
       topic: templateResult.topic,
       difficulty: templateResult.difficulty || choose(["基础", "进阶", "挑战"], sequence),
-      questionType: templateResult.questionType || "计算题",
+      questionType: inferQuestionType(templateResult),
       content: templateResult.content,
       solution: detailedSolution,
       answer: templateResult.answer,
@@ -68,6 +81,11 @@
       syncOrigin: "bundled-original-practice",
       originalExercise: true,
       fullTextIncluded: true,
+      evidenceTier: sequence < 75 ? "diagnostic-anchor" : "practice-variant",
+      modelDefinitionId: templateResult.modelDefinitionId || `${gradeCode}-original-template-${String(templateIndex).padStart(3, "0")}`,
+      retestGroupId: templateResult.retestGroupId || `${gradeCode}-original-template-${String(templateIndex).padStart(3, "0")}`,
+      diagnosticEligible: sequence < 75,
+      autoScorable: ["单项选择题", "多项选择题", "判断题", "填空题", "计算题"].includes(inferQuestionType(templateResult)),
       contentReviewStatus: "公式与数值规则校验通过，建议教师抽检",
       metadataReviewStatus: "已按年级、章节、知识点和难度分类",
       videoType: "none",
@@ -1756,9 +1774,10 @@
   const questions = Object.entries(ADDITION_COUNTS).flatMap(([grade, count]) => {
     const templates = templateGroups[grade];
     return Array.from({ length: count }, (_, sequence) => {
-      const template = templates[sequence % templates.length];
+      const templateIndex = sequence % templates.length;
+      const template = templates[templateIndex];
       const round = Math.floor(sequence / templates.length);
-      return buildQuestion(grade, sequence, template(round, sequence));
+      return buildQuestion(grade, sequence, template(round, sequence), templateIndex);
     });
   });
 
@@ -1778,13 +1797,22 @@
     throw new Error(`原创1500题库生成失败：${invalid[0] || "数量不符"}`);
   }
 
+  const normalizedQuestions = questions.map((question) => ({
+    ...question,
+    knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
+    cognitiveDemand: question.cognitiveDemand || (question.difficulty === "挑战" ? "迁移" : question.difficulty === "进阶" ? "应用" : "基础"),
+    representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : /图|图像/.test(String(question.content || "")) ? "图像" : "文字/公式"),
+    independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
+    assessmentPurpose: question.assessmentPurpose || "practice"
+  }));
+
   window.PHYSICS_ORIGINAL_PRACTICE_BANK = Object.freeze({
     version: VERSION,
     contentVersion: CONTENT_VERSION,
     targetCompleteQuestions: 1500,
     targetPerGrade: TARGET_PER_GRADE,
     additionCounts: ADDITION_COUNTS,
-    questions: Object.freeze(questions.map(Object.freeze)),
+    questions: Object.freeze(normalizedQuestions.map(Object.freeze)),
     manifest: Object.freeze({
       generatedCount: questions.length,
       counts: Object.freeze({ ...counts }),

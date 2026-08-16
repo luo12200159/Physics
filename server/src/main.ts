@@ -6,7 +6,9 @@ import { createPool } from "./infrastructure/db.js";
 import { createRedis } from "./infrastructure/redis.js";
 import { createAuthService, type AuthRedis } from "./modules/auth/service.js";
 import { createClassesService } from "./modules/classes/service.js";
+import { OwnerCapabilityService } from "./modules/classes/owner-capability.js";
 import { createInvitesService, type InviteRedis } from "./modules/invites/service.js";
+import { createLearningService } from "./modules/learning/service.js";
 
 function unavailable(name: string): never {
   throw new Error(`${name} adapter is not configured until the persistence task is installed`);
@@ -33,10 +35,17 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
   const classService = createClassesService({
     pool,
     auditIpKey: config.auditIpKey,
+    ownerCapabilitySecret: config.jwtSecret,
     syncOutboxRetentionDays: config.syncOutboxRetentionDays,
+  });
+  const ownerCapabilityService = new OwnerCapabilityService({
+    pool,
+    secret: config.jwtSecret,
   });
   const inviteRedis: InviteRedis = {
     eval: async (script, numberOfKeys, ...args) => redisClient.eval(script, numberOfKeys, ...args),
+    set: async (key, value, mode, ttlSeconds) => redisClient.set(key, value, mode, ttlSeconds),
+    del: async (key) => redisClient.del(key),
   };
   const inviteService = createInvitesService({
     pool,
@@ -44,6 +53,12 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
     inviteCodeKey: config.inviteCodeKey,
     auditIpKey: config.auditIpKey,
     syncOutboxRetentionDays: config.syncOutboxRetentionDays,
+    jwtSecret: config.jwtSecret,
+    refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
+  });
+  const learningService = createLearningService({
+    pool,
+    auditIpKey: config.auditIpKey,
   });
   return {
     config,
@@ -63,7 +78,9 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
     },
     authService,
     classService,
+    ownerCapabilityService,
     inviteService,
+    learningService,
   };
 }
 

@@ -32,6 +32,8 @@ const context = vm.createContext({
 });
 context.window = context;
 
+load("storage-repository.js");
+
 function load(file) {
   vm.runInContext(
     fs.readFileSync(path.join(project, file), "utf8"),

@@ -2,7 +2,15 @@
   "use strict";
 
   const STORAGE_KEY = "physics-learning-loop-v1";
-  const STATE_VERSION = 4;
+  const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
+    appVersion: "3.2.0",
+    stateVersion: 8,
+    reportFormatVersion: 4
+  });
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.2.0");
+  // v2.9 state migration keeps every v2.8 record and adds explicit placement
+  // sessions plus stable portable student identities.
+  const STATE_VERSION = Math.max(8, Number(VERSION_SOURCE.stateVersion) || 8);
   const DAY = 24 * 60 * 60 * 1000;
   const MASTERY_RULES = Object.freeze({
     experimental: true,
@@ -13,6 +21,13 @@
     weakModelingBelow: 50
   });
   const BROAD_COVERAGE_INTERVAL_DAYS = 14;
+  const INTERVENTION_COMPARISON_RULE = Object.freeze({
+    version: 1,
+    minimumMatchedPairs: 3,
+    minimumDistinctDates: 2,
+    emergingMaximumPairs: 2,
+    standardizedAssessmentRule: false
+  });
   const ERROR_TYPE_DEFINITIONS = Object.freeze([
     { code: "reading", label: "审题错误", aliases: /审题|读题|看错|条件遗漏|信息提取/u },
     { code: "concept", label: "概念错误", aliases: /概念|前概念|认知/u },
@@ -1165,17 +1180,90 @@
 
   function normalizeAttemptEvidence(attempt = {}) {
     const normalizedErrorType = normalizeErrorType(attempt.errorType);
+    const knowledgePointId = String(attempt.knowledgePointId || topicKeyForQuestion(attempt) || "").trim();
     return {
       ...attempt,
+      knowledgePointId,
+      modelDefinitionId: String(attempt.modelDefinitionId || attempt.modelFamilyId || "").trim(),
+      independenceGroupId: String(attempt.independenceGroupId || attempt.modelDefinitionId || attempt.modelFamilyId || "").trim(),
+      topicKey: topicKeyForQuestion(attempt),
       questionType: normalizeQuestionType(attempt.questionType || attempt.examQuestionType),
       errorType: normalizedErrorType,
       errorTypeCode: normalizedErrorType ? errorTypeCode(normalizedErrorType) : ""
     };
   }
 
+  // Scoring evidence is deliberately kept separate from submitted work.  An
+  // open response can be stored and shown to a teacher without silently
+  // becoming a zero score in any student metric.
+  function isPendingManualReview(attempt = {}) {
+    return String(attempt?.grading?.status || "") === "review-required";
+  }
+
+  function isAutoScoredAttempt(attempt = {}) {
+    if (isPendingManualReview(attempt)) return false;
+    const status = String(attempt?.grading?.status || "");
+    return ["correct", "incorrect", "partial", "wrong"].includes(status)
+      && Number.isFinite(Number(attempt?.grading?.score));
+  }
+
+  function isValidAccuracyEvidence(attempt = {}) {
+    return isAutoScoredAttempt(attempt);
+  }
+
+  function summarizeAttemptEvidence(attempts = []) {
+    const submittedCount = Array.isArray(attempts) ? attempts.length : 0;
+    const pendingReviewCount = (attempts || []).filter(isPendingManualReview).length;
+    const scored = (attempts || []).filter(isValidAccuracyEvidence);
+    const correctCount = scored.filter((attempt) => attempt.grading?.status === "correct").length;
+    const scoreTotal = scored.reduce((sum, attempt) => sum + Number(attempt.grading?.score), 0);
+    const hintTotal = (attempts || []).reduce((sum, attempt) => sum + (Number(attempt.hintLevel) || 0), 0);
+    return {
+      submittedCount,
+      scoredCount: scored.length,
+      correctCount,
+      pendingReviewCount,
+      accuracy: scored.length ? Math.round(correctCount / scored.length * 100) : null,
+      scoreTotal,
+      averageScore: scored.length ? Math.round(scoreTotal / scored.length * 100) : null,
+      hintTotal,
+      averageHint: submittedCount ? Math.round(hintTotal / submittedCount * 10) / 10 : 0
+    };
+  }
+
   function createId(prefix = "record") {
     if (globalThis.crypto?.randomUUID) return `${prefix}-${globalThis.crypto.randomUUID()}`;
     return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  }
+
+  function createPortableProfileId() {
+    if (globalThis.crypto?.randomUUID) return `student-${globalThis.crypto.randomUUID()}`;
+    // Browsers without randomUUID still have a cryptographically random source
+    // in normal WebView contexts; the timestamp is only a collision guard.
+    if (globalThis.crypto?.getRandomValues) {
+      const bytes = new Uint8Array(16);
+      globalThis.crypto.getRandomValues(bytes);
+      return `student-${Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("")}`;
+    }
+    return `student-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 18)}`;
+  }
+
+  function storageRepository() {
+    if (globalThis.PhysicsStudioStorageRepository) return globalThis.PhysicsStudioStorageRepository;
+    return {
+      getItem: () => null,
+      setItem: () => { throw new Error("Storage repository unavailable"); }
+    };
+  }
+
+  function localCalendarDateKey(value = new Date()) {
+    const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
+    if (Number.isNaN(date.getTime())) return "";
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, "0"),
+      String(date.getDate()).padStart(2, "0")
+    ].join("-");
   }
 
   function isPublishedQuestion(question = {}) {
@@ -1194,6 +1282,7 @@
       activeProfileId: "student-default",
       profiles: [{
         id: "student-default",
+        portableProfileId: createPortableProfileId(),
         name: "本机学生",
         role: "student",
         stage: "高中",
@@ -1215,45 +1304,140 @@
       importedReports: [],
       contentReviews: {},
       experimentRecords: [],
-      settings: { dailyGoal: 5, preferredStage: "全部" },
+      temporaryLearningGroups: [],
+      assessmentSessions: [],
+      settings: {
+        dailyGoal: 5,
+        preferredStage: "全部",
+        dataMode: "local-only",
+        aiDataNoticeAcceptedAt: ""
+      },
       updatedAt: new Date().toISOString()
     };
+  }
+
+  function migrateState(value) {
+    const source = value && typeof value === "object" ? value : {};
+    const version = Number(source.version) || 1;
+    const migrated = { ...source };
+    if (version < 5) {
+      // v5 adds source identities and canonical topic metadata. Legacy arrays
+      // remain intact and are normalized below; no record is discarded.
+      migrated.version = 5;
+    }
+    if (version < 6) {
+      // v6 adds evidence accounting and comparable-intervention fields.  The
+      // existing attempts/plans are retained; normalizeState fills defaults.
+      migrated.version = 6;
+    }
+    if (version < 7) {
+      // v7 introduces explicit placement sessions.  Existing practice,
+      // diagnostic and broad-coverage evidence is deliberately not promoted
+      // to a completed placement assessment.
+      migrated.version = 7;
+      if (!Array.isArray(migrated.assessmentSessions)) migrated.assessmentSessions = [];
+    }
+    if (version < 8) {
+      // v8 adds stable cross-device report identities, explicit legacy identity
+      // resolution and consent metadata. No legacy evidence is promoted,
+      // merged, deleted or reassigned during this migration.
+      migrated.version = 8;
+      if (!Array.isArray(migrated.importedReports)) migrated.importedReports = [];
+    }
+    return migrated;
   }
 
   function normalizeState(value) {
     const fallback = defaultState();
     if (!value || typeof value !== "object") return fallback;
+    const migrated = migrateState(value);
     return {
       ...fallback,
-      ...value,
+      ...migrated,
       version: STATE_VERSION,
-      profiles: Array.isArray(value.profiles) && value.profiles.length
-        ? value.profiles.map(normalizeProfile).map((profile) => {
-          return profile.id === "student-default" && profile.role !== "student"
-            ? { ...profile, role: "student" }
-            : profile;
-        })
-        : fallback.profiles,
-      diagnosticAttempts: Array.isArray(value.diagnosticAttempts) ? value.diagnosticAttempts : [],
-      attempts: Array.isArray(value.attempts) ? value.attempts.map(normalizeAttemptEvidence) : [],
-      reviews: value.reviews && typeof value.reviews === "object" && !Array.isArray(value.reviews) ? value.reviews : {},
-      assignments: Array.isArray(value.assignments) ? value.assignments : [],
-      learningPlans: Array.isArray(value.learningPlans) ? value.learningPlans.slice(-500) : [],
-      broadCoverageChecks: Array.isArray(value.broadCoverageChecks)
-        ? value.broadCoverageChecks.slice(-500)
+      profiles: (() => {
+        const usedPortableIds = new Set();
+        const profiles = Array.isArray(migrated.profiles) && migrated.profiles.length
+          ? migrated.profiles.map(normalizeProfile).map((profile) => {
+            let next = profile;
+            if (usedPortableIds.has(profile.portableProfileId)) {
+              next = { ...profile, portableProfileId: createPortableProfileId() };
+            }
+            usedPortableIds.add(next.portableProfileId);
+            return next.id === "student-default" && next.role !== "student"
+              ? { ...next, role: "student" }
+              : next;
+          })
+          : fallback.profiles;
+        return profiles;
+      })(),
+      diagnosticAttempts: Array.isArray(migrated.diagnosticAttempts) ? migrated.diagnosticAttempts : [],
+      attempts: Array.isArray(migrated.attempts) ? migrated.attempts.map(normalizeAttemptEvidence) : [],
+      reviews: migrated.reviews && typeof migrated.reviews === "object" && !Array.isArray(migrated.reviews) ? migrated.reviews : {},
+      assignments: Array.isArray(migrated.assignments) ? migrated.assignments : [],
+      learningPlans: Array.isArray(migrated.learningPlans)
+        ? migrated.learningPlans.slice(-500).map((plan) => ({
+          ...plan,
+          baselineEvidenceIds: Array.isArray(plan.baselineEvidenceIds) ? plan.baselineEvidenceIds : [],
+          focusTopicKeys: Array.isArray(plan.focusTopicKeys)
+            ? plan.focusTopicKeys
+            : (Array.isArray(plan.focusTopics) ? plan.focusTopics.map(topicKeyForLabel) : []),
+          retestEvidenceIds: Array.isArray(plan.retestEvidenceIds) ? plan.retestEvidenceIds : [],
+          comparisonRule: String(plan.comparisonRule || "same-topic-scored-equivalent-model").slice(0, 300),
+          comparisonStatus: ["comparable", "emerging", "insufficient", "unmatched"].includes(plan.comparisonStatus)
+            ? plan.comparisonStatus
+            : "insufficient",
+          sessions: Array.isArray(plan.sessions) && plan.sessions.length
+            ? plan.sessions.map((session, index) => ({
+              id: String(session.id || `session-${index + 1}`),
+              sequence: Number(session.sequence) || index + 1,
+              title: String(session.title || `第 ${index + 1} 次学习`),
+              questionIds: Array.isArray(session.questionIds) ? session.questionIds : [],
+              expectedMinutes: Math.max(1, Number(session.expectedMinutes) || 12),
+              status: String(session.status || (index ? "locked" : "ready")),
+              dueAt: String(session.dueAt || "")
+            }))
+            : [{
+              id: "legacy-session",
+              sequence: 1,
+              title: "旧版专项方案",
+              questionIds: Array.isArray(plan.questionIds) ? plan.questionIds : [],
+              expectedMinutes: Math.max(1, Math.min(15, Number(plan.expectedMinutes) || 15)),
+              status: plan.status === "completed" ? "completed" : "ready",
+              dueAt: String(plan.dueAt || "")
+            }],
+          currentSessionIndex: Math.max(0, Number(plan.currentSessionIndex) || 0),
+          totalExpectedMinutes: Math.max(1, Number(plan.totalExpectedMinutes || plan.expectedMinutes) || 15)
+        }))
         : [],
-      examRecords: Array.isArray(value.examRecords) ? value.examRecords.slice(-2000) : [],
-      growthRecords: Array.isArray(value.growthRecords) ? value.growthRecords.slice(-2000) : [],
-      importedReports: Array.isArray(value.importedReports) ? value.importedReports : [],
-      contentReviews: value.contentReviews && typeof value.contentReviews === "object" ? value.contentReviews : {},
-      experimentRecords: Array.isArray(value.experimentRecords) ? value.experimentRecords : [],
-      settings: { ...fallback.settings, ...(value.settings || {}) }
+      broadCoverageChecks: Array.isArray(migrated.broadCoverageChecks)
+        ? migrated.broadCoverageChecks.slice(-500)
+        : [],
+      examRecords: Array.isArray(migrated.examRecords)
+        ? migrated.examRecords.map(normalizeExamRecord).slice(-2000)
+        : [],
+      growthRecords: Array.isArray(migrated.growthRecords) ? migrated.growthRecords.slice(-2000) : [],
+      importedReports: Array.isArray(migrated.importedReports)
+        ? migrated.importedReports.slice(-2000).map(normalizeImportedReport)
+        : [],
+      contentReviews: migrated.contentReviews && typeof migrated.contentReviews === "object" ? migrated.contentReviews : {},
+      experimentRecords: Array.isArray(migrated.experimentRecords) ? migrated.experimentRecords : [],
+      temporaryLearningGroups: Array.isArray(migrated.temporaryLearningGroups)
+        ? migrated.temporaryLearningGroups.slice(-500)
+        : [],
+      assessmentSessions: Array.isArray(migrated.assessmentSessions)
+        ? migrated.assessmentSessions.slice(-200).map(normalizeAssessmentSession)
+        : [],
+      settings: { ...fallback.settings, ...(migrated.settings || {}) }
     };
   }
 
   function loadState() {
+    const repository = storageRepository();
     try {
-      return normalizeState(JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"));
+      const raw = repository.getItem(STORAGE_KEY);
+      if (!raw) return defaultState();
+      return normalizeState(JSON.parse(raw));
     } catch (error) {
       console.warn("学习闭环数据读取失败，已使用空白档案。", error);
       return defaultState();
@@ -1263,7 +1447,18 @@
   function saveState(value) {
     const normalized = normalizeState(value);
     normalized.updatedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    const repository = storageRepository();
+    if (typeof repository.stageLearningState === "function") {
+      Promise.resolve(repository.stageLearningState(STORAGE_KEY, normalized)).catch((error) => {
+        try {
+          globalThis.dispatchEvent?.(new CustomEvent("physics-storage-error", {
+            detail: { message: "数据未保存", errorCode: String(error?.name || "storage-write-failed") }
+          }));
+        } catch (_dispatchError) { /* host may not implement CustomEvent */ }
+      });
+    } else {
+      repository.setItem(STORAGE_KEY, JSON.stringify(normalized));
+    }
     return normalized;
   }
 
@@ -1277,6 +1472,7 @@
       : "高一";
     return {
       id: String(profile?.id || createId("profile")).slice(0, 160),
+      portableProfileId: String(profile?.portableProfileId || createPortableProfileId()).trim().slice(0, 200),
       name: String(profile?.name || "本机学生").trim().slice(0, 30) || "本机学生",
       role: ["student", "teacher", "parent"].includes(profile?.role) ? profile.role : "student",
       stage: ["八年级", "九年级"].includes(grade) ? "初中" : "高中",
@@ -1284,8 +1480,84 @@
       subject: "物理",
       goal: String(profile?.goal || "日常巩固").slice(0, 40),
       analysisNote: String(profile?.analysisNote || "").slice(0, 2000),
+      sourceProfileId: profile?.sourceProfileId ? String(profile.sourceProfileId).slice(0, 200) : "",
+      studentNumber: profile?.studentNumber ? String(profile.studentNumber).trim().slice(0, 80) : "",
+      sourceRecordFingerprint: profile?.sourceRecordFingerprint
+        ? String(profile.sourceRecordFingerprint).slice(0, 200)
+        : "",
+      identityStatus: ["resolved", "unresolved-legacy", "duplicate-suspected"].includes(profile?.identityStatus)
+        ? profile.identityStatus
+        : "resolved",
+      dataSource: ["local", "roster-import", "report-import", "cloud-classroom"].includes(profile?.dataSource)
+        ? profile.dataSource
+        : "local",
+      placementBaselineDecision: ["", "supplement-placement", "use-existing-evidence"].includes(profile?.placementBaselineDecision)
+        ? profile.placementBaselineDecision
+        : "",
+      guardianConsentStatus: ["not-required", "unknown", "pending", "granted", "withdrawn"].includes(profile?.guardianConsentStatus)
+        ? profile.guardianConsentStatus
+        : "unknown",
+      consentVersion: String(profile?.consentVersion || "").slice(0, 80),
+      consentedAt: profile?.consentedAt ? String(profile.consentedAt) : "",
+      withdrawnAt: profile?.withdrawnAt ? String(profile.withdrawnAt) : "",
+      minorAgeBand: ["unknown", "under14", "14plus"].includes(profile?.minorAgeBand)
+        ? profile.minorAgeBand
+        : "unknown",
       createdAt: profile?.createdAt || new Date().toISOString(),
       updatedAt: profile?.updatedAt || profile?.createdAt || new Date().toISOString()
+    };
+  }
+
+  function normalizeImportedReport(report = {}) {
+    const profile = report.profile && typeof report.profile === "object" ? { ...report.profile } : {};
+    const portableProfileId = String(profile.portableProfileId || report.portableProfileId || "").trim().slice(0, 200);
+    const boundProfileId = String(report.boundProfileId || "").trim().slice(0, 180);
+    const identityStatus = portableProfileId || boundProfileId
+      ? "resolved"
+      : "unresolved-legacy";
+    return {
+      ...report,
+      id: String(report.id || createId("student-report")).slice(0, 180),
+      profile: { ...profile, portableProfileId },
+      portableProfileId,
+      exportedAt: report.exportedAt ? String(report.exportedAt) : "",
+      importedAt: report.importedAt ? String(report.importedAt) : new Date().toISOString(),
+      reportVersion: Number(report.reportVersion || report.version) || 1,
+      identityStatus,
+      boundProfileId,
+      sourceFingerprint: String(report.sourceFingerprint || "").slice(0, 220)
+    };
+  }
+
+  function normalizeAssessmentSession(session = {}) {
+    const status = ["not-started", "in-progress", "completed", "needs-review"].includes(String(session.status))
+      ? String(session.status)
+      : "not-started";
+    const questionIds = [...new Set((Array.isArray(session.questionIds) ? session.questionIds : [])
+      .map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 100);
+    const submittedCount = Math.max(0, Math.min(questionIds.length || 100, Number(session.submittedCount) || 0));
+    const scoredCount = Math.max(0, Math.min(submittedCount, Number(session.scoredCount) || 0));
+    const pendingReviewCount = Math.max(0, Math.min(submittedCount, Number(session.pendingReviewCount) || 0));
+    return {
+      ...session,
+      id: String(session.id || createId("placement")).slice(0, 180),
+      profileId: String(session.profileId || "").slice(0, 180),
+      type: "placement",
+      grade: String(session.grade || "").slice(0, 20),
+      scopeType: String(session.scopeType || "semester").slice(0, 40),
+      scopeIds: [...new Set((Array.isArray(session.scopeIds) ? session.scopeIds : [])
+        .map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 100),
+      blueprintVersion: String(session.blueprintVersion || "v1").slice(0, 80),
+      questionIds,
+      startedAt: session.startedAt ? String(session.startedAt) : "",
+      completedAt: session.completedAt ? String(session.completedAt) : "",
+      submittedCount,
+      scoredCount,
+      pendingReviewCount,
+      coverage: session.coverage && typeof session.coverage === "object" ? session.coverage : {},
+      status,
+      createdAt: session.createdAt ? String(session.createdAt) : new Date().toISOString(),
+      updatedAt: session.updatedAt ? String(session.updatedAt) : new Date().toISOString()
     };
   }
 
@@ -1299,6 +1571,91 @@
     });
     state.profiles.push(profile);
     return profile;
+  }
+
+  function resolveImportedStudentId(state, rawStudentId) {
+    const raw = String(rawStudentId ?? "").trim();
+    if (!raw) return { status: "missing", profileId: "", profile: null, rawStudentId: raw };
+    const tiers = [
+      ["sourceProfileId", "studentNumber", "portableProfileId"],
+      ["id"]
+    ];
+    for (const fields of tiers) {
+      const matches = state.profiles.filter((profile) => fields.some((field) => {
+        const candidate = profile?.[field];
+        return candidate && String(candidate).trim() === raw;
+      }));
+      if (matches.length === 1) {
+        return {
+          status: "matched",
+          profileId: matches[0].id,
+          profile: matches[0],
+          rawStudentId: raw,
+          matchedBy: fields.find((field) => String(matches[0]?.[field] || "").trim() === raw) || ""
+        };
+      }
+      if (matches.length > 1) return { status: "ambiguous", profileId: "", profile: null, rawStudentId: raw, matchedBy: fields.join("|") };
+    }
+    return { status: "unresolved", profileId: "", profile: null, rawStudentId: raw };
+  }
+
+  function importStudentReport(state, payload = {}) {
+    if (payload?.format !== "physics-learning-profile" || !payload.summary || !payload.profile) {
+      throw new Error("文件不是有效的物理学习报告。");
+    }
+    const exportedAt = String(payload.exportedAt || "").trim();
+    const portableProfileId = String(payload.profile.portableProfileId || "").trim();
+    const fingerprint = `report:${shortHash(stableSerialize({
+      portableProfileId,
+      exportedAt,
+      version: Number(payload.version) || 1,
+      summary: payload.summary,
+      attemptIds: (payload.attempts || []).map((item) => item?.id).filter(Boolean)
+    }))}`;
+    const duplicate = (state.importedReports || []).find((report) => {
+      if (String(report.sourceFingerprint || "") === fingerprint) return true;
+      return Boolean(portableProfileId && exportedAt
+        && report.portableProfileId === portableProfileId
+        && report.exportedAt === exportedAt);
+    });
+    if (duplicate) return { status: "duplicate", report: duplicate };
+    const report = normalizeImportedReport({
+      ...payload,
+      id: createId("student-report"),
+      reportVersion: Number(payload.version) || 1,
+      sourceFingerprint: fingerprint,
+      importedAt: new Date().toISOString()
+    });
+    if (!Array.isArray(state.importedReports)) state.importedReports = [];
+    state.importedReports.push(report);
+    return { status: report.identityStatus === "resolved" ? "imported" : "identity-required", report };
+  }
+
+  function bindImportedReportIdentity(state, reportId, options = {}) {
+    const report = (state.importedReports || []).find((item) => item.id === reportId);
+    if (!report) throw new Error("未找到待绑定的旧版学习报告。");
+    let profile = options.profileId
+      ? state.profiles.find((item) => item.id === String(options.profileId))
+      : null;
+    if (!profile && options.createNew === true) {
+      profile = addProfile(state, {
+        name: report.profile?.name || "导入学生",
+        grade: report.profile?.grade || "高一",
+        goal: report.profile?.goal || "查漏补缺",
+        sourceProfileId: "",
+        dataSource: "report-import"
+      });
+    }
+    if (!profile) throw new Error("必须明确选择现有学生，或明确建立新的学生档案。");
+    report.boundProfileId = profile.id;
+    report.identityStatus = "resolved";
+    report.identityResolvedAt = new Date().toISOString();
+    report.identityResolution = options.createNew === true ? "created-new-profile" : "bound-existing-profile";
+    let evidenceImportResult = null;
+    if (options.applyEvidence !== false && Array.isArray(report.attempts)) {
+      evidenceImportResult = importLearningProfile(state, report, { bindProfileId: profile.id });
+    }
+    return { report, profile, evidenceImportResult };
   }
 
   function updateProfile(state, profileId, changes = {}) {
@@ -1328,6 +1685,12 @@
     state.growthRecords = state.growthRecords.filter((record) => record.profileId !== profileId);
     state.experimentRecords = state.experimentRecords.filter((record) => record.profileId !== profileId);
     state.learningPlans = state.learningPlans.filter((plan) => plan.profileId !== profileId);
+    state.assessmentSessions = (Array.isArray(state.assessmentSessions) ? state.assessmentSessions : [])
+      .filter((session) => session.profileId !== profileId);
+    state.importedReports = (Array.isArray(state.importedReports) ? state.importedReports : [])
+      .map((report) => report.boundProfileId === profileId
+        ? { ...report, boundProfileId: "", identityStatus: report.portableProfileId ? "resolved" : "unresolved-legacy" }
+        : report);
     state.broadCoverageChecks = (Array.isArray(state.broadCoverageChecks) ? state.broadCoverageChecks : [])
       .filter((record) => record.profileId !== profileId);
     Object.keys(state.reviews).forEach((key) => {
@@ -1335,6 +1698,31 @@
     });
     if (state.activeProfileId === profileId) state.activeProfileId = state.profiles[0].id;
     return true;
+  }
+
+  function findMisconceptionConfirmation(state, profileId, item, input) {
+    return state.diagnosticAttempts
+      .filter((attempt) => {
+        if (attempt.profileId !== profileId || attempt.misconceptionCode !== item.code) return false;
+        if (attempt.diagnosticId === input.diagnosticId || attempt.answerCorrect !== false) return false;
+        const sameReason = Boolean(input.reason && attempt.reason && input.reason === attempt.reason);
+        const sameAnswerPattern = Boolean(input.answer && attempt.answer && input.answer === attempt.answer);
+        return sameReason || sameAnswerPattern;
+      })
+      .sort((a, b) => evidenceTimestamp(a.createdAt) - evidenceTimestamp(b.createdAt))
+      .at(-1) || null;
+  }
+
+  function diagnosticClassificationLabel(attempt = {}) {
+    if (attempt.classification === "stable-misconception" && !attempt.confirmationEvidenceId) {
+      return "\u5386\u53f2\u89c4\u5219\u7ed3\u679c\uff0c\u5f85\u6559\u5e08\u590d\u6838";
+    }
+    if (attempt.classification === "stable-misconception") return "\u7a33\u5b9a\u8bef\u6982\u5ff5\u98ce\u9669";
+    if (attempt.classification === "high-confidence-error") return "\u9ad8\u7f6e\u4fe1\u9519\u8bef\uff0c\u5f85\u9a8c\u8bc1\u8bef\u6982\u5ff5";
+    if (attempt.classification === "not-yet-understood") return "\u672a\u7406\u89e3\uff0c\u9700\u7ee7\u7eed\u89c2\u5bdf";
+    if (attempt.classification === "confident-guess") return "\u9ad8\u7f6e\u4fe1\u7325\u731c";
+    if (attempt.classification === "fragile-correct") return "\u4f4e\u7f6e\u4fe1\u6b63\u786e";
+    return "\u5df2\u8bb0\u5f55";
   }
 
   function recordDiagnostic(state, input) {
@@ -1345,7 +1733,10 @@
     const confidence = Math.max(1, Math.min(5, Number(input.confidence) || 1));
     let classification = "secure";
     if (answerCorrect && !reasonCorrect) classification = confidence >= 4 ? "confident-guess" : "guess";
-    else if (!answerCorrect && confidence >= 4) classification = "stable-misconception";
+    else if (!answerCorrect && confidence >= 4) {
+      const confirmation = findMisconceptionConfirmation(state, state.activeProfileId, item, input);
+      classification = confirmation ? "stable-misconception" : "high-confidence-error";
+    }
     else if (!answerCorrect) classification = "not-yet-understood";
     else if (confidence <= 2) classification = "fragile-correct";
     const attempt = {
@@ -1361,6 +1752,9 @@
       answerCorrect,
       reasonCorrect,
       classification,
+      confirmationEvidenceId: classification === "stable-misconception"
+        ? findMisconceptionConfirmation(state, state.activeProfileId, item, input)?.id || ""
+        : "",
       createdAt: new Date().toISOString()
     };
     state.diagnosticAttempts.push(attempt);
@@ -1375,17 +1769,33 @@
       const latest = evidence.at(-1);
       const risk = evidence.reduce((total, attempt) => {
         if (attempt.classification === "stable-misconception") return total + 3;
+        if (attempt.classification === "high-confidence-error") return total + 2;
         if (attempt.classification === "confident-guess") return total + 2;
         if (attempt.classification === "not-yet-understood") return total + 1.5;
         if (attempt.classification === "guess" || attempt.classification === "fragile-correct") return total + 1;
         return Math.max(0, total - 1);
       }, 0);
+      const confirmed = evidence.some((attempt) => {
+        return attempt.classification === "stable-misconception" && attempt.confirmationEvidenceId;
+      });
+      const legacyStable = evidence.some((attempt) => {
+        return attempt.classification === "stable-misconception" && !attempt.confirmationEvidenceId;
+      });
+      const status = confirmed
+        ? "稳定误概念风险"
+        : legacyStable
+          ? "历史规则结果，待教师复核"
+          : risk > 0
+            ? "待验证误概念"
+            : evidence.length
+              ? "已纠正"
+              : "未诊断";
       return {
         ...item,
         evidenceCount: evidence.length,
         latest,
         risk: Math.min(5, Math.round(risk * 10) / 10),
-        status: risk >= 3 ? "高风险" : risk > 0 ? "需观察" : evidence.length ? "已纠正" : "未诊断"
+        status
       };
     }).sort((a, b) => b.risk - a.risk);
   }
@@ -1838,7 +2248,7 @@
     ];
   }
 
-  function scoreModeling(model) {
+  function scoreModeling(model, applicableDimensions = null) {
     const checks = [
       ["object", "研究对象", 12, /./],
       ["known", "已知量", 10, /=|已知|给出|m|s|kg|N|V|A|Ω/],
@@ -1850,8 +2260,14 @@
       ["equations", "方程与条件", 12, /=|守恒|定律|公式|平衡/],
       ["reasonableness", "结果检验", 12, /单位|量纲|方向|数量级|极限|守恒|合理|正负/]
     ];
+    const applicable = Array.isArray(applicableDimensions)
+      ? new Set(applicableDimensions.map((key) => String(key)))
+      : null;
+    const selectedChecks = applicable
+      ? checks.filter(([key]) => applicable.has(key))
+      : checks;
     const detail = {};
-    checks.forEach(([key, label, minimum, pattern]) => {
+    selectedChecks.forEach(([key, label, minimum, pattern]) => {
       const value = String(model[key] || "").trim();
       const lengthScore = Math.min(3, value.length / minimum * 3);
       const evidence = pattern.test(value) ? 1 : 0;
@@ -1864,21 +2280,52 @@
       };
     });
     const total = Object.values(detail).reduce((sum, item) => sum + item.score, 0);
-    return { total: Math.round(total / (checks.length * 4) * 100), detail };
+    return {
+      total: selectedChecks.length ? Math.round(total / (selectedChecks.length * 4) * 100) : null,
+      detail,
+      valueType: "rule-completeness",
+      label: "\u5efa\u6a21\u8bb0\u5f55\u5b8c\u6574\u5ea6\uff08\u89c4\u5219\u503c\uff09",
+      applicableDimensions: selectedChecks.map(([key]) => key),
+      needsCheck: Boolean(selectedChecks.length && total / (selectedChecks.length * 4) * 100 < MASTERY_RULES.weakModelingBelow)
+    };
   }
 
   function recordAttempt(state, input) {
-    const modelScore = scoreModeling(input.model || {});
+    const now = new Date().toISOString();
+    const normalizeTimestamp = (value, fallback) => {
+      const parsed = new Date(value || fallback);
+      return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : fallback;
+    };
+    // Imported/fixture evidence may carry its original timestamps.  Keep them
+    // when valid so cross-date mastery and intervention comparisons are based
+    // on the evidence timeline rather than the import time.
+    const createdAt = normalizeTimestamp(input.createdAt, now);
+    const completedAt = normalizeTimestamp(input.completedAt, createdAt);
+    const applicableDimensions = Array.isArray(input.applicableDimensions)
+      ? input.applicableDimensions
+      : Array.isArray(input.question?.applicableDimensions) ? input.question.applicableDimensions : null;
+    const modelScore = scoreModeling(input.model || {}, applicableDimensions);
     const normalizedErrorType = normalizeErrorType(input.errorType);
     const attempt = {
       id: createId("attempt"),
       profileId: state.activeProfileId,
       questionId: input.questionId,
+      knowledgePointId: String(input.knowledgePointId || input.question?.knowledgePointId
+        || input.topicKey || topicKeyForQuestion(input.question || { topic: input.topic }) || "").slice(0, 200),
+      topicKey: String(input.knowledgePointId || input.question?.knowledgePointId
+        || input.topicKey || topicKeyForQuestion(input.question || { topic: input.topic }) || "").slice(0, 200),
       topic: input.topic || "待分类",
       questionType: normalizeQuestionType(input.questionType || input.examQuestionType),
+      modelDefinitionId: String(input.modelDefinitionId || input.question?.modelDefinitionId
+        || input.modelFamilyId || input.question?.modelFamilyId || "").slice(0, 200),
+      modelFamilyId: String(input.modelFamilyId || input.question?.modelFamilyId
+        || input.modelDefinitionId || input.question?.modelDefinitionId || "").slice(0, 200),
+      independenceGroupId: String(input.independenceGroupId || input.question?.independenceGroupId
+        || input.modelDefinitionId || input.question?.modelDefinitionId
+        || input.modelFamilyId || input.question?.modelFamilyId || "").slice(0, 200),
       stage: input.stage || "全部",
-      startedAt: input.startedAt || new Date().toISOString(),
-      completedAt: new Date().toISOString(),
+      startedAt: normalizeTimestamp(input.startedAt, createdAt),
+      completedAt,
       durationSeconds: Math.max(0, Number(input.durationSeconds) || 0),
       confidenceBefore: Math.max(1, Math.min(5, Number(input.confidenceBefore) || 1)),
       confidenceAfter: Math.max(1, Math.min(5, Number(input.confidenceAfter) || 1)),
@@ -1896,14 +2343,88 @@
       draftImageName: String(input.draftImageName || "").slice(0, 120),
       model: input.model || {},
       modelScore,
+      applicableDimensions: modelScore.applicableDimensions,
+      modelingRecordNeedsCheck: modelScore.needsCheck,
       transferType: input.transferType || "",
-      createdAt: new Date().toISOString()
+      createdAt
     };
     state.attempts.push(attempt);
     return attempt;
   }
 
-  function scheduleReview(state, questionId, rating, now = Date.now()) {
+  function completeManualReview(state, attemptId, review = {}) {
+    const attempt = state.attempts.find((item) => item.id === attemptId);
+    if (!attempt || !isPendingManualReview(attempt)) {
+      throw new Error("未找到待人工复核的作答记录。");
+    }
+    const status = ["correct", "incorrect", "partial"].includes(String(review.status))
+      ? String(review.status)
+      : "partial";
+    const score = Number(review.score);
+    if (!Number.isFinite(score) || score < 0 || score > 1) {
+      throw new Error("人工复核得分必须在0到1之间。");
+    }
+    attempt.grading = {
+      ...attempt.grading,
+      status,
+      score,
+      summary: String(review.summary || attempt.grading?.summary || "教师完成人工复核").slice(0, 500),
+      issues: Array.isArray(review.issues) ? review.issues.slice(0, 20) : (attempt.grading?.issues || []),
+      reviewedAt: new Date().toISOString(),
+      reviewedBy: String(review.reviewedBy || "teacher").slice(0, 120),
+      manualReview: true
+    };
+    attempt.teacherReviewStatus = "completed";
+    attempt.updatedAt = new Date().toISOString();
+    (state.assessmentSessions || [])
+      .filter((session) => session.type === "placement"
+        && session.profileId === attempt.profileId
+        && session.status === "needs-review"
+        && (session.questionIds || []).includes(attempt.questionId))
+      .forEach((session) => refreshPlacementAssessment(state, session.id));
+    return attempt;
+  }
+
+  function reviewAttemptTimestamp(attempt = {}) {
+    const timestamp = new Date(attempt.completedAt || attempt.createdAt || 0).getTime();
+    return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function automaticReviewRating(attempt = {}) {
+    const status = String(attempt?.grading?.status || "");
+    if (status === "correct") {
+      return Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum ? 2 : 1;
+    }
+    if (status === "partial" || status === "review-required") return 1;
+    if (status === "incorrect" || status === "wrong") return 0;
+    throw new Error("作答尚无可用于复习调度的评分状态。");
+  }
+
+  function completedReviewAttempt(state, questionId, profileId, previous, options = {}) {
+    const requestedAttemptId = String(options.attemptId || "").trim();
+    const previousAttemptId = String(previous?.evidenceAttemptId || "").trim();
+    const previousReviewAt = new Date(previous?.lastReviewedAt || 0).getTime();
+    const candidates = (Array.isArray(state.attempts) ? state.attempts : [])
+      .filter((attempt) => {
+        if (!attempt || attempt.profileId !== profileId || attempt.questionId !== questionId) return false;
+        if (!String(attempt.id || "").trim() || !String(attempt.finalAnswer || "").trim()) return false;
+        if (requestedAttemptId && attempt.id !== requestedAttemptId) return false;
+        if (previousAttemptId && attempt.id === previousAttemptId) return false;
+        const completedAt = reviewAttemptTimestamp(attempt);
+        if (!completedAt) return false;
+        if (Number.isFinite(previousReviewAt) && previousReviewAt > 0 && completedAt <= previousReviewAt) return false;
+        try {
+          automaticReviewRating(attempt);
+          return true;
+        } catch (error) {
+          return false;
+        }
+      })
+      .sort((a, b) => reviewAttemptTimestamp(a) - reviewAttemptTimestamp(b));
+    return candidates.at(-1) || null;
+  }
+
+  function scheduleReview(state, questionId, rating, now = Date.now(), options = {}) {
     const profileId = state.activeProfileId;
     const storageKey = `${profileId}::${questionId}`;
     const legacy = state.reviews[questionId];
@@ -1916,7 +2437,15 @@
       repetitions: 0,
       lapses: 0
     };
-    const normalizedRating = Math.max(0, Math.min(3, Number(rating) || 0));
+    const attempt = completedReviewAttempt(state, questionId, profileId, previous, options);
+    if (!attempt) {
+      throw new Error("完成新的真实作答后，才能安排或刷新下一次复习。");
+    }
+    // `rating` stays in the signature so older callers do not crash, but it is
+    // intentionally ignored. Confidence and self-reported difficulty remain
+    // metadata; only the stored answer result and hint level set the interval.
+    const ratingSource = "automatic-answer-and-hints";
+    const normalizedRating = automaticReviewRating(attempt);
     let intervalDays;
     let repetitions = previous.repetitions;
     let lapses = previous.lapses;
@@ -1947,12 +2476,22 @@
       repetitions,
       lapses,
       lastRating: normalizedRating,
+      ratingSource,
+      evidenceAttemptId: attempt.id,
+      evidenceCompletedAt: new Date(reviewAttemptTimestamp(attempt)).toISOString(),
       lastReviewedAt: new Date(now).toISOString(),
       dueAt: new Date(now + intervalDays * DAY).toISOString()
     };
     state.reviews[storageKey] = review;
     if (state.reviews[questionId] === legacy) delete state.reviews[questionId];
     return review;
+  }
+
+  function scheduleReviewFromAttempt(state, questionId, attemptId, now = Date.now()) {
+    return scheduleReview(state, questionId, null, now, {
+      attemptId,
+      ratingSource: "automatic-answer-and-hints"
+    });
   }
 
   function reviewsForProfile(state, profileId = state.activeProfileId) {
@@ -1978,12 +2517,7 @@
   }
 
   function localDateKey(value) {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return "";
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const day = String(date.getDate()).padStart(2, "0");
-    return `${year}-${month}-${day}`;
+    return localCalendarDateKey(value);
   }
 
   function evidenceTimestamp(value) {
@@ -2000,6 +2534,154 @@
     return [...counts.entries()]
       .map(([label, count]) => ({ label, count }))
       .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, "zh-CN"));
+  }
+
+  function normalizeTopicText(value) {
+    return String(value || "")
+      .normalize("NFKC")
+      .trim()
+      .replace(/[\s\u3000]+/g, " ")
+      .toLocaleLowerCase("zh-CN");
+  }
+
+  function resolveKnowledgePointIdentity(value = {}) {
+    const source = value && typeof value === "object" ? value : { label: value };
+    const rawExplicit = String(source.knowledgePointId || source.key || source.topicKey || source.topicId || "").trim();
+    const sourceLabel = String(source.label || source.name || source.topic || source.knowledgePoint || source.topicLabel || "").trim();
+    const legacyTextKey = rawExplicit.startsWith("topic:") && Boolean(sourceLabel);
+    const resolver = globalThis.PHYSICS_CURRICULUM_TAXONOMY?.resolveKnowledgePoint;
+    if (typeof resolver === "function") {
+      return resolver({
+        label: sourceLabel,
+        knowledgePointId: legacyTextKey ? "" : rawExplicit
+      });
+    }
+    const label = sourceLabel;
+    const explicit = legacyTextKey ? "" : rawExplicit;
+    const normalized = normalizeTopicText(label)
+      .replace(/[^\p{L}\p{N}]+/gu, "-")
+      .replace(/^-+|-+$/g, "");
+    return {
+      id: explicit || (normalized ? `kp:${normalized}` : ""),
+      label: label || explicit,
+      resolution: explicit ? "explicit" : (normalized ? "legacy-fallback" : "unresolved"),
+      unresolved: !explicit
+    };
+  }
+
+  function topicKeyForLabel(value) {
+    return resolveKnowledgePointIdentity({ label: value }).id;
+  }
+
+  function topicKeyForQuestion(question = {}) {
+    const resolved = resolveKnowledgePointIdentity(question);
+    if (resolved.id) return resolved.id;
+    return String(question.curriculumSectionId || question.curriculumChapterId || "").trim();
+  }
+
+  function topicCatalog(questions = [], grade = "") {
+    const catalog = new Map();
+    (Array.isArray(questions) ? questions : []).forEach((question) => {
+      if (grade && question.grade && question.grade !== grade) return;
+      const label = String(question.topic || question.knowledgePoint || "").trim();
+      const key = topicKeyForQuestion(question);
+      if (!label || !key) return;
+      const aliases = [label, question.knowledgePoint, question.topicLabel]
+        .filter(Boolean)
+        .map(normalizeTopicText);
+      const current = catalog.get(key);
+      catalog.set(key, {
+        key,
+        label: current?.label || label,
+        aliases: [...new Set([...(current?.aliases || []), ...aliases])],
+        grade: question.grade || grade || ""
+      });
+    });
+    return [...catalog.values()].sort((a, b) => a.label.localeCompare(b.label, "zh-CN"));
+  }
+
+  function normalizeTopic(value, options = {}) {
+    const valueIsKey = typeof value === "string" && /^(?:topic|kp):/.test(value);
+    const raw = value && typeof value === "object"
+      ? value
+      : { label: value };
+    const label = String(raw.label || raw.name || raw.topic || (valueIsKey ? "" : "")).trim();
+    const explicitKey = String(raw.key || raw.topicKey || raw.knowledgePointId || raw.topicId
+      || (valueIsKey ? value : "")).trim();
+    const catalog = Array.isArray(options.catalog) ? options.catalog : [];
+    const normalizedLabel = normalizeTopicText(label);
+    const matched = catalog.find((item) => {
+      return item.key === explicitKey
+        || item.aliases?.includes(normalizedLabel)
+        || normalizeTopicText(item.label) === normalizedLabel;
+    });
+    if (matched) return { key: matched.key, label: matched.label, unresolved: false, resolution: "catalog" };
+    const resolved = resolveKnowledgePointIdentity({ label, knowledgePointId: explicitKey });
+    const key = resolved.id;
+    return {
+      key,
+      label: label || resolved.label || explicitKey,
+      unresolved: resolved.unresolved || Boolean(label && !explicitKey && catalog.length),
+      resolution: resolved.resolution
+    };
+  }
+
+  function canonicalTopicKey(label, explicitKey = "", catalog = []) {
+    return normalizeTopic({ label, key: explicitKey }, { catalog }).key || topicKeyForLabel(label);
+  }
+
+  function topicValues(value) {
+    if (Array.isArray(value)) return value;
+    return String(value || "")
+      .split(/[、,，;；\n\r]+/)
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  function normalizeTopicValues(values, options = {}) {
+    const normalized = topicValues(values)
+      .map((value) => normalizeTopic(value, options))
+      .filter((item) => item.key || item.label);
+    return {
+      keys: [...new Set(normalized.map((item) => item.key).filter(Boolean))],
+      labels: [...new Set(normalized.map((item) => item.label).filter(Boolean))],
+      unresolved: [...new Set(normalized.filter((item) => item.unresolved).map((item) => item.label))]
+    };
+  }
+
+  function normalizeExamRecord(record = {}) {
+    const hasExplicitKeys = Array.isArray(record.weakTopicKeys) && record.weakTopicKeys.length > 0;
+    const weak = normalizeTopicValues(hasExplicitKeys
+      ? record.weakTopicKeys.map((key, index) => ({
+        key,
+        label: record.weakTopics?.[index] || key
+      }))
+      : record.weakTopics);
+    return {
+      ...record,
+      weakTopics: weak.labels,
+      weakTopicKeys: weak.keys,
+      unresolvedWeakTopics: Array.isArray(record.unresolvedWeakTopics)
+        ? [...new Set([...record.unresolvedWeakTopics, ...weak.unresolved, ...(hasExplicitKeys ? [] : weak.labels)])]
+        : [...new Set([...weak.unresolved, ...(hasExplicitKeys ? [] : weak.labels)])]
+    };
+  }
+
+  function resolveExamRecordTopics(record = {}, questions = []) {
+    const catalog = topicCatalog(questions, record.grade || "");
+    const unresolved = new Set(record.unresolvedWeakTopics || []);
+    const raw = Array.isArray(record.weakTopics) && record.weakTopics.length
+      ? record.weakTopics.map((label, index) => unresolved.has(label)
+        ? { label }
+        : { label, key: record.weakTopicKeys?.[index] || "" })
+      : record.weakTopicKeys;
+    const normalized = normalizeTopicValues(raw, { catalog });
+    return {
+      ...record,
+      weakTopics: normalized.labels,
+      weakTopicKeys: normalized.keys,
+      unresolvedWeakTopics: normalized.unresolved
+    };
   }
 
   function diagnosticTopics(attempt) {
@@ -2024,25 +2706,73 @@
         && String(record.response || "").trim().length >= 10
         && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
     });
-    const topics = new Set();
+    const catalog = topicCatalog(eligibleQuestions, profile?.grade || "");
+    const topicEntries = new Map();
+    const addTopic = (label, explicitKey = "") => {
+      const rawLabel = String(label || "").trim();
+      const normalized = normalizeTopic({ label: rawLabel, key: explicitKey }, { catalog });
+      const key = normalized.key || topicKeyForLabel(rawLabel);
+      if (!key) return;
+      topicEntries.set(key, normalized.label || rawLabel || key);
+    };
+    eligibleQuestions.forEach((question) => addTopic(question.topic, topicKeyForQuestion(question)));
+    attempts.forEach((attempt) => addTopic(attempt.topic || "待分类", attempt.topicKey));
+    diagnostics.forEach((attempt) => diagnosticTopics(attempt).forEach((topic) => addTopic(topic)));
+
+    // Build the evidence joins once. The previous implementation filtered the
+    // complete question/evidence arrays again for every knowledge point, which
+    // made opening an analysis page O(topics × records) on the WebView thread.
+    const appendGrouped = (map, key, value) => {
+      if (!key) return;
+      const values = map.get(key) || [];
+      values.push(value);
+      map.set(key, values);
+    };
+    const availableQuestionCountByTopic = new Map();
     eligibleQuestions.forEach((question) => {
-      const topic = String(question.topic || "").trim();
-      if (topic) topics.add(topic);
+      const key = canonicalTopicKey(question.topic, topicKeyForQuestion(question), catalog);
+      if (key) availableQuestionCountByTopic.set(key, (availableQuestionCountByTopic.get(key) || 0) + 1);
     });
-    attempts.forEach((attempt) => topics.add(String(attempt.topic || "待分类").trim() || "待分类"));
-    diagnostics.forEach((attempt) => diagnosticTopics(attempt).forEach((topic) => topics.add(topic)));
+    const attemptsByTopic = new Map();
+    attempts.forEach((attempt) => {
+      const key = canonicalTopicKey(attempt.topic || "待分类", attempt.knowledgePointId || attempt.topicKey, catalog);
+      appendGrouped(attemptsByTopic, key, attempt);
+    });
+    const diagnosticsByTopic = new Map();
+    diagnostics.forEach((attempt) => {
+      const keys = new Set(diagnosticTopics(attempt)
+        .map((value) => canonicalTopicKey(value, "", catalog))
+        .filter(Boolean));
+      keys.forEach((key) => appendGrouped(diagnosticsByTopic, key, attempt));
+    });
+    const transfersByTopic = new Map();
+    verifiedTransfers.forEach((record) => {
+      const question = questionMap.get(record.questionId);
+      if (!question) return;
+      const key = canonicalTopicKey(question.topic, topicKeyForQuestion(question), catalog);
+      appendGrouped(transfersByTopic, key, record);
+    });
 
     const statusOrder = { "需巩固": 0, "证据不足": 1, "基本掌握": 2, "可迁移": 3 };
-    return [...topics].map((topic) => {
-      const topicAttempts = attempts
-        .filter((attempt) => (attempt.topic || "待分类") === topic)
+    return [...topicEntries.entries()].map(([topicKey, topic]) => {
+      const topicAttempts = (attemptsByTopic.get(topicKey) || [])
+        .slice()
         .sort((a, b) => evidenceTimestamp(a.completedAt || a.createdAt) - evidenceTimestamp(b.completedAt || b.createdAt));
-      const topicDiagnostics = diagnostics.filter((attempt) => diagnosticTopics(attempt).includes(topic));
-      const topicTransfers = verifiedTransfers.filter((record) => questionMap.get(record.questionId)?.topic === topic);
-      const correct = topicAttempts.filter((attempt) => attempt.grading?.status === "correct");
+      const topicDiagnostics = diagnosticsByTopic.get(topicKey) || [];
+      const topicTransfers = transfersByTopic.get(topicKey) || [];
+      const evidenceSummary = summarizeAttemptEvidence(topicAttempts);
+      const scoredAttempts = topicAttempts.filter(isValidAccuracyEvidence);
+      const correct = scoredAttempts.filter((attempt) => attempt.grading?.status === "correct");
       const independentCorrect = correct.filter((attempt) => {
         return Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
       });
+      const independenceGroupFor = (record) => {
+        const question = questionMap.get(record.questionId) || {};
+        return String(record.independenceGroupId || question.independenceGroupId
+          || record.modelDefinitionId || question.modelDefinitionId
+          || record.modelFamilyId || question.modelFamilyId || "legacy-unclassified");
+      };
+      const independentGroups = new Set(independentCorrect.map(independenceGroupFor));
       const independentDates = [...new Set(independentCorrect
         .map((attempt) => localDateKey(attempt.completedAt || attempt.createdAt))
         .filter(Boolean))];
@@ -2050,6 +2780,7 @@
         return String(attempt.transferType || "").trim().length > 0;
       });
       const transferSuccessCount = successfulTransferAttempts.length + topicTransfers.length;
+      topicTransfers.forEach((record) => independentGroups.add(independenceGroupFor(record)));
       const latest = topicAttempts.at(-1) || null;
       const latestDiagnostic = topicDiagnostics
         .slice()
@@ -2057,13 +2788,15 @@
         .at(-1) || null;
       const diagnosticRisk = Boolean(latestDiagnostic
         && ["stable-misconception", "confident-guess", "not-yet-understood"].includes(latestDiagnostic.classification));
-      const scoreTotal = topicAttempts.reduce((sum, attempt) => sum + (Number(attempt.grading?.score) || 0), 0);
+      const diagnosticReviewRequired = Boolean(latestDiagnostic
+        && latestDiagnostic.classification === "stable-misconception"
+        && !latestDiagnostic.confirmationEvidenceId);
       const hintTotal = topicAttempts.reduce((sum, attempt) => sum + (Number(attempt.hintLevel) || 0), 0);
-      const modelScores = topicAttempts
+      const modelScores = scoredAttempts
         .map((attempt) => Number(attempt.modelScore?.total))
         .filter(Number.isFinite);
-      const accuracy = topicAttempts.length ? Math.round(correct.length / topicAttempts.length * 100) : 0;
-      const averageScore = topicAttempts.length ? Math.round(scoreTotal / topicAttempts.length * 100) : 0;
+      const accuracy = evidenceSummary.accuracy;
+      const averageScore = evidenceSummary.averageScore;
       const averageHint = topicAttempts.length
         ? Math.round(hintTotal / topicAttempts.length * 10) / 10
         : 0;
@@ -2077,49 +2810,64 @@
       ].filter((value) => value > 0 && value <= Number(now) + DAY);
       const latestTimestamp = evidenceTimes.length ? Math.max(...evidenceTimes) : 0;
       const sampleSize = topicAttempts.length + topicDiagnostics.length + topicTransfers.length;
-      const latestWeak = Boolean(latest && (
-        !["correct", "review-required"].includes(latest.grading?.status)
+      const latestWeak = Boolean(latest && !isPendingManualReview(latest) && (
+        (isValidAccuracyEvidence(latest) && latest.grading?.status !== "correct")
         || Number(latest.hintLevel || 0) >= MASTERY_RULES.weakHintMinimum
-        || (Number.isFinite(Number(latest.modelScore?.total))
-          && Number(latest.modelScore.total) < MASTERY_RULES.weakModelingBelow)
       ));
+      const modelingRecordNeedsCheck = Boolean(latest?.modelingRecordNeedsCheck
+        || latest?.modelScore?.needsCheck);
 
       let code = "insufficient";
       let status = "证据不足";
       if ((topicAttempts.length >= 2 || diagnosticRisk) && (
-        diagnosticRisk || latestWeak || accuracy < 60 || averageHint >= 3
-        || (modeling !== null && modeling < MASTERY_RULES.weakModelingBelow)
+        diagnosticRisk || latestWeak || (accuracy !== null && accuracy < 60)
+        || (evidenceSummary.scoredCount > 0 && averageHint >= 3)
       )) {
         code = "reinforce";
         status = "需巩固";
       } else if (independentDates.length >= MASTERY_RULES.masteredIndependentDates
-        && transferSuccessCount >= MASTERY_RULES.masteredTransferEvidence) {
+        && transferSuccessCount >= MASTERY_RULES.masteredTransferEvidence
+        && independentGroups.size >= 2) {
         code = "transferable";
         status = "可迁移";
-      } else if (topicAttempts.length >= 2 && independentCorrect.length >= 1
-        && accuracy >= 70 && averageHint <= 2) {
+      } else if (evidenceSummary.scoredCount >= 2 && independentCorrect.length >= 1
+        && accuracy !== null && accuracy >= 70 && averageHint <= 2) {
         code = "basic";
         status = "基本掌握";
       }
 
       const reasons = [];
+      if (modelingRecordNeedsCheck) reasons.push("需要检查建模记录，不能单独作为知识点薄弱证据");
       if (!sampleSize) reasons.push("尚无作答、诊断或迁移证据");
-      else reasons.push(`共有 ${sampleSize} 条证据，其中正式作答 ${topicAttempts.length} 次`);
+      else reasons.push(`共有 ${sampleSize} 条证据，其中正式作答 ${topicAttempts.length} 次，已评分 ${evidenceSummary.scoredCount} 次${evidenceSummary.pendingReviewCount ? `，待人工复核 ${evidenceSummary.pendingReviewCount} 次` : ""}`);
       if (independentDates.length) reasons.push(`低提示独立正确分布在 ${independentDates.length} 个日期`);
+      if (independentCorrect.length) reasons.push(`独立正确证据来自 ${independentGroups.size} 个独立模型组；同模板参数变式只计为一个独立组`);
       if (transferSuccessCount) reasons.push(`有 ${transferSuccessCount} 条迁移成功证据`);
-      if (diagnosticRisk) reasons.push("最近前概念诊断仍显示稳定误解风险");
-      if (latestWeak) reasons.push("最近作答存在错误、高提示依赖或建模不足");
+      if (transferSuccessCount && independentGroups.size < 2) reasons.push("迁移证据仍来自同一模板/模型组，暂不判为可迁移");
+      if (diagnosticReviewRequired) reasons.push("历史规则诊断结果，需教师复核后才能解释为稳定误概念风险");
+      else if (diagnosticRisk) reasons.push("最近前概念诊断仍显示待验证风险");
+      if (latestWeak) reasons.push("最近作答存在错误或高提示依赖");
       if (sampleSize > 0 && sampleSize < 2) reasons.push("样本量不足，不作稳定能力结论");
 
       return {
         topic,
+        topicKey,
         code,
         status,
         sampleSize,
         attemptCount: topicAttempts.length,
+        submittedCount: evidenceSummary.submittedCount,
+        scoredCount: evidenceSummary.scoredCount,
+        correctCount: evidenceSummary.correctCount,
+        pendingReviewCount: evidenceSummary.pendingReviewCount,
+        evidenceIds: [...new Set([
+          ...topicAttempts.map((item) => item.id),
+          ...topicDiagnostics.map((item) => item.id),
+          ...topicTransfers.map((item) => item.id)
+        ].filter(Boolean))],
         diagnosticCount: topicDiagnostics.length,
         transferSuccessCount,
-        availableQuestionCount: eligibleQuestions.filter((question) => question.topic === topic).length,
+        availableQuestionCount: availableQuestionCountByTopic.get(topicKey) || 0,
         latestEvidenceAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
         latestEvidenceDate: latestTimestamp ? localDateKey(latestTimestamp) : null,
         correct: correct.length,
@@ -2127,8 +2875,16 @@
         averageScore,
         averageHint,
         modeling,
+        modelingRecordNeedsCheck,
+        diagnosticReviewRequired,
         independentCorrect: independentCorrect.length,
         independentDates: independentDates.length,
+        independentModelGroups: independentGroups.size,
+        evidenceFreshness: {
+          latestEvidenceAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
+          ageDays: latestTimestamp ? Math.max(0, Math.floor((Number(now) - latestTimestamp) / DAY)) : null,
+          needsReconfirmation: !latestTimestamp || Number(now) - latestTimestamp > 45 * DAY
+        },
         questionTypes: countedLabels([
           ...topicAttempts.map((attempt) => normalizeQuestionType(attempt.questionType || attempt.examQuestionType)),
           ...topicDiagnostics.map(() => "前概念诊断")
@@ -2139,6 +2895,103 @@
     }).sort((a, b) => statusOrder[a.status] - statusOrder[b.status]
       || b.sampleSize - a.sampleSize
       || a.topic.localeCompare(b.topic, "zh-CN"));
+  }
+
+  function knowledgePointEvidenceSummary(state, questions = [], profileId = state.activeProfileId, now = Date.now(), options = {}) {
+    const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
+    const eligibleQuestions = (Array.isArray(questions) ? questions : []).filter((question) => {
+      return isPublishedQuestion(question)
+        && question.grade !== "七年级"
+        && (!profile?.grade || !question.grade || question.grade === profile.grade);
+    });
+    const catalog = Array.isArray(options.catalog)
+      ? options.catalog
+      : topicCatalog(eligibleQuestions, profile?.grade || "");
+    const evidenceProfile = Array.isArray(options.evidenceProfile)
+      ? options.evidenceProfile
+      : topicEvidenceProfile(state, eligibleQuestions, profileId, now);
+    const byKey = new Map(evidenceProfile.map((item) => [item.topicKey || topicKeyForLabel(item.topic), item]));
+    const exams = state.examRecords.filter((record) => record.profileId === profileId);
+    const examByKey = new Map();
+    exams.forEach((record) => {
+      const normalized = resolveExamRecordTopics(record, eligibleQuestions);
+      normalized.weakTopicKeys.forEach((key) => {
+        const current = examByKey.get(key) || { count: 0, latest: 0 };
+        current.count += 1;
+        current.latest = Math.max(current.latest, evidenceTimestamp(record.examDate || record.createdAt));
+        examByKey.set(key, current);
+      });
+    });
+    const byTopic = catalog.map((item) => {
+      const evidence = byKey.get(item.key);
+      const exam = examByKey.get(item.key) || { count: 0, latest: 0 };
+      const attemptCount = evidence?.attemptCount || 0;
+      const diagnosticCount = evidence?.diagnosticCount || 0;
+      const transferCount = evidence?.transferSuccessCount || 0;
+      const sampleSize = attemptCount + diagnosticCount + transferCount + exam.count;
+      const latestTimestamp = Math.max(
+        evidenceTimestamp(evidence?.latestEvidenceAt),
+        exam.latest
+      );
+      return {
+        key: item.key,
+        label: item.label,
+        grade: item.grade,
+        code: evidence?.code || "insufficient",
+        status: evidence?.status || "证据不足",
+        sampleSize,
+        attemptCount,
+        submittedCount: evidence?.submittedCount || 0,
+        scoredCount: evidence?.scoredCount || 0,
+        correctCount: evidence?.correctCount || 0,
+        pendingReviewCount: evidence?.pendingReviewCount || 0,
+        diagnosticCount,
+        transferCount,
+        examCount: exam.count,
+        latestEvidenceAt: latestTimestamp ? new Date(latestTimestamp).toISOString() : null,
+        latestEvidenceDate: latestTimestamp ? localCalendarDateKey(latestTimestamp) : null,
+        reasons: evidence?.reasons || ["\u5c1a\u65e0\u53ef\u8ffd\u6eaf\u7684\u5b66\u60c5\u8bc1\u636e"]
+      };
+    });
+    const evidenced = byTopic.filter((item) => item.sampleSize > 0);
+    const counts = evidenced.reduce((result, item) => {
+      if (item.code === "transferable") result.transferable += 1;
+      else if (item.code === "basic") result.basic += 1;
+      else if (item.code === "reinforce") result.reinforce += 1;
+      else result.insufficient += 1;
+      return result;
+    }, { insufficient: 0, reinforce: 0, basic: 0, transferable: 0 });
+    const denominator = catalog.length;
+    const numerator = evidenced.length;
+    const coverageRate = denominator ? Math.round(numerator / denominator * 1000) / 10 : null;
+    const maxTopicEvidence = evidenced.reduce((max, item) => Math.max(max, item.sampleSize), 0);
+    const broadlyDistributed = numerator > 0 && maxTopicEvidence <= Math.max(3, Math.ceil(evidenced.reduce((sum, item) => sum + item.sampleSize, 0) * 0.6));
+    const levelCode = !numerator
+      ? "insufficient"
+      : numerator / Math.max(1, denominator) >= 0.6 && broadlyDistributed
+        ? "adequate"
+        : "partial";
+    const levelLabel = {
+      insufficient: "\u8bc1\u636e\u4e0d\u8db3",
+      partial: "\u5c40\u90e8\u8bc1\u636e",
+      adequate: "\u8986\u76d6\u8f83\u5145\u5206"
+    }[levelCode];
+    return {
+      totalKnowledgePoints: denominator,
+      evidencedKnowledgePoints: numerator,
+      insufficient: counts.insufficient,
+      reinforce: counts.reinforce,
+      basic: counts.basic,
+      transferable: counts.transferable,
+      coverageRate,
+      coverageNumerator: numerator,
+      coverageDenominator: denominator,
+      coverageLabel: `${numerator}/${denominator}`,
+      levelCode,
+      levelLabel,
+      byTopic,
+      reason: `${levelLabel}\uff1a\u5df2\u8986\u76d6 ${numerator}/${denominator} \u4e2a\u53ef\u8bc4\u4f30\u77e5\u8bc6\u70b9\uff0c\u6700\u8fd1\u8bc1\u636e\u6309\u77e5\u8bc6\u70b9\u5206\u5e03\u7edf\u8ba1\uff1b\u91cd\u590d\u540c\u4e00\u77e5\u8bc6\u70b9\u4e0d\u4f1a\u5355\u72ec\u63d0\u9ad8\u8986\u76d6\u7ea7\u522b\u3002`
+    };
   }
 
   function transferEvidence(state, questionId, profileId = state.activeProfileId) {
@@ -2169,9 +3022,9 @@
     const latestWeak = Boolean(latest && (
       !["correct", "review-required"].includes(latest.grading?.status)
       || Number(latest.hintLevel || 0) >= MASTERY_RULES.weakHintMinimum
-      || (Number.isFinite(Number(latest.modelScore?.total))
-        && Number(latest.modelScore.total) < MASTERY_RULES.weakModelingBelow)
     ));
+    const modelingRecordNeedsCheck = Boolean(latest?.modelingRecordNeedsCheck
+      || latest?.modelScore?.needsCheck);
 
     let status = "未开始";
     let code = "not-started";
@@ -2194,12 +3047,13 @@
     }
 
     const reasons = [];
+    if (modelingRecordNeedsCheck) reasons.push("需要检查建模记录，不能单独作为知识点薄弱证据");
     if (!attempts.length) reasons.push("尚无正式作答记录");
     else reasons.push(`已完成 ${attempts.length} 次正式作答`);
     if (independentCorrect.length) reasons.push(`${independentCorrect.length} 次低提示独立正确`);
     if (independentDates.length) reasons.push(`分布在 ${independentDates.length} 个日期`);
     if (transfers.length) reasons.push(`完成 ${transfers.length} 道迁移记录（尚需人工核对质量）`);
-    if (latestWeak) reasons.push("近期存在错误、高提示依赖或较低建模评分");
+    if (latestWeak) reasons.push("近期存在错误或高提示依赖");
     if (reviewDue) reasons.push("已到间隔复习时间");
 
     return {
@@ -2213,10 +3067,35 @@
       transferEvidence: transfers.length,
       reviewDue,
       latest,
+      modelingRecordNeedsCheck,
       review,
       reasons,
       rules: MASTERY_RULES
     };
+  }
+
+  function masteryDisplayLabel(value) {
+    const rawCode = typeof value === "string" ? value : value?.code;
+    const legacyCodes = {
+      "未开始": "not-started",
+      "学习中": "learning",
+      "熟练": "proficient",
+      "已有独立正确证据": "proficient",
+      "已掌握": "mastered",
+      "待复习": "due",
+      "薄弱": "weak",
+      "需巩固": "weak"
+    };
+    const code = legacyCodes[rawCode] || rawCode;
+    const labels = {
+      "not-started": "\u672a\u5f00\u59cb",
+      learning: "\u5b66\u4e60\u4e2d",
+      proficient: "\u5df2\u6709\u72ec\u7acb\u6b63\u786e\u8bc1\u636e",
+      mastered: "\u5df2\u638c\u63e1",
+      due: "\u5df2\u638c\u63e1\uff0c\u5f85\u590d\u4e60",
+      weak: "\u9700\u5de9\u56fa"
+    };
+    return labels[code] || "\u8bc1\u636e\u4e0d\u8db3";
   }
 
   function masteryProfile(state, questions = [], profileId = state.activeProfileId, now = Date.now()) {
@@ -2256,36 +3135,67 @@
     const groups = new Map();
     state.attempts.filter((attempt) => attempt.profileId === profileId).forEach((attempt) => {
       const topic = attempt.topic || "待分类";
-      const current = groups.get(topic) || { topic, attempts: 0, correct: 0, scoreTotal: 0, hintTotal: 0, modelTotal: 0 };
+      const topicKey = attempt.knowledgePointId || attempt.topicKey || topicKeyForLabel(topic);
+      const current = groups.get(topicKey) || {
+        topic,
+        topicKey,
+        attempts: 0,
+        submittedCount: 0,
+        scoredCount: 0,
+        correct: 0,
+        correctCount: 0,
+        pendingReviewCount: 0,
+        scoreTotal: 0,
+        hintTotal: 0,
+        modelTotal: 0,
+        modelCount: 0
+      };
       current.attempts += 1;
-      current.correct += attempt.grading?.status === "correct" ? 1 : 0;
-      current.scoreTotal += Number(attempt.grading?.score) || 0;
+      current.submittedCount += 1;
+      if (isPendingManualReview(attempt)) current.pendingReviewCount += 1;
+      if (isValidAccuracyEvidence(attempt)) {
+        current.scoredCount += 1;
+        current.correct += attempt.grading?.status === "correct" ? 1 : 0;
+        current.correctCount = current.correct;
+        current.scoreTotal += Number(attempt.grading?.score);
+      }
       current.hintTotal += Number(attempt.hintLevel) || 0;
-      current.modelTotal += Number(attempt.modelScore?.total) || 0;
-      groups.set(topic, current);
+      const modelValue = Number(attempt.modelScore?.total);
+      if (attempt.modelScore?.total != null && Number.isFinite(modelValue)) {
+        current.modelTotal += modelValue;
+        current.modelCount += 1;
+      }
+      groups.set(topicKey, current);
     });
     return [...groups.values()].map((item) => ({
       ...item,
-      accuracy: item.attempts ? Math.round(item.correct / item.attempts * 100) : 0,
-      averageScore: item.attempts ? Math.round(item.scoreTotal / item.attempts * 100) : 0,
+      accuracy: item.scoredCount ? Math.round(item.correct / item.scoredCount * 100) : null,
+      averageScore: item.scoredCount ? Math.round(item.scoreTotal / item.scoredCount * 100) : null,
       averageHint: item.attempts ? Math.round(item.hintTotal / item.attempts * 10) / 10 : 0,
-      modeling: item.attempts ? Math.round(item.modelTotal / item.attempts) : 0
-    })).sort((a, b) => a.averageScore - b.averageScore || b.attempts - a.attempts);
+      modeling: item.modelCount ? Math.round(item.modelTotal / item.modelCount) : null,
+      modelingSampleSize: item.modelCount
+    })).sort((a, b) => {
+      if (a.averageScore == null && b.averageScore != null) return 1;
+      if (a.averageScore != null && b.averageScore == null) return -1;
+      return (a.averageScore ?? 0) - (b.averageScore ?? 0) || b.attempts - a.attempts;
+    });
   }
 
   function summarizeLearning(state, questions = [], profileId = state.activeProfileId) {
     const attempts = state.attempts.filter((attempt) => attempt.profileId === profileId);
-    const completed = attempts.length;
-    const correct = attempts.filter((attempt) => attempt.grading?.status === "correct").length;
+    const evidenceSummary = summarizeAttemptEvidence(attempts);
+    const completed = evidenceSummary.submittedCount;
+    const correct = evidenceSummary.correctCount;
     const independent = attempts.filter((attempt) => {
-      return attempt.grading?.status === "correct" && Number(attempt.hintLevel) <= 1;
+      return isValidAccuracyEvidence(attempt)
+        && attempt.grading?.status === "correct" && Number(attempt.hintLevel) <= 1;
     }).length;
     const durationSeconds = attempts.reduce((sum, attempt) => sum + (Number(attempt.durationSeconds) || 0), 0);
     const hintTotal = attempts.reduce((sum, attempt) => sum + (Number(attempt.hintLevel) || 0), 0);
     const recent = attempts.slice(-14);
-    const trend = recent.map((attempt, index) => ({
+    const trend = recent.filter(isValidAccuracyEvidence).map((attempt, index) => ({
       index: index + 1,
-      score: Math.round((Number(attempt.grading?.score) || 0) * 100),
+      score: Math.round(Number(attempt.grading?.score) * 100),
       hintLevel: attempt.hintLevel,
       date: attempt.createdAt
     }));
@@ -2297,10 +3207,15 @@
     return {
       completed,
       correct,
-      accuracy: completed ? Math.round(correct / completed * 100) : 0,
+      submittedCount: evidenceSummary.submittedCount,
+      scoredCount: evidenceSummary.scoredCount,
+      correctCount: evidenceSummary.correctCount,
+      pendingReviewCount: evidenceSummary.pendingReviewCount,
+      accuracy: evidenceSummary.accuracy,
       independent,
-      independenceRate: completed ? Math.round(independent / completed * 100) : 0,
-      averageHint: completed ? Math.round(hintTotal / completed * 10) / 10 : 0,
+      independenceRate: evidenceSummary.scoredCount ? Math.round(independent / evidenceSummary.scoredCount * 100) : null,
+      averageHint: evidenceSummary.averageHint,
+      averageScore: evidenceSummary.averageScore,
       learningMinutes: Math.round(durationSeconds / 60),
       dueCount: due.length,
       dueQuestions: due.map((review) => ({ ...review, question: questionMap.get(review.questionId) })).filter((item) => item.question),
@@ -2345,15 +3260,19 @@
       recentAttempts.set(attempt.questionId, attempt);
     });
     const topicRisk = new Map(topicPerformance(state, profileId).map((item, index) => [
-      item.topic,
-      Math.max(0, 40 - item.averageScore * 0.4) + Math.max(0, 3 - index)
+      item.topicKey || topicKeyForLabel(item.topic),
+      item.scoredCount
+        ? Math.max(0, 40 - item.averageScore * 0.4) + Math.max(0, 3 - index)
+        : 0
     ]));
     const examWeakness = new Map();
     state.examRecords
       .filter((record) => record.profileId === profileId)
       .slice(-12)
-      .forEach((record) => (record.weakTopics || []).forEach((topic) => {
-        examWeakness.set(topic, (examWeakness.get(topic) || 0) + 1);
+      .forEach((record) => (record.weakTopicKeys?.length ? record.weakTopicKeys : record.weakTopics || [])
+        .forEach((topic) => {
+        const key = record.weakTopicKeys?.length ? String(topic) : topicKeyForLabel(topic);
+        examWeakness.set(key, (examWeakness.get(key) || 0) + 1);
       }));
     const ranked = questions
       .filter((question) => isPublishedQuestion(question)
@@ -2369,7 +3288,7 @@
         if (!last) {
           score += 8;
         } else {
-          if (last.grading?.status !== "correct") {
+          if (isValidAccuracyEvidence(last) && last.grading?.status !== "correct") {
             score += 70;
             reasons.push("本人上次作答未完全正确");
           }
@@ -2377,23 +3296,25 @@
             score += 25;
             reasons.push(`上次使用第 ${last.hintLevel} 级提示`);
           }
-          if (last.modelScore?.total < 60) {
+          if (!isPendingManualReview(last) && last.modelingRecordNeedsCheck) {
             score += 20;
-            reasons.push("建模步骤需要加强");
+            reasons.push("建模记录需要检查（需教师复核）");
           }
-          if (last.errorType) {
+          if (!isPendingManualReview(last) && last.errorType) {
             score += 10;
             reasons.push(`上次主要错误：${last.errorType}`);
           }
         }
-        score += topicRisk.get(question.topic) || 0;
-        const examWeakCount = examWeakness.get(question.topic) || 0;
+        const questionTopicKey = topicKeyForQuestion(question);
+        score += topicRisk.get(questionTopicKey) || 0;
+        const examWeakCount = examWeakness.get(questionTopicKey) || 0;
         if (examWeakCount) {
           score += Math.min(45, 20 + examWeakCount * 5);
           reasons.push(`最近试卷将“${question.topic}”标为薄弱项`);
         }
-        if (options.focusTopic && options.focusTopic !== "自动依据学情") {
-          if (question.topic === options.focusTopic) {
+        const focusKey = String(options.focusTopicKey || "").trim();
+        if (focusKey || (options.focusTopic && options.focusTopic !== "自动依据学情")) {
+          if ((focusKey && questionTopicKey === focusKey) || (!focusKey && question.topic === options.focusTopic)) {
             score += 120;
             reasons.unshift(`教师指定专项：${options.focusTopic}`);
           } else {
@@ -2456,22 +3377,213 @@
       note: String(input.note || "").slice(0, 2000),
       createdAt: new Date().toISOString()
     };
-    state.examRecords.push(record);
-    return record;
+    const normalizedRecord = normalizeExamRecord(record);
+    state.examRecords.push(normalizedRecord);
+    return normalizedRecord;
   }
 
-  function importExamRecords(state, records = [], profileId = state.activeProfileId) {
+  function importExamRecords(state, records = [], profileId = null) {
     if (!Array.isArray(records) || records.length > 500) throw new Error("试卷记录数量不符合要求。");
-    const added = [];
+    const valid = [];
     const errors = [];
     records.forEach((record, index) => {
       try {
-        added.push(addExamRecord(state, { ...record, profileId }));
+        const score = Number(record.score);
+        const totalScore = Number(record.totalScore);
+        const examDate = new Date(record.examDate || Date.now());
+        if (!Number.isFinite(score) || !Number.isFinite(totalScore) || totalScore <= 0
+          || score < 0 || score > totalScore || Number.isNaN(examDate.getTime())) {
+          throw new Error("试卷得分、总分或日期无效。");
+        }
+        const recordProfileId = String(record.profileId || profileId || "").trim();
+        if (!recordProfileId || !state.profiles.some((profile) => profile.id === recordProfileId)) {
+          throw new Error("试卷记录未匹配到明确学生档案。");
+        }
+        valid.push({ ...record, profileId: recordProfileId, score, totalScore, examDate: examDate.toISOString() });
       } catch (error) {
         errors.push({ index, message: error.message });
       }
     });
-    return { added, errors };
+    // A batch import may contain multiple students.  The validated profileId
+    // on each record is authoritative; `profileId` remains only a compatibility
+    // default for the explicit single-student API.
+    const merged = mergeImportedCollection(state, "examRecords", valid, null, "exam", normalizeExamRecord);
+    return { added: merged.added, skipped: merged.skipped, conflicts: merged.conflicts, errors };
+  }
+
+  function stableSerialize(value) {
+    if (value === null || typeof value !== "object") return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(stableSerialize).join(",")}]`;
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(",")}}`;
+  }
+
+  function shortHash(value) {
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function importedRecordFingerprint(kind, record = {}) {
+    const sourceId = String(record.sourceRecordId || record.originalId || "").trim();
+    if (sourceId) return `${kind}:id:${sourceId}`;
+    const copy = { ...record };
+    delete copy.id;
+    delete copy.profileId;
+    delete copy.sourceRecordFingerprint;
+    return `${kind}:hash:${shortHash(stableSerialize(copy))}`;
+  }
+
+  function mergeImportedCollection(state, collectionName, records, profileId, kind, normalize = (value) => value) {
+    if (!Array.isArray(records)) return { added: [], skipped: [], conflicts: [], errors: [] };
+    const collection = Array.isArray(state[collectionName]) ? state[collectionName] : [];
+    const added = [];
+    const skipped = [];
+    const conflicts = [];
+    const errors = [];
+    records.forEach((source, index) => {
+      if (!source || typeof source !== "object" || Array.isArray(source)) {
+        errors.push({ index, message: "record must be an object" });
+        return;
+      }
+      const targetProfileId = String(source.profileId || profileId || "").trim();
+      if (targetProfileId && !state.profiles.some((profile) => profile.id === targetProfileId)) {
+        errors.push({ index, message: "record profileId does not resolve to a local profile" });
+        return;
+      }
+      if (!targetProfileId && collectionName !== "contentReviews") {
+        errors.push({ index, message: "record profileId is required" });
+        return;
+      }
+      const fingerprint = importedRecordFingerprint(kind, source);
+      const sourceRecordId = String(source.sourceRecordId || source.originalId || source.id || "").trim();
+      const existing = collection.find((record) => {
+        if (targetProfileId && record.profileId !== targetProfileId) return false;
+        return (sourceRecordId && String(record.sourceRecordId || "") === sourceRecordId)
+          || String(record.sourceRecordFingerprint || "") === fingerprint;
+      });
+      if (existing) {
+        const comparableExisting = { ...existing };
+        const comparableIncoming = { ...source, profileId: targetProfileId };
+        delete comparableExisting.id;
+        delete comparableExisting.sourceRecordId;
+        delete comparableExisting.sourceRecordFingerprint;
+        delete comparableExisting.importedAt;
+        delete comparableIncoming.id;
+        delete comparableIncoming.sourceRecordId;
+        delete comparableIncoming.sourceRecordFingerprint;
+        delete comparableIncoming.importedAt;
+        if (stableSerialize(comparableExisting) === stableSerialize(comparableIncoming)) skipped.push(existing);
+        else conflicts.push({ existing, incoming: source });
+        return;
+      }
+      const normalized = normalize({ ...source, profileId: targetProfileId });
+      const record = {
+        ...normalized,
+        id: collection.some((item) => item.id === source.id) ? createId(kind) : String(source.id || createId(kind)),
+        profileId: targetProfileId,
+        sourceRecordId: sourceRecordId || "",
+        sourceRecordFingerprint: fingerprint,
+        importedAt: new Date().toISOString()
+      };
+      collection.push(record);
+      added.push(record);
+    });
+    state[collectionName] = collection;
+    return { added, skipped, conflicts, errors };
+  }
+
+  function importLearningProfile(state, payload = {}, options = {}) {
+    const incoming = payload.profile;
+    const sourceProfileId = String(incoming?.sourceProfileId || incoming?.id || "").trim();
+    if (!sourceProfileId) throw new Error("Imported profile must have a stable profile.id");
+    const portableProfileId = String(incoming?.portableProfileId || "").trim();
+    const unresolvedLegacyIdentity = !portableProfileId && sourceProfileId === "student-default";
+    if (unresolvedLegacyIdentity && !options.bindProfileId && options.createNewLegacy !== true) {
+      const error = new Error("旧版报告只有 student-default，无法确认跨设备学生身份；请明确绑定花名册成员或建立新学生。");
+      error.code = "unresolved-legacy-identity";
+      throw error;
+    }
+    let profile = options.bindProfileId
+      ? state.profiles.find((item) => item.id === String(options.bindProfileId))
+      : state.profiles.find((item) => {
+        if (portableProfileId) return item.portableProfileId === portableProfileId;
+        if (unresolvedLegacyIdentity) return false;
+        return item.sourceProfileId === sourceProfileId || item.studentNumber === sourceProfileId;
+      });
+    if (options.bindProfileId && !profile) throw new Error("所选学生档案不存在，未导入任何记录。");
+    const profileAction = profile ? "updated" : "created";
+    if (!profile) {
+      profile = normalizeProfile({
+        ...incoming,
+        id: createId("profile"),
+        portableProfileId: portableProfileId || createPortableProfileId(),
+        sourceProfileId: unresolvedLegacyIdentity ? "" : sourceProfileId,
+        identityStatus: "resolved",
+        dataSource: "report-import",
+        role: "student",
+        createdAt: incoming.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      state.profiles.push(profile);
+    } else {
+      // Keep the local profile id and local learning records. Only profile
+      // metadata is refreshed, with the source identity retained.
+      profile = normalizeProfile({
+        ...profile,
+        name: incoming.name || profile.name,
+        grade: incoming.grade || profile.grade,
+        goal: incoming.goal || profile.goal,
+        analysisNote: incoming.analysisNote || profile.analysisNote,
+        portableProfileId: portableProfileId || profile.portableProfileId,
+        sourceProfileId: unresolvedLegacyIdentity ? profile.sourceProfileId : sourceProfileId,
+        id: profile.id,
+        role: profile.role,
+        createdAt: profile.createdAt,
+        updatedAt: new Date().toISOString()
+      });
+      state.profiles[state.profiles.findIndex((item) => item.id === profile.id)] = profile;
+    }
+
+    const result = { profile, profileAction, collections: {} };
+    result.collections.attempts = mergeImportedCollection(
+      state, "attempts", payload.attempts, profile.id, "attempt", normalizeAttemptEvidence
+    );
+    result.collections.diagnosticAttempts = mergeImportedCollection(
+      state, "diagnosticAttempts", payload.diagnosticAttempts, profile.id, "diagnostic"
+    );
+    result.collections.examRecords = mergeImportedCollection(
+      state, "examRecords", payload.examRecords, profile.id, "exam", normalizeExamRecord
+    );
+    result.collections.growthRecords = mergeImportedCollection(
+      state, "growthRecords", payload.growthRecords, profile.id, "growth"
+    );
+    result.collections.experimentRecords = mergeImportedCollection(
+      state, "experimentRecords", payload.experimentRecords, profile.id, "experiment"
+    );
+    result.collections.learningPlans = mergeImportedCollection(
+      state, "learningPlans", payload.learningPlans, profile.id, "learning-plan"
+    );
+    result.collections.assessmentSessions = mergeImportedCollection(
+      state, "assessmentSessions", payload.assessmentSessions, profile.id, "placement", normalizeAssessmentSession
+    );
+    const reviewRecords = payload.reviews && typeof payload.reviews === "object"
+      ? Object.values(payload.reviews).map((review) => ({ ...review, id: review.id || review.questionId }))
+      : [];
+    const reviewResult = mergeImportedCollection(
+      state, "_importedReviews", reviewRecords, profile.id, "review"
+    );
+    if (reviewResult.added.length) {
+      reviewResult.added.forEach((review) => {
+        state.reviews[`${profile.id}::${review.questionId}`] = { ...review, profileId: profile.id };
+      });
+    }
+    delete state._importedReviews;
+    result.collections.reviews = reviewResult;
+    state.activeProfileId = profile.id;
+    return result;
   }
 
   function addGrowthRecord(state, input = {}) {
@@ -2520,47 +3632,61 @@
         date: attempt.createdAt,
         title: `完成${attempt.topic || "物理"}练习`,
         detail: `${attempt.grading?.status === "correct" ? "作答正确" : "需复核或订正"} · 提示等级 ${attempt.hintLevel}`,
-        evidence: `建模评分 ${Number(attempt.modelScore?.total) || 0} · 信心 ${attempt.confidenceBefore}→${attempt.confidenceAfter}`
+        evidence: `建模记录完整度（规则值） ${Number(attempt.modelScore?.total) || 0} · 信心 ${attempt.confidenceBefore}→${attempt.confidenceAfter}`
       }));
     return [...manual, ...exams, ...attempts]
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .slice(0, Math.max(1, Math.min(500, Number(limit) || 100)));
   }
 
-  function studentAnalysis(state, questions = [], profileId = state.activeProfileId) {
+  function studentAnalysis(state, questions = [], profileId = state.activeProfileId, options = {}) {
     const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
-    const summary = summarizeLearning(state, questions, profileId);
+    const summary = options.summary || summarizeLearning(state, questions, profileId);
     const topics = summary.topics;
-    const knowledgePoints = topicEvidenceProfile(state, questions, profileId);
+    const knowledgePoints = Array.isArray(options.knowledgePoints)
+      ? options.knowledgePoints
+      : topicEvidenceProfile(state, questions, profileId);
+    const evidenceCoverage = options.evidenceCoverage || knowledgePointEvidenceSummary(
+      state,
+      questions,
+      profileId,
+      Date.now(),
+      { evidenceProfile: knowledgePoints }
+    );
     const profileAttempts = state.attempts.filter((attempt) => attempt.profileId === profileId);
     const knowledgePointCounts = knowledgePoints.reduce((counts, item) => {
       counts[item.status] = (counts[item.status] || 0) + 1;
       return counts;
     }, { "证据不足": 0, "需巩固": 0, "基本掌握": 0, "可迁移": 0 });
-    const strongest = topics.slice().sort((a, b) => b.averageScore - a.averageScore || b.attempts - a.attempts).slice(0, 3);
+    const strongest = topics.slice().sort((a, b) => (b.averageScore ?? -1) - (a.averageScore ?? -1) || b.attempts - a.attempts).slice(0, 3);
     const exams = state.examRecords
       .filter((record) => record.profileId === profileId)
       .sort((a, b) => new Date(a.examDate).getTime() - new Date(b.examDate).getTime());
     const examWeakCounts = new Map();
-    exams.slice(-10).forEach((record) => (record.weakTopics || []).forEach((topic) => {
-      examWeakCounts.set(topic, (examWeakCounts.get(topic) || 0) + 1);
+    exams.slice(-10).forEach((record) => (record.weakTopics || []).forEach((topic, index) => {
+      const topicKey = record.weakTopicKeys?.[index] || topicKeyForLabel(topic);
+      const current = examWeakCounts.get(topicKey) || { label: topic, count: 0 };
+      current.count += 1;
+      examWeakCounts.set(topicKey, current);
     }));
-    const combinedWeak = new Map(topics.map((topic) => [topic.topic, {
+    const combinedWeak = new Map(topics.map((topic) => [topic.topicKey || topicKeyForLabel(topic.topic), {
       ...topic,
       evidenceSource: "practice",
-      examMentions: examWeakCounts.get(topic.topic) || 0
+      examMentions: examWeakCounts.get(topic.topicKey || topicKeyForLabel(topic.topic))?.count || 0
     }]));
-    examWeakCounts.forEach((count, topic) => {
-      if (combinedWeak.has(topic)) return;
-      combinedWeak.set(topic, {
-        topic,
+    examWeakCounts.forEach(({ label, count }, topicKey) => {
+      if (combinedWeak.has(topicKey)) return;
+      combinedWeak.set(topicKey, {
+        topic: label,
+        topicKey,
         attempts: 0,
+        scoredCount: 0,
         correct: 0,
         scoreTotal: 0,
         hintTotal: 0,
         modelTotal: 0,
-        accuracy: 0,
-        averageScore: 0,
+        accuracy: null,
+        averageScore: null,
         averageHint: 0,
         modeling: 0,
         evidenceSource: "exam-record",
@@ -2569,8 +3695,8 @@
     });
     const weakest = [...combinedWeak.values()]
       .sort((a, b) => {
-        const aRisk = (a.attempts ? 100 - a.averageScore : 35) + a.examMentions * 15;
-        const bRisk = (b.attempts ? 100 - b.averageScore : 35) + b.examMentions * 15;
+        const aRisk = (a.scoredCount ? 100 - a.averageScore : (a.pendingReviewCount ? 0 : 35)) + a.examMentions * 15;
+        const bRisk = (b.scoredCount ? 100 - b.averageScore : (b.pendingReviewCount ? 0 : 35)) + b.examMentions * 15;
         return bRisk - aRisk || b.attempts - a.attempts;
       })
       .slice(0, 5);
@@ -2588,8 +3714,8 @@
       const causes = [];
       if (topic.examMentions) causes.push(`最近试卷标记 ${topic.examMentions} 次`);
       if (topic.averageHint >= 3) causes.push("提示依赖较高");
-      if (topic.modeling < 60) causes.push("建模步骤证据偏弱");
-      if (topic.accuracy < 60) causes.push("近期正确率较低");
+      if (topic.modelingRecordNeedsCheck) causes.push("需要检查建模记录");
+      if (topic.accuracy !== null && topic.accuracy < 60) causes.push("近期已评分正确率较低");
       priorities.push(`${topic.topic}：${causes.join("、") || "需要增加独立提取练习"}`);
     });
     if (!priorities.length) priorities.push("先完成一组独立作答，形成可分析证据");
@@ -2613,15 +3739,156 @@
         closedLoop: summary.closedLoop,
         evidenceRule: "知识点结论同时参考样本量、最近证据、正确率、提示依赖、建模表现、跨日独立正确和迁移成功；证据不足时不作掌握结论。"
       },
-      evidenceLevel: summary.completed >= 12 || exams.length >= 3
-        ? "较充分"
-        : summary.completed >= 4 || exams.length >= 1
-          ? "初步"
-          : "不足",
+      evidenceCoverage,
+      evidenceLevel: evidenceCoverage.levelLabel,
       conclusion: summary.completed
-        ? `当前分析基于 ${summary.completed} 次正式作答、${exams.length} 次试卷记录；优先级由正确率、提示依赖、建模评分和复习到期情况共同确定。`
+        ? `当前分析基于 ${summary.submittedCount} 次正式作答（已评分 ${summary.scoredCount} 次${summary.pendingReviewCount ? `，待人工复核 ${summary.pendingReviewCount} 次` : ""}）、${exams.length} 次试卷记录；优先级由可评分正确率、提示依赖、建模记录完整度（规则值）和复习到期情况共同确定。`
         : "当前尚无正式作答证据，不能形成可靠的薄弱环节判断。",
       boundary: "本报告是本机学习行为的形成性分析，不是标准化能力诊断；少量记录、人工评分题和上传材料仍需教师复核。"
+    };
+  }
+
+  /**
+   * Build a deterministic, evidence-traceable diagnosis from the records that
+   * are actually stored for one student.  This is deliberately descriptive:
+   * no psychological or standardized-score inference is made.  A knowledge
+   * point is considered sample-sufficient only when at least three scored
+   * observations exist; pending manual reviews remain visible in submitted
+   * counts but never enter accuracy or trend calculations.
+   */
+  function buildStudentLearningDiagnosis(state, questions = [], profileId = state.activeProfileId) {
+    const questionMap = new Map((Array.isArray(questions) ? questions : []).map((question) => [question.id, question]));
+    const attempts = (Array.isArray(state?.attempts) ? state.attempts : [])
+      .filter((attempt) => attempt?.profileId === profileId)
+      .map((attempt) => normalizeAttemptEvidence(attempt));
+    const scored = attempts.filter(isValidAccuracyEvidence);
+    const pendingReviewCount = attempts.filter(isPendingManualReview).length;
+    const correctCount = scored.filter((attempt) => attempt.grading?.status === "correct").length;
+    const overall = {
+      submittedCount: attempts.length,
+      scoredCount: scored.length,
+      correctCount,
+      pendingReviewCount,
+      accuracy: scored.length ? Math.round(correctCount / scored.length * 100) : null
+    };
+    const groups = new Map();
+    for (const attempt of attempts) {
+      const question = questionMap.get(attempt.questionId);
+      const knowledgePointId = String(
+        attempt.knowledgePointId
+          || question?.knowledgePointId
+          || attempt.topicKey
+          || question?.topicKey
+          || topicKeyForLabel(attempt.topic || question?.topic || "")
+          || "unresolved"
+      ).trim() || "unresolved";
+      const label = String(question?.topic || attempt.topic || "未标注知识点").trim() || "未标注知识点";
+      const current = groups.get(knowledgePointId) || {
+        knowledgePointId,
+        label,
+        attempts: [],
+        evidenceIds: [],
+        scoredEvidenceIds: [],
+        submittedCount: 0,
+        scoredCount: 0,
+        correctCount: 0,
+        pendingReviewCount: 0,
+        wrongCount: 0,
+        durationSeconds: [],
+        errorCounts: new Map()
+      };
+      current.attempts.push(attempt);
+      current.submittedCount += 1;
+      if (attempt.id) current.evidenceIds.push(String(attempt.id));
+      if (isPendingManualReview(attempt)) current.pendingReviewCount += 1;
+      if (isValidAccuracyEvidence(attempt)) {
+        current.scoredCount += 1;
+        if (attempt.id) current.scoredEvidenceIds.push(String(attempt.id));
+        if (attempt.grading?.status === "correct") current.correctCount += 1;
+        else current.wrongCount += 1;
+      }
+      const duration = Number(attempt.durationSeconds);
+      if (Number.isFinite(duration) && duration >= 0) current.durationSeconds.push(duration);
+      const errorType = String(attempt.errorType || "").trim();
+      if (errorType && isValidAccuracyEvidence(attempt) && attempt.grading?.status !== "correct") {
+        current.errorCounts.set(errorType, (current.errorCounts.get(errorType) || 0) + 1);
+      }
+      groups.set(knowledgePointId, current);
+    }
+    const dateValue = (attempt) => {
+      const value = new Date(attempt.completedAt || attempt.createdAt || 0).getTime();
+      return Number.isFinite(value) ? value : 0;
+    };
+    const average = (values) => values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+    const topicResults = [...groups.values()].map((group) => {
+      const ordered = group.attempts.slice().sort((a, b) => dateValue(a) - dateValue(b));
+      const orderedScored = ordered.filter(isValidAccuracyEvidence);
+      const split = Math.ceil(orderedScored.length / 2);
+      const earlier = orderedScored.slice(0, split);
+      const recent = orderedScored.slice(split);
+      const accuracyOf = (records) => records.length
+        ? Math.round(records.filter((attempt) => attempt.grading?.status === "correct").length / records.length * 100)
+        : null;
+      const historicalAccuracy = accuracyOf(orderedScored);
+      const recentAccuracy = accuracyOf(recent.length ? recent : orderedScored.slice(-3));
+      const earlierAccuracy = accuracyOf(earlier);
+      const trend = historicalAccuracy == null || orderedScored.length < 3 || recentAccuracy == null || earlierAccuracy == null
+        ? "insufficient"
+        : recentAccuracy > earlierAccuracy ? "improving" : recentAccuracy < earlierAccuracy ? "declining" : "stable";
+      const repeatedErrorCount = [...group.errorCounts.values()]
+        .reduce((sum, count) => sum + Math.max(0, count - 1), 0);
+      const lastPracticeAt = ordered.length ? (ordered.at(-1).completedAt || ordered.at(-1).createdAt || null) : null;
+      const risk = group.scoredCount
+        ? (100 - (group.correctCount / group.scoredCount * 100)) + repeatedErrorCount * 12 + group.pendingReviewCount * 2
+        : group.pendingReviewCount ? 1 : 0;
+      return {
+        knowledgePointId: group.knowledgePointId,
+        label: group.label,
+        attemptCount: group.attempts.length,
+        submittedCount: group.submittedCount,
+        scoredCount: group.scoredCount,
+        correctCount: group.correctCount,
+        pendingReviewCount: group.pendingReviewCount,
+        accuracy: group.scoredCount ? Math.round(group.correctCount / group.scoredCount * 100) : null,
+        recentAccuracy,
+        historicalAccuracy,
+        wrongCount: group.wrongCount,
+        repeatedErrorCount,
+        lastPracticeAt,
+        averageDurationSeconds: average(group.durationSeconds),
+        recentAverageDurationSeconds: average(ordered.slice(-3).map((attempt) => Number(attempt.durationSeconds)).filter((value) => Number.isFinite(value) && value >= 0)),
+        trend,
+        evidenceIds: group.evidenceIds,
+        scoredEvidenceIds: group.scoredEvidenceIds,
+        dominantErrorTypes: [...group.errorCounts.entries()].sort((a, b) => b[1] - a[1]).map(([type, count]) => ({ type, count })),
+        risk
+      };
+    }).sort((a, b) => b.risk - a.risk || b.attemptCount - a.attemptCount || a.label.localeCompare(b.label));
+    const priorities = topicResults
+      .filter((item) => item.scoredCount > 0 || item.pendingReviewCount > 0)
+      .slice(0, 3)
+      .map((item) => ({
+        knowledgePointId: item.knowledgePointId,
+        label: item.label,
+        evidenceIds: item.scoredEvidenceIds.length ? item.scoredEvidenceIds.slice() : item.evidenceIds.slice(),
+        reason: item.scoredCount === 0
+          ? "当前只有待人工复核记录，先完成教师复核后再作判断。"
+          : `已评分 ${item.scoredCount} 题，正确 ${item.correctCount} 题，正确率 ${item.accuracy}%${item.repeatedErrorCount ? `；重复错误 ${item.repeatedErrorCount} 次` : ""}。`
+      }));
+    const sampleStatus = overall.scoredCount >= 3 ? "sufficient" : "insufficient";
+    return {
+      profileId,
+      generatedAt: new Date().toISOString(),
+      sampleStatus,
+      overall,
+      knowledgePoints: topicResults,
+      priorities,
+      recommendation: priorities.length
+        ? `下一阶段优先复习：${priorities.map((item) => item.label).join("、")}`
+        : "先完成至少三条可评分作答，形成可分析证据。",
+      boundary: sampleStatus === "insufficient"
+        ? "当前样本不足，暂不做稳定结论；待人工复核记录不计入正确率。"
+        : "本诊断仅基于软件已保存的作答记录，属于描述性学习反馈，不是标准化测评或人格判断。"
     };
   }
 
@@ -2629,7 +3896,7 @@
     const profileId = options.profileId || state.activeProfileId;
     const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
     const count = Math.max(1, Math.min(8, Number(options.count) || 5));
-    const dateKey = String(options.date || new Date().toISOString().slice(0, 10));
+    const dateKey = String(options.date || localCalendarDateKey());
     const usableQuestions = questions.filter((question) => {
       return isPublishedQuestion(question)
         && question.grade !== "七年级";
@@ -2682,7 +3949,7 @@
       title: `${dateKey} 课后物理测试`,
       questionCount: chosen.length,
       items: chosen,
-      generationRule: "默认5题、最多8题：优先选取到期复习、本人近期错题、试卷薄弱点、高提示依赖或低建模评分题，再补当前年级迁移题；同一天重复打开保持一致。"
+       generationRule: "默认5题、最多8题：优先选取到期复习、本人近期错题、试卷薄弱点或高提示依赖题；如建模记录需要检查，只作为复核线索，不单独判定知识点薄弱；再补当前年级迁移题。"
     };
   }
 
@@ -2692,8 +3959,17 @@
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0] || null;
   }
 
-  function learningPlanProgress(state, plan) {
-    if (!plan) return { completed: 0, total: 0, percent: 0, completedQuestionIds: [] };
+  function learningPlanProgress(state, plan, now = Date.now()) {
+    if (!plan) return {
+      completed: 0,
+      total: 0,
+      percent: 0,
+      completedQuestionIds: [],
+      sessions: [],
+      currentSession: null,
+      currentSessionIndex: -1,
+      currentQuestionIds: []
+    };
     const startedAt = new Date(plan.createdAt || 0).getTime();
     const completedQuestionIds = [...new Set(state.attempts
       .filter((attempt) => {
@@ -2702,13 +3978,188 @@
           && new Date(attempt.createdAt || attempt.completedAt || 0).getTime() >= startedAt;
       })
       .map((attempt) => attempt.questionId))];
+    const completedSet = new Set(completedQuestionIds);
+    const sourceSessions = Array.isArray(plan.sessions) && plan.sessions.length
+      ? plan.sessions
+      : [{
+        id: "legacy-session",
+        sequence: 1,
+        title: "专项训练",
+        questionIds: Array.isArray(plan.questionIds) ? plan.questionIds : [],
+        expectedMinutes: Math.max(1, Math.min(15, Number(plan.expectedMinutes) || 15)),
+        dueAt: ""
+      }];
+    let previousRequiredCompleted = true;
+    const sessions = sourceSessions.map((session, index) => {
+      const questionIds = [...new Set((session.questionIds || []).filter((id) => plan.questionIds.includes(id)))];
+      const completedIds = questionIds.filter((id) => completedSet.has(id));
+      const required = questionIds.length > 0 && session.status !== "not-required";
+      const completed = required && completedIds.length === questionIds.length;
+      const dueAt = new Date(session.dueAt || 0).getTime();
+      let status = "not-required";
+      if (required && completed) status = "completed";
+      else if (required && !previousRequiredCompleted) status = "locked";
+      else if (required && Number.isFinite(dueAt) && dueAt > Number(now)) status = "scheduled";
+      else if (required) status = "ready";
+      if (required) previousRequiredCompleted = completed;
+      return {
+        ...session,
+        sequence: Number(session.sequence) || index + 1,
+        questionIds,
+        completedQuestionIds: completedIds,
+        completedCount: completedIds.length,
+        totalCount: questionIds.length,
+        status,
+        available: status === "ready"
+      };
+    });
+    const currentSessionIndex = sessions.findIndex((session) => !["completed", "not-required"].includes(session.status));
+    const currentSession = currentSessionIndex >= 0 ? sessions[currentSessionIndex] : null;
     return {
       completed: completedQuestionIds.length,
       total: plan.questionIds.length,
       percent: plan.questionIds.length
         ? Math.round(completedQuestionIds.length / plan.questionIds.length * 100)
         : 0,
-      completedQuestionIds
+      completedQuestionIds,
+      sessions,
+      currentSession,
+      currentSessionIndex,
+      currentQuestionIds: currentSession?.questionIds || [],
+      currentSessionAvailable: Boolean(currentSession?.available),
+      currentExpectedMinutes: currentSession?.expectedMinutes || 0
+    };
+  }
+
+  function questionModelKey(question = {}) {
+    return String(question.modelDefinitionId || question.modelFamilyId || question.retestGroupId || "").trim();
+  }
+
+  function isComparableQuestionPair(beforeQuestion, afterQuestion) {
+    if (!beforeQuestion || !afterQuestion || beforeQuestion.id === afterQuestion.id) return false;
+    const beforeModel = questionModelKey(beforeQuestion);
+    const afterModel = questionModelKey(afterQuestion);
+    const sameModel = Boolean(beforeModel && afterModel && beforeModel === afterModel);
+    const sameRetestGroup = Boolean(beforeQuestion.retestGroupId
+      && afterQuestion.retestGroupId
+      && beforeQuestion.retestGroupId === afterQuestion.retestGroupId);
+    const explicitlyParallel = Boolean(beforeQuestion.parallelEquivalent
+      || afterQuestion.parallelEquivalent
+      || beforeQuestion.equivalentGroupId && beforeQuestion.equivalentGroupId === afterQuestion.equivalentGroupId);
+    const difficultyA = String(beforeQuestion.difficulty || "").trim();
+    const difficultyB = String(afterQuestion.difficulty || "").trim();
+    const sameDifficulty = difficultyA && difficultyB && difficultyA === difficultyB;
+    return (sameModel || sameRetestGroup || explicitlyParallel) && (sameDifficulty || explicitlyParallel);
+  }
+
+  function buildComparableInterventionOutcome(state, plan, questions = []) {
+    const currentPlan = plan && typeof plan === "object" ? plan : {};
+    const profileId = currentPlan.profileId || state.activeProfileId;
+    const questionMap = new Map((Array.isArray(questions) ? questions : []).map((question) => [question.id, question]));
+    const focusLabels = Array.isArray(currentPlan.focusTopics) ? currentPlan.focusTopics : [];
+    const rawFocusKeys = Array.isArray(currentPlan.focusTopicKeys) && currentPlan.focusTopicKeys.length
+      ? currentPlan.focusTopicKeys
+      : focusLabels.map(topicKeyForLabel);
+    const focusKeys = new Set(rawFocusKeys.map((key, index) => resolveKnowledgePointIdentity({
+      knowledgePointId: key,
+      label: focusLabels[index] || ""
+    }).id).filter(Boolean));
+    const attemptTopicKey = (attempt) => {
+      const question = questionMap.get(attempt.questionId);
+      return resolveKnowledgePointIdentity({
+        label: attempt.topic || question?.topic,
+        knowledgePointId: attempt.knowledgePointId || attempt.topicKey || question?.knowledgePointId
+      }).id || topicKeyForQuestion(question || attempt);
+    };
+    const matchesTopic = (attempt) => {
+      if (!focusKeys.size) return true;
+      return focusKeys.has(attemptTopicKey(attempt));
+    };
+    const attempts = state.attempts.filter((attempt) => attempt.profileId === profileId && matchesTopic(attempt));
+    const valid = attempts.filter(isValidAccuracyEvidence);
+    const pendingReviewCount = attempts.filter(isPendingManualReview).length;
+    const createdAt = new Date(currentPlan.createdAt || currentPlan.generatedAt || 0).getTime();
+    const explicitBaseline = new Set(Array.isArray(currentPlan.baselineEvidenceIds) ? currentPlan.baselineEvidenceIds : []);
+    const explicitRetest = new Set(Array.isArray(currentPlan.retestEvidenceIds) ? currentPlan.retestEvidenceIds : []);
+    const before = valid.filter((attempt) => explicitBaseline.size
+      ? explicitBaseline.has(attempt.id)
+      : Number.isFinite(createdAt) && new Date(attempt.completedAt || attempt.createdAt || 0).getTime() < createdAt);
+    const post = valid.filter((attempt) => explicitRetest.size
+      ? explicitRetest.has(attempt.id)
+      : Number.isFinite(createdAt) && new Date(attempt.completedAt || attempt.createdAt || 0).getTime() >= createdAt);
+    const pairs = [];
+    const usedBefore = new Set();
+    const usedAfter = new Set();
+    post.slice().sort((a, b) => new Date(a.completedAt || a.createdAt || 0) - new Date(b.completedAt || b.createdAt || 0)).forEach((after) => {
+      const afterQuestion = questionMap.get(after.questionId);
+      const candidate = before
+        .filter((item) => !usedBefore.has(item.id) && !usedAfter.has(after.id))
+        .map((item) => ({ item, question: questionMap.get(item.questionId) }))
+        .filter(({ item, question }) => attemptTopicKey(item) === attemptTopicKey(after)
+          && isComparableQuestionPair(question, afterQuestion))
+        .sort((a, b) => new Date(b.item.completedAt || b.item.createdAt || 0) - new Date(a.item.completedAt || a.item.createdAt || 0))[0];
+      if (candidate) {
+        usedBefore.add(candidate.item.id);
+        usedAfter.add(after.id);
+        pairs.push({ beforeEvidenceId: candidate.item.id, retestEvidenceId: after.id });
+      }
+    });
+    const pairedBefore = pairs.map((pair) => before.find((item) => item.id === pair.beforeEvidenceId)).filter(Boolean);
+    const pairedAfter = pairs.map((pair) => post.find((item) => item.id === pair.retestEvidenceId)).filter(Boolean);
+    const accuracy = (items) => items.length
+      ? Math.round(items.filter((item) => item.grading?.status === "correct").length / items.length * 100)
+      : null;
+    const preAccuracy = accuracy(pairedBefore);
+    const postAccuracy = accuracy(pairedAfter);
+    const pairDates = new Set(pairs.flatMap((pair) => {
+      const beforeItem = before.find((item) => item.id === pair.beforeEvidenceId);
+      const afterItem = post.find((item) => item.id === pair.retestEvidenceId);
+      return [beforeItem, afterItem].map((item) => localDateKey(item?.completedAt || item?.createdAt)).filter(Boolean);
+    }));
+    let comparisonStatus = "insufficient";
+    let comparisonReason = "前后均需至少一条同一专项、已评分且可配对的证据。";
+    if (!before.length || !post.length) {
+      comparisonStatus = "insufficient";
+      comparisonReason = "目前只有单侧有效证据，需完成另一侧复测后再比较。";
+    } else if (!pairs.length) {
+      comparisonStatus = "unmatched";
+      comparisonReason = "前后都有已评分记录，但没有满足知识点、模型/等价组、难度和题目独立性要求的配对。";
+    } else if (pairs.length < INTERVENTION_COMPARISON_RULE.minimumMatchedPairs
+      || pairDates.size < INTERVENTION_COMPARISON_RULE.minimumDistinctDates) {
+      comparisonStatus = "emerging";
+      comparisonReason = `已找到 ${pairs.length} 对可比证据，但产品规则要求至少 ${INTERVENTION_COMPARISON_RULE.minimumMatchedPairs} 对且覆盖至少 ${INTERVENTION_COMPARISON_RULE.minimumDistinctDates} 个不同日期后才计算百分点变化；该规则不是标准化测评阈值。`;
+    } else {
+      comparisonStatus = "comparable";
+      comparisonReason = "已按同知识点、同模型/等价组、相同难度、不同题目且跨日期配对；仅使用配对证据计算变化。";
+    }
+    const pairedIds = new Set([...pairedBefore, ...pairedAfter].map((item) => item.id));
+    const supplementalEvidence = [...before, ...post]
+      .filter((item) => !pairedIds.has(item.id))
+      .map((item) => item.id);
+    return {
+      preScoredCount: before.length,
+      postScoredCount: post.length,
+      pendingReviewCount,
+      matchedPairCount: pairs.length,
+      pairedPreScoredCount: pairedBefore.length,
+      pairedPostScoredCount: pairedAfter.length,
+      preAccuracy,
+      postAccuracy,
+      pairedPreAccuracy: preAccuracy,
+      pairedPostAccuracy: postAccuracy,
+      pairedDelta: comparisonStatus === "comparable" ? postAccuracy - preAccuracy : null,
+      delta: comparisonStatus === "comparable" ? postAccuracy - preAccuracy : null,
+      comparisonStatus,
+      comparisonReason,
+      pairs,
+      supplementalEvidence,
+      evidenceLevel: comparisonStatus === "comparable" ? "comparable"
+        : comparisonStatus === "emerging" ? "emerging" : "insufficient",
+      comparisonRule: `configurable:v${INTERVENTION_COMPARISON_RULE.version}; >=${INTERVENTION_COMPARISON_RULE.minimumMatchedPairs} matched pairs and >=${INTERVENTION_COMPARISON_RULE.minimumDistinctDates} dates required; not a standardized assessment threshold`,
+      conclusion: comparisonStatus !== "comparable"
+        ? "证据不足"
+        : postAccuracy >= 80 && postAccuracy >= preAccuracy ? "达标"
+          : postAccuracy >= 60 ? "部分达标" : "未达标"
     };
   }
 
@@ -2728,15 +4179,20 @@
 
     const analysis = studentAnalysis(state, eligible, profileId);
     const requestedTopic = String(options.focusTopic || "").trim();
-    const focusTopic = requestedTopic && requestedTopic !== "自动依据学情"
-      ? requestedTopic
-      : analysis.weakest[0]?.topic || eligible[0].topic;
-    const topicQuestions = eligible.filter((question) => question.topic === focusTopic);
+    const requestedKey = String(options.focusTopicKey || (requestedTopic.startsWith("kp:") ? requestedTopic : "")).trim();
+    const focusTopicKey = requestedKey && requestedKey !== "自动依据学情"
+      ? requestedKey
+      : analysis.weakest[0]?.topicKey || topicKeyForQuestion(eligible[0]);
+    const focusTopic = analysis.weakest.find((item) => item.topicKey === focusTopicKey)?.topic
+      || eligible.find((question) => topicKeyForQuestion(question) === focusTopicKey)?.topic
+      || requestedTopic || eligible[0].topic;
+    const topicQuestions = eligible.filter((question) => topicKeyForQuestion(question) === focusTopicKey);
     const pool = topicQuestions.length ? topicQuestions : eligible;
     const questionMap = new Map(eligible.map((question) => [question.id, question]));
     const recentWrong = state.attempts
       .filter((attempt) => attempt.profileId === profileId
-        && attempt.topic === focusTopic
+        && (attempt.knowledgePointId || attempt.topicKey || topicKeyForLabel(attempt.topic)) === focusTopicKey
+        && isValidAccuracyEvidence(attempt)
         && attempt.grading?.status !== "correct")
       .slice()
       .reverse()
@@ -2784,7 +4240,7 @@
       { ...state, activeProfileId: profileId },
       pool,
       Math.min(pool.length, 30),
-      { profileId, focusTopic }
+      { profileId, focusTopic, focusTopicKey }
     );
     ranked.forEach((item) => {
       const role = item.question.variantRole;
@@ -2795,12 +4251,57 @@
     });
     pool.forEach((question) => addQuestion(question, "专项复测", `补充${focusTopic}的不同模型证据`));
 
-    const sourceWeak = analysis.weakest.find((item) => item.topic === focusTopic);
+    const sourceWeak = analysis.weakest.find((item) => item.topicKey === focusTopicKey);
     const evidenceReason = sourceWeak?.examMentions
       ? `最近试卷记录将该知识点标记为薄弱项 ${sourceWeak.examMentions} 次`
       : sourceWeak?.attempts
-        ? `已有 ${sourceWeak.attempts} 次作答，平均得分 ${sourceWeak.averageScore}%`
+        ? `已有 ${sourceWeak.attempts} 次作答，${sourceWeak.scoredCount ? `平均得分 ${sourceWeak.averageScore}%` : "尚无可评分证据"}`
         : "当前证据不足，先用少量题完成诊断，不作能力结论";
+    const planCreatedAt = new Date().toISOString();
+    const baselineEvidenceIds = state.attempts
+      .filter((attempt) => attempt.profileId === profileId
+        && isValidAccuracyEvidence(attempt)
+        && (attempt.knowledgePointId || attempt.topicKey || topicKeyForLabel(attempt.topic)) === focusTopicKey)
+      .map((attempt) => attempt.id)
+      .slice(-20);
+    const selectedRoles = [...new Set(selected.map((item) => item.variantRole).filter(Boolean))];
+    const hasFullStructure = ["core", "near", "far", "counter"].every((role) => selectedRoles.includes(role));
+    const selectedQuestionIds = selected.map((item) => item.questionId);
+    const sessionOneCount = selectedQuestionIds.length <= 3 ? 1 : 2;
+    const sessionThreeCount = selectedQuestionIds.length >= 3 ? 1 : 0;
+    const sessionOneIds = selectedQuestionIds.slice(0, sessionOneCount);
+    const sessionThreeIds = sessionThreeCount ? selectedQuestionIds.slice(-sessionThreeCount) : [];
+    const sessionTwoIds = selectedQuestionIds.slice(sessionOneCount, selectedQuestionIds.length - sessionThreeCount);
+    const retestDueAt = new Date(Date.now() + 3 * DAY).toISOString();
+    const interventionSessions = [
+      {
+        id: "session-1",
+        sequence: 1,
+        title: "诊断与母题",
+        questionIds: sessionOneIds,
+        expectedMinutes: 12,
+        status: "ready",
+        dueAt: planCreatedAt
+      },
+      {
+        id: "session-2",
+        sequence: 2,
+        title: "条件变化与迁移",
+        questionIds: sessionTwoIds,
+        expectedMinutes: 12,
+        status: sessionTwoIds.length ? "locked" : "not-required",
+        dueAt: ""
+      },
+      {
+        id: "session-3",
+        sequence: 3,
+        title: "延迟独立复测",
+        questionIds: sessionThreeIds,
+        expectedMinutes: 10,
+        status: sessionThreeIds.length ? "scheduled" : "not-required",
+        dueAt: retestDueAt
+      }
+    ];
     return {
       id: createId("plan"),
       profileId,
@@ -2809,19 +4310,36 @@
       subject: "物理",
       title: `${focusTopic}专项微循环`,
       focusTopics: [focusTopic],
-      target: `用少量题完成“母题理解—条件变化—跨情境迁移—反例辨析—复测”`,
+      focusTopicKeys: [focusTopicKey],
+      focusKnowledgePointIds: [focusTopicKey],
+      baselineEvidenceIds,
+      retestEvidenceIds: [],
+      comparisonRule: "同一 focus topic；已评分；不同 questionId；同 modelDefinitionId/retestGroupId 或明确等价；difficulty 相同或明确 parallel/equivalent。",
+      comparisonStatus: "insufficient",
+      variantCoverage: selectedRoles,
+      structureLabel: hasFullStructure ? "母题—近迁移—远迁移—反例" : `当前方案实际包含：${selectedRoles.join("、") || "未标注迁移角色"}`,
+      target: hasFullStructure
+        ? "用少量题完成母题理解、条件变化、跨情境迁移、反例辨析与延迟复测"
+        : `按当前已审核题目完成针对性练习与延迟复测；${profile.grade}尚不宣称具备完整四类迁移题族`,
       evidenceLevel: analysis.evidenceLevel,
       evidenceReason,
-      questionIds: selected.map((item) => item.questionId),
+      questionIds: selectedQuestionIds,
       items: selected,
       questionCount: selected.length,
-      expectedMinutes: selected.length * 8,
+      sessions: interventionSessions,
+      currentSessionIndex: 0,
+      expectedMinutes: interventionSessions[0].expectedMinutes,
+      totalExpectedMinutes: interventionSessions
+        .filter((session) => session.status !== "not-required")
+        .reduce((sum, session) => sum + session.expectedMinutes, 0),
       teacherNote: String(options.teacherNote || "").trim().slice(0, 2000),
       status: "draft",
       generatedAt: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
+      createdAt: planCreatedAt,
       updatedAt: new Date().toISOString(),
-      selectionRule: "严格限定学生年级；优先本人错题、到期复习、试卷薄弱点和低提示独立作答证据；同一模型采用母题、近迁移、远迁移、反例与复测，不以题量替代诊断。"
+      selectionRule: hasFullStructure
+        ? "严格限定学生年级；优先本人错题、到期复习、试卷薄弱点和低提示独立作答证据；同一模型采用已审核的母题、近迁移、远迁移、反例与复测，不以题量替代诊断。"
+        : "严格限定学生年级和已审核完整题；只陈述本次实际题型结构，不用同模板数字变式冒充独立迁移证据。"
     };
   }
 
@@ -2841,11 +4359,170 @@
     const saved = {
       ...plan,
       status: "active",
+      confirmationStatus: "teacher-confirmed",
+      teacherConfirmedBy: String(plan.teacherConfirmedBy || "local-teacher").slice(0, 120),
+      teacherConfirmedAt: new Date().toISOString(),
       approvedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
     state.learningPlans.push(saved);
     return saved;
+  }
+
+  function buildTeacherPrescription(state, questions = [], profileIds = []) {
+    const selectedProfiles = (state.profiles || []).filter((profile) => profile.role === "student"
+      && (!profileIds.length || profileIds.includes(profile.id)));
+    const shared = new Map();
+    const insufficient = new Map();
+    const individualSupport = [];
+    const pendingManualReview = [];
+    const awaitingRetest = [];
+    selectedProfiles.forEach((profile) => {
+      const analysis = studentAnalysis(state, questions, profile.id);
+      analysis.knowledgePoints.forEach((topic) => {
+        const target = topic.code === "reinforce" ? shared : topic.code === "insufficient" ? insufficient : null;
+        if (!target) return;
+        const current = target.get(topic.topicKey) || { topicKey: topic.topicKey, topic: topic.topic, profileIds: [], evidenceIds: [] };
+        current.profileIds.push(profile.id);
+        current.evidenceIds.push(...(topic.evidenceIds || []));
+        target.set(topic.topicKey, current);
+      });
+      const priorities = analysis.weakest.slice(0, 3);
+      if (priorities.length) individualSupport.push({
+        profileId: profile.id,
+        profileName: profile.name,
+        priorityKnowledgePointIds: priorities.map((item) => item.topicKey),
+        evidenceIds: [...new Set(priorities.flatMap((item) => item.evidenceIds || []))],
+        suggestedQuestionCount: priorities.some((item) => item.scoredCount >= 4) ? 5 : 3
+      });
+      const pending = state.attempts.filter((attempt) => attempt.profileId === profile.id && isPendingManualReview(attempt));
+      if (pending.length) pendingManualReview.push({ profileId: profile.id, profileName: profile.name, evidenceIds: pending.map((item) => item.id) });
+      const activePlan = activeLearningPlan(state, profile.id);
+      const progress = learningPlanProgress(state, activePlan);
+      if (activePlan && progress.total > 0 && progress.completed >= progress.total) awaitingRetest.push({ profileId: profile.id, profileName: profile.name, planId: activePlan.id });
+    });
+    const commonWeaknesses = [...shared.values()]
+      .filter((item) => item.profileIds.length >= 2)
+      .sort((a, b) => b.profileIds.length - a.profileIds.length)
+      .map((item) => ({ ...item, profileIds: [...new Set(item.profileIds)], evidenceIds: [...new Set(item.evidenceIds)] }));
+    const insufficientKnowledgePoints = [...insufficient.values()]
+      .sort((a, b) => b.profileIds.length - a.profileIds.length)
+      .map((item) => ({ ...item, profileIds: [...new Set(item.profileIds)], evidenceIds: [...new Set(item.evidenceIds)] }));
+    return {
+      generatedAt: new Date().toISOString(),
+      profileIds: selectedProfiles.map((profile) => profile.id),
+      commonWeaknesses,
+      insufficientKnowledgePoints,
+      individualSupport,
+      pendingManualReview,
+      awaitingRetest,
+      suggestedGroups: commonWeaknesses.slice(0, 5).map((item) => ({
+        groupKey: `prescription:${item.topicKey}`,
+        title: `${item.topic}临时支持组`,
+        profileIds: item.profileIds,
+        evidenceIds: item.evidenceIds,
+        suggestedPlanSize: item.profileIds.length >= 6 ? 7 : item.profileIds.length >= 3 ? 5 : 3
+      })),
+      status: "teacher-confirmation-required",
+      boundary: "处方由确定性规则基于可追溯证据生成；教师确认前不创建分组、作业或专项方案，AI 不得修改掌握状态或正式评分。"
+    };
+  }
+
+  function buildTieredAssignmentDraft(state, questions = [], options = {}) {
+    const requestedProfiles = Array.isArray(options.profileIds) ? options.profileIds.filter(Boolean) : [];
+    const prescription = buildTeacherPrescription(state, questions, requestedProfiles);
+    const common = prescription.commonWeaknesses.find((item) => item.profileIds.length >= 2);
+    const individual = prescription.individualSupport[0] || null;
+    const focusTopicKey = String(options.focusTopicKey || common?.topicKey || individual?.priorityKnowledgePointIds?.[0] || "").trim();
+    const studentIds = common?.profileIds?.length ? common.profileIds : individual ? [individual.profileId] : [];
+    const studentScope = studentIds.map((profileId) => state.profiles.find((profile) => profile.id === profileId))
+      .filter(Boolean)
+      .map((profile) => ({
+        profileId: profile.id,
+        portableProfileId: profile.portableProfileId || "",
+        name: profile.name,
+        grade: profile.grade
+      }));
+    const evidenceIds = [...new Set(common?.evidenceIds || individual?.evidenceIds || [])];
+    if (!focusTopicKey || !studentScope.length || !evidenceIds.length) {
+      return {
+        id: createId("tiered-assignment-draft"),
+        generatedAt: new Date().toISOString(),
+        status: "insufficient-evidence",
+        publish: false,
+        studentScope,
+        knowledgePointIds: focusTopicKey ? [focusTopicKey] : [],
+        evidenceIds,
+        questionCandidates: [],
+        questionIds: [],
+        questionCount: 0,
+        boundary: "当前没有足够、可追溯且已评分的共同薄弱证据；系统不会用题库数量或 AI 猜测代替教师判断。"
+      };
+    }
+    const count = [3, 5, 7].includes(Number(options.count))
+      ? Number(options.count)
+      : common?.profileIds?.length >= 6 ? 7 : common?.profileIds?.length >= 3 ? 5 : 3;
+    const anchorProfile = state.profiles.find((profile) => profile.id === studentScope[0].profileId);
+    let plan;
+    try {
+      plan = buildTargetedLearningPlan(state, questions, {
+        profileId: anchorProfile.id,
+        focusTopicKey,
+        count,
+        teacherNote: options.teacherNote || ""
+      });
+    } catch {
+      plan = null;
+    }
+    const questionMap = new Map(questions.map((question) => [question.id, question]));
+    const questionCandidates = (plan?.items || []).map((item) => {
+      const question = questionMap.get(item.questionId);
+      return {
+        id: item.questionId,
+        title: String(question?.title || item.questionId),
+        grade: String(question?.grade || anchorProfile.grade),
+        difficulty: String(question?.difficulty || "未标注"),
+        source: String(question?.source || "来源未标注"),
+        sourceLicense: String(question?.sourceLicense || "授权状态未标注"),
+        knowledgePointId: topicKeyForQuestion(question || { knowledgePointId: focusTopicKey }),
+        variantRole: String(item.variantRole || ""),
+        reason: String(item.reason || "")
+      };
+    });
+    if (!questionCandidates.length) {
+      return {
+        id: createId("tiered-assignment-draft"),
+        generatedAt: new Date().toISOString(),
+        status: "insufficient-evidence",
+        publish: false,
+        studentScope,
+        knowledgePointIds: [focusTopicKey],
+        evidenceIds,
+        questionCandidates: [],
+        questionIds: [],
+        questionCount: 0,
+        boundary: "已找到薄弱证据，但当前没有适合同年级且已发布的完整题目；不得自动生成未经审核内容。"
+      };
+    }
+    return {
+      id: createId("tiered-assignment-draft"),
+      generatedAt: new Date().toISOString(),
+      status: "teacher-confirmation-required",
+      reviewStatus: "教师待审核",
+      publish: false,
+      title: `${plan.focusTopics[0]}分层专项`,
+      studentScope,
+      targetProfileIds: studentScope.map((item) => item.profileId),
+      knowledgePointIds: [focusTopicKey],
+      evidenceIds,
+      questionCandidates,
+      questionIds: questionCandidates.map((item) => item.id),
+      questionCount: questionCandidates.length,
+      structureLabel: plan.structureLabel,
+      target: plan.target,
+      sourcePlanId: plan.id,
+      boundary: "候选学生、知识点、题目来源与数量均来自可追溯本机证据；教师确认前不创建作业、不发布内容，AI 不得绕过审核。"
+    };
   }
 
   function seededShuffle(items, seedText) {
@@ -2882,21 +4559,70 @@
       || (questionTopic && (questionTopic.includes(topic) || topic.includes(questionTopic))));
   }
 
+  const PLACEMENT_CAPABILITY_DIMENSIONS = Object.freeze([
+    "基础概念", "条件判断", "模型识别", "图像/表征理解",
+    "实验与探究", "建模", "定量计算", "迁移/反例"
+  ]);
+
+  function placementCapabilityTags(question = {}) {
+    const questionType = String(question.questionType || question.examQuestionType || "");
+    const cognitive = String(question.cognitiveDemand || question.cognitiveRequirement || "");
+    const representation = String(question.representationType || "");
+    const purpose = String(question.assessmentPurpose || "");
+    const searchable = `${question.title || ""} ${question.content || ""} ${questionType} ${cognitive} ${representation} ${purpose}`;
+    const tags = new Set();
+    if (/基础|概念|判断|辨析/.test(searchable) || question.difficulty === "基础") tags.add("基础概念");
+    if (/条件|适用|判断|辨析|反例/.test(searchable)) tags.add("条件判断");
+    if (/模型|研究对象|过程|受力|等效|识别/.test(searchable) || /应用/.test(cognitive)) tags.add("模型识别");
+    if (/图|图像|图线|图表|电路|光路|受力图|表征/.test(searchable)) tags.add("图像/表征理解");
+    if (/实验|探究|测量|误差|操作/.test(searchable)) tags.add("实验与探究");
+    if (/建模|研究对象|过程划分|模型/.test(searchable) || /综合|计算/.test(questionType)) tags.add("建模");
+    if (/计算|定量|数值|填空/.test(searchable)) tags.add("定量计算");
+    if (/迁移|反例|变式|挑战|综合/.test(searchable) || question.difficulty === "挑战") tags.add("迁移/反例");
+    return [...tags];
+  }
+
   function generatePlacementDiagnostic(state, questions = [], options = {}) {
     const profileId = options.profileId || state.activeProfileId;
     const profile = state.profiles.find((item) => item.id === profileId) || activeProfile(state);
     if (!profile) throw new Error("未找到要生成摸底卷的学生档案。");
     const requestedCount = Math.max(20, Math.min(30, Number(options.count) || 24));
     const seed = String(options.seed || `${profileId}|${profile.grade}|placement`);
+    const scopeType = ["semester", "chapter", "custom"].includes(options.scopeType)
+      ? options.scopeType
+      : "semester";
+    const scopeIds = [...new Set((Array.isArray(options.scopeIds) ? options.scopeIds : [])
+      .map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 100);
+    const requestedTargets = [...new Set((Array.isArray(options.targetKnowledgePointIds)
+      ? options.targetKnowledgePointIds
+      : []).map((value) => resolveKnowledgePointIdentity({ knowledgePointId: value }).id).filter(Boolean))];
     const eligible = (Array.isArray(questions) ? questions : []).filter((question) => {
-      return isPublishedQuestion(question)
+      if (!(isPublishedQuestion(question)
         && question.grade === profile.grade
         && question.grade !== "七年级"
         && String(question.content || "").trim()
         && String(question.answer || "").trim()
-        && String(question.solution || "").trim();
+        && String(question.solution || "").trim())) return false;
+      if (scopeType === "chapter" && scopeIds.length) {
+        const chapterIds = [question.curriculumChapterId, question.chapterId, question.chapter]
+          .map((value) => String(value || "").trim());
+        return scopeIds.some((id) => chapterIds.includes(id));
+      }
+      if (scopeType === "custom" && (requestedTargets.length || scopeIds.length)) {
+        return requestedTargets.includes(topicKeyForQuestion(question))
+          || scopeIds.includes(String(question.id || ""));
+      }
+      if (options.semester && !["", "学期初", "全年级"].includes(String(options.semester))) {
+        const semester = String(question.semester || question.book || question.volume || "");
+        if (semester && semester !== String(options.semester)) return false;
+      }
+      return true;
     });
-    const availableTopics = [...new Set(eligible.map((question) => String(question.topic || "待分类").trim() || "待分类"))]
+    const diagnosticAnchors = eligible.filter((question) => {
+      return question.diagnosticEligible === true || question.evidenceTier === "diagnostic-anchor";
+    });
+    const diagnosticPool = diagnosticAnchors.length ? diagnosticAnchors : eligible;
+    const availableTopics = [...new Set(eligible.map((question) => String(question.knowledgePointId || topicKeyForQuestion(question) || "").trim()).filter(Boolean))]
       .sort((a, b) => a.localeCompare(b, "zh-CN"));
     const relevantDiagnostics = misconceptionCatalog.filter((item) => {
       return eligible.some((question) => diagnosticMatchesQuestion(item, question));
@@ -2906,6 +4632,17 @@
       : 0;
     const selectedDiagnostics = seededShuffle(relevantDiagnostics, `${seed}|misconceptions`)
       .slice(0, diagnosticTarget);
+    // A 20-30 item placement cannot observe the complete course taxonomy.  The
+    // blueprint therefore declares a bounded set of core targets before any
+    // item is selected.  This is the denominator for this placement only.
+    const targetKnowledgePointIds = requestedTargets.length
+      ? requestedTargets.filter((id) => availableTopics.includes(id))
+      : seededShuffle(availableTopics, `${seed}|blueprint-targets`).slice(
+        0,
+        Math.min(availableTopics.length, Math.max(1, Math.min(12, requestedCount - diagnosticTarget)))
+      );
+    const capabilityDimensions = PLACEMENT_CAPABILITY_DIMENSIONS.slice();
+    const coveredCapabilities = new Set(selectedDiagnostics.length ? ["基础概念", "条件判断"] : []);
     const items = selectedDiagnostics.map((item) => ({
       id: item.diagnostic.id,
       kind: "misconception-diagnostic",
@@ -2919,34 +4656,56 @@
     const coveredTopics = new Set();
     selectedDiagnostics.forEach((item) => {
       eligible.filter((question) => diagnosticMatchesQuestion(item, question))
-        .forEach((question) => coveredTopics.add(question.topic));
+        .forEach((question) => coveredTopics.add(topicKeyForQuestion(question)));
     });
     const addQuestion = (question) => {
       if (!question || usedQuestionIds.has(question.id) || items.length >= requestedCount) return;
       usedQuestionIds.add(question.id);
-      coveredTopics.add(question.topic || "待分类");
+      coveredTopics.add(topicKeyForQuestion(question));
+      const capabilityTags = placementCapabilityTags(question);
+      capabilityTags.forEach((tag) => coveredCapabilities.add(tag));
       items.push({
         id: question.id,
         kind: "bank-question",
         topic: question.topic || "待分类",
+        knowledgePointId: question.knowledgePointId || topicKeyForQuestion(question),
         questionType: normalizeQuestionType(question.questionType || question.examQuestionType),
+        evidenceTier: question.evidenceTier || "practice-variant",
+        modelDefinitionId: question.modelDefinitionId || question.modelFamilyId || "",
+        capabilityDimensions: capabilityTags,
+        cognitiveRequirement: /实验|探究/.test(String(question.questionType || "")) ? "实验推理"
+          : /图|图像|函数/.test(String(question.content || "")) ? "图像理解"
+            : question.difficulty === "挑战" ? "迁移"
+              : question.difficulty === "进阶" ? "模型识别/条件判断" : "基础概念",
         question
       });
     };
-    const topicOrder = seededShuffle(availableTopics, `${seed}|topics`).sort((left, right) => {
+    capabilityDimensions.forEach((dimension) => {
+      if (coveredCapabilities.has(dimension)) return;
+      const candidate = seededShuffle(
+        diagnosticPool.filter((question) => !usedQuestionIds.has(question.id)
+          && placementCapabilityTags(question).includes(dimension)),
+        `${seed}|capability|${dimension}`
+      )[0];
+      addQuestion(candidate);
+    });
+    const topicOrder = seededShuffle(targetKnowledgePointIds, `${seed}|topics`).sort((left, right) => {
       return Number(coveredTopics.has(left)) - Number(coveredTopics.has(right));
     });
     topicOrder.forEach((topic) => {
       const candidates = seededShuffle(
-        eligible.filter((question) => question.topic === topic),
+        diagnosticPool.filter((question) => topicKeyForQuestion(question) === topic),
         `${seed}|topic|${topic}`
       );
       addQuestion(candidates[0]);
     });
-    seededShuffle(eligible, `${seed}|fill`).forEach(addQuestion);
+    seededShuffle([...diagnosticPool, ...eligible.filter((question) => !diagnosticPool.includes(question))], `${seed}|fill`).forEach(addQuestion);
 
     const coveredTopicList = availableTopics.filter((topic) => coveredTopics.has(topic));
-    const missingTopics = availableTopics.filter((topic) => !coveredTopics.has(topic));
+    const coveredBlueprintTargets = targetKnowledgePointIds.filter((topic) => coveredTopics.has(topic));
+    const missingTopics = targetKnowledgePointIds.filter((topic) => !coveredTopics.has(topic));
+    const longitudinalEvidenceCoverage = knowledgePointEvidenceSummary(state, questions, profileId);
+    const missingCapabilityDimensions = capabilityDimensions.filter((dimension) => !coveredCapabilities.has(dimension));
     const warnings = [];
     if (!relevantDiagnostics.length) {
       warnings.push("现有前概念诊断与该年级题库元数据未形成可核对的知识点匹配，本卷未强行加入不确定的前概念题。");
@@ -2956,6 +4715,9 @@
     }
     if (missingTopics.length) {
       warnings.push(`受题量上限或题库覆盖限制，尚未覆盖：${missingTopics.join("、")}。`);
+    }
+    if (missingCapabilityDimensions.length) {
+      warnings.push(`现有题库元数据无法形成以下认知维度证据：${missingCapabilityDimensions.join("、")}；报告必须标记证据不足，不能假定已测。`);
     }
     return {
       id: `placement-${profileId}-${seed.replace(/[^A-Za-z0-9_-]/g, "-").slice(0, 48)}`,
@@ -2971,6 +4733,8 @@
       misconceptionQuestionCount: selectedDiagnostics.length,
       bankQuestionCount: items.length - selectedDiagnostics.length,
       items,
+      // `coverage` is retained for v2.8 readers. New UI must use
+      // blueprintCoverage; longitudinal course evidence is a separate metric.
       coverage: {
         availableTopics,
         coveredTopics: coveredTopicList,
@@ -2982,8 +4746,168 @@
       },
       warnings,
       generationRule: "仅从当前年级已发布且题干、答案、解析完整的现有题目，以及已收录的前概念诊断中选取；优先覆盖不同知识点，再补足题量。",
+      blueprintVersion: "placement-v2",
+      scopeType,
+      scopeIds,
+      blueprint: {
+        grade: profile.grade,
+        semester: String(options.semester || "学期初"),
+        scope: scopeType,
+        targetKnowledgePointIds,
+        capabilityDimensions,
+        minimumObservations: 1,
+        preferredQuestionTypes: ["选择题", "填空题", "实验题", "计算题"],
+        modelFamilyDiversity: 2
+      },
+      blueprintCoverage: {
+        targetCount: targetKnowledgePointIds.length,
+        coveredCount: coveredBlueprintTargets.length,
+        coverageRate: targetKnowledgePointIds.length
+          ? Math.round(coveredBlueprintTargets.length / targetKnowledgePointIds.length * 100)
+          : null,
+        coveredKnowledgePointIds: coveredBlueprintTargets,
+        missingKnowledgePointIds: missingTopics
+      },
+      capabilityCoverage: {
+        targetCount: capabilityDimensions.length,
+        coveredCount: coveredCapabilities.size,
+        coverageRate: Math.round(coveredCapabilities.size / capabilityDimensions.length * 100),
+        coveredDimensions: capabilityDimensions.filter((dimension) => coveredCapabilities.has(dimension)),
+        missingDimensions: missingCapabilityDimensions
+      },
+      longitudinalEvidenceCoverage,
+      diagnosticBlueprint: ["基础概念", "模型识别", "条件判断", "图像理解", "实验推理", "建模", "计算", "迁移"],
+      hintsDisabled: true,
       boundary: "摸底结果属于形成性证据；覆盖不足、主观题和前概念判断仍需结合后续作答及教师复核。"
     };
+  }
+
+  function placementSessionForProfile(state, profileId = state.activeProfileId) {
+    return (Array.isArray(state.assessmentSessions) ? state.assessmentSessions : [])
+      .filter((session) => session.type === "placement" && session.profileId === profileId)
+      .sort((a, b) => evidenceTimestamp(b.updatedAt || b.createdAt) - evidenceTimestamp(a.updatedAt || a.createdAt))[0] || null;
+  }
+
+  function placementEvidenceForSession(state, session) {
+    if (!session) return { submittedCount: 0, scoredCount: 0, pendingReviewCount: 0, submittedIds: [] };
+    const ids = new Set((session.questionIds || []).map((value) => String(value)));
+    const startedAt = evidenceTimestamp(session.startedAt);
+    const attempts = (Array.isArray(state.attempts) ? state.attempts : []).filter((attempt) => {
+      return attempt.profileId === session.profileId && ids.has(String(attempt.questionId))
+        && evidenceTimestamp(attempt.completedAt || attempt.createdAt) >= startedAt;
+    });
+    const diagnostics = (Array.isArray(state.diagnosticAttempts) ? state.diagnosticAttempts : []).filter((attempt) => {
+      return attempt.profileId === session.profileId && ids.has(String(attempt.diagnosticId))
+        && evidenceTimestamp(attempt.createdAt) >= startedAt;
+    });
+    const submittedIds = [...new Set([
+      ...attempts.map((attempt) => String(attempt.questionId || "")),
+      ...diagnostics.map((attempt) => String(attempt.diagnosticId || ""))
+    ].filter(Boolean))];
+    return {
+      submittedCount: Math.min(ids.size, submittedIds.length),
+      scoredCount: attempts.filter(isValidAccuracyEvidence).length + diagnostics.filter((attempt) => typeof attempt.answerCorrect === "boolean").length,
+      pendingReviewCount: attempts.filter(isPendingManualReview).length,
+      submittedIds
+    };
+  }
+
+  function placementStatus(state, profileId = state.activeProfileId) {
+    const session = placementSessionForProfile(state, profileId);
+    if (!session) {
+      const hasLegacyEvidence = (state.attempts || []).some((attempt) => attempt.profileId === profileId)
+        || (state.diagnosticAttempts || []).some((attempt) => attempt.profileId === profileId)
+        || (state.examRecords || []).some((record) => record.profileId === profileId)
+        || (state.broadCoverageChecks || []).some((record) => record.profileId === profileId);
+      const profile = state.profiles.find((item) => item.id === profileId);
+      if (hasLegacyEvidence && profile?.placementBaselineDecision === "use-existing-evidence") {
+        return {
+          status: "legacy-evidence-accepted",
+          session: null,
+          label: "未完成正式摸底；教师已选择从现有证据开始教学",
+          actionable: false,
+          placementCompleted: false,
+          legacyDecision: "use-existing-evidence"
+        };
+      }
+      return {
+        status: hasLegacyEvidence ? "legacy-unknown" : "not-started",
+        session: null,
+        label: hasLegacyEvidence ? "需补做摸底" : "开始摸底",
+        actionable: true,
+        placementCompleted: false
+      };
+    }
+    const evidence = placementEvidenceForSession(state, session);
+    const completed = session.status === "completed" || session.status === "needs-review";
+    return {
+      status: session.status,
+      session,
+      submittedCount: evidence.submittedCount,
+      scoredCount: evidence.scoredCount,
+      pendingReviewCount: evidence.pendingReviewCount,
+      label: completed ? (session.status === "needs-review" ? "摸底已提交，待复核" : "摸底已完成")
+        : session.status === "in-progress" ? "继续摸底" : "开始摸底",
+      actionable: !completed,
+      placementCompleted: session.status === "completed"
+    };
+  }
+
+  function startPlacementAssessment(state, blueprint, options = {}) {
+    const profileId = String(options.profileId || blueprint?.profileId || state.activeProfileId);
+    const profile = state.profiles.find((item) => item.id === profileId);
+    if (!profile) throw new Error("未找到摸底学生档案。");
+    const source = blueprint && typeof blueprint === "object" ? blueprint : {};
+    const questionIds = [...new Set((Array.isArray(source.items) ? source.items : [])
+      .map((item) => String(item.id || item.questionId || "").trim()).filter(Boolean))].slice(0, 30);
+    if (!questionIds.length) throw new Error("摸底卷没有可作答题目。");
+    const existing = placementSessionForProfile(state, profileId);
+    if (existing && ["in-progress", "completed", "needs-review"].includes(existing.status)
+      && !options.forceNew) return existing;
+    const now = new Date().toISOString();
+    const session = normalizeAssessmentSession({
+      id: createId("placement-session"),
+      profileId,
+      type: "placement",
+      grade: profile.grade,
+      scopeType: source.scopeType || options.scopeType || "semester",
+      scopeIds: source.scopeIds || options.scopeIds || [],
+      blueprintVersion: source.blueprintVersion || "v1",
+      questionIds,
+      startedAt: now,
+      status: "in-progress",
+      coverage: source.blueprintCoverage || source.coverage || {},
+      createdAt: now,
+      updatedAt: now
+    });
+    if (!Array.isArray(state.assessmentSessions)) state.assessmentSessions = [];
+    state.assessmentSessions.push(session);
+    return session;
+  }
+
+  function refreshPlacementAssessment(state, sessionId) {
+    const session = (state.assessmentSessions || []).find((item) => item.id === sessionId);
+    if (!session) throw new Error("未找到摸底作答会话。");
+    const evidence = placementEvidenceForSession(state, session);
+    Object.assign(session, evidence, { updatedAt: new Date().toISOString() });
+    if (session.status === "needs-review"
+      && evidence.submittedCount >= session.questionIds.length
+      && evidence.pendingReviewCount === 0) {
+      session.status = "completed";
+      session.completedAt = session.completedAt || session.updatedAt;
+    }
+    return session;
+  }
+
+  function completePlacementAssessment(state, sessionId) {
+    const session = refreshPlacementAssessment(state, sessionId);
+    if (session.submittedCount < session.questionIds.length) {
+      throw new Error(`摸底尚未完成：还需完成 ${session.questionIds.length - session.submittedCount} 题。`);
+    }
+    session.completedAt = new Date().toISOString();
+    session.status = session.pendingReviewCount > 0 ? "needs-review" : "completed";
+    session.updatedAt = session.completedAt;
+    return session;
   }
 
   function recordBroadCoverageCheck(state, input = {}) {
@@ -3027,7 +4951,10 @@
     const anchor = last ? evidenceTimestamp(last.completedAt) : profileCreatedAt;
     const nextDueTimestamp = anchor + BROAD_COVERAGE_INTERVAL_DAYS * DAY;
     const due = now >= nextDueTimestamp;
-    const paper = due || options.includePreview
+    const shouldGeneratePreview = options.deferPreview
+      ? options.includePreview === true
+      : due || options.includePreview;
+    const paper = shouldGeneratePreview
       ? generatePlacementDiagnostic(state, questions, {
         profileId,
         count: options.count || 20,
@@ -3411,17 +5338,20 @@
     const analysis = studentAnalysis(state, questions, profile.id);
     return {
       format: "physics-learning-profile",
-      version: 2,
+      version: Number(VERSION_SOURCE.reportFormatVersion) || 4,
+      appVersion: APP_VERSION,
       exportedAt: new Date().toISOString(),
       profile: {
         id: profile.id,
+        portableProfileId: profile.portableProfileId,
         name: profile.name,
         role: profile.role,
         stage: profile.stage,
         grade: profile.grade,
         subject: profile.subject,
         goal: profile.goal,
-        analysisNote: profile.analysisNote
+        analysisNote: profile.analysisNote,
+        sourceProfileId: profile.sourceProfileId || profile.id
       },
       summary: {
         completed: summary.completed,
@@ -3431,6 +5361,7 @@
         learningMinutes: summary.learningMinutes,
         dueCount: summary.dueCount,
         closedLoop: summary.closedLoop,
+        evidenceCoverage: analysis.evidenceCoverage,
         mastery: {
           counts: summary.mastery.counts,
           masteryRate: summary.mastery.masteryRate,
@@ -3461,6 +5392,10 @@
       ),
       examRecords: state.examRecords.filter((record) => record.profileId === profile.id),
       growthRecords: state.growthRecords.filter((record) => record.profileId === profile.id),
+      diagnosticAttempts: state.diagnosticAttempts.filter((record) => record.profileId === profile.id),
+      experimentRecords: state.experimentRecords.filter((record) => record.profileId === profile.id),
+      learningPlans: state.learningPlans.filter((record) => record.profileId === profile.id),
+      assessmentSessions: (state.assessmentSessions || []).filter((record) => record.profileId === profile.id),
       analysis: {
         weakest: analysis.weakest,
         strongest: analysis.strongest,
@@ -3468,6 +5403,7 @@
         trendDelta: analysis.trendDelta,
         priorities: analysis.priorities,
         knowledgePoints: analysis.knowledgePoints,
+        evidenceCoverage: analysis.evidenceCoverage,
         abilityProfile: analysis.abilityProfile,
         conclusion: analysis.conclusion,
         boundary: analysis.boundary
@@ -3475,28 +5411,190 @@
     };
   }
 
+  function syncClientEntityId(value, fallback = "record") {
+    let normalized = String(value || fallback).normalize("NFKC")
+      .replace(/[^A-Za-z0-9._:-]/g, "-")
+      .replace(/^[^A-Za-z0-9]+/g, "")
+      .slice(0, 160);
+    if (!normalized) normalized = fallback;
+    return normalized;
+  }
+
+  function syncQuestionType(value) {
+    const normalized = String(value || "");
+    if (/选择/.test(normalized)) return "choice";
+    if (/填空|数值|计算/.test(normalized)) return "numeric";
+    if (/证明/.test(normalized)) return "proof";
+    if (/实验|探究/.test(normalized)) return "experiment";
+    if (/建模|模型/.test(normalized)) return "modeling";
+    return "shortAnswer";
+  }
+
+  function syncDifficulty(value) {
+    const normalized = String(value || "");
+    if (/挑战/.test(normalized) || /challenge/i.test(normalized)) return "挑战";
+    if (/进阶/.test(normalized) || /advanced/i.test(normalized)) return "进阶";
+    return "基础";
+  }
+
+  function syncErrorType(value) {
+    const normalized = String(value || "");
+    if (/审题/.test(normalized)) return "审题";
+    if (/概念/.test(normalized)) return "概念";
+    if (/建模/.test(normalized)) return "建模";
+    if (/适用|条件/.test(normalized)) return "规律适用条件";
+    if (/计算/.test(normalized)) return "计算";
+    if (/单位/.test(normalized)) return "单位";
+    if (/方向|符号/.test(normalized)) return "方向或符号";
+    if (/图像|实验/.test(normalized)) return "图像或实验";
+    if (/表达/.test(normalized)) return "表达";
+    if (/猜测/.test(normalized)) return "猜测作答";
+    return null;
+  }
+
+  function assertCloudSyncAllowed(state, profileId) {
+    const requestedProfileId = String(profileId || "").trim();
+    if (!requestedProfileId) throw new Error("云同步缺少明确学生 ID，未发送任何数据。");
+    const profile = state.profiles.find((item) => item.id === requestedProfileId);
+    if (!profile) throw new Error("云同步学生 ID 无法匹配本机档案，未发送任何数据。");
+    if (!profile.portableProfileId) throw new Error("学生缺少稳定跨设备 ID，未发送任何数据。");
+    if (profile.guardianConsentStatus === "withdrawn") {
+      throw new Error("该学生已撤回数据授权，不能继续云同步。");
+    }
+    if (profile.minorAgeBand === "under14" && profile.guardianConsentStatus !== "granted") {
+      throw new Error("未满14周岁学生尚无有效监护人授权，不能启用云同步。");
+    }
+    return profile;
+  }
+
+  function buildLearningSyncPayload(state, questions = [], profileId = state.activeProfileId, options = {}) {
+    const profile = assertCloudSyncAllowed(state, profileId);
+    const questionMap = new Map((Array.isArray(questions) ? questions : []).map((question) => [question.id, question]));
+    const profileClientEntityId = syncClientEntityId(profile.portableProfileId, "profile-local");
+    const attempts = state.attempts
+      .filter((attempt) => attempt.profileId === profile.id)
+      .slice(-(Math.max(1, Math.min(100, Number(options.limit) || 100))))
+      .map((attempt) => {
+        const question = questionMap.get(attempt.questionId) || {};
+        const gradingStatus = attempt.grading?.status === "correct"
+          ? "correct"
+          : attempt.grading?.status === "partial"
+            ? "partial"
+            : attempt.grading?.status === "incorrect" || attempt.grading?.status === "wrong"
+              ? "incorrect"
+              : "pending";
+        const rawScore = Number(attempt.grading?.score);
+        const score = Number.isFinite(rawScore)
+          ? Math.max(0, Math.min(100, rawScore <= 1 ? rawScore * 100 : rawScore))
+          : null;
+        const completedAt = new Date(attempt.completedAt || attempt.createdAt || Date.now());
+        const startedAt = new Date(attempt.startedAt || completedAt);
+        return {
+          clientEntityId: syncClientEntityId(attempt.sourceRecordId || attempt.id),
+          profileClientEntityId,
+          questionId: syncClientEntityId(attempt.questionId, "question-local"),
+          sessionClientId: syncClientEntityId(attempt.sessionClientId || `session-${attempt.id}`, "session-local"),
+          knowledgePointIds: [syncClientEntityId(attempt.topicKey || topicKeyForLabel(attempt.topic), "topic-unknown")],
+          questionType: syncQuestionType(attempt.questionType || question.questionType),
+          modelFamilyId: attempt.modelFamilyId ? syncClientEntityId(attempt.modelFamilyId) : null,
+          variantRole: ["near", "far", "counter", "review"].includes(attempt.transferType) ? attempt.transferType : "core",
+          difficulty: syncDifficulty(attempt.difficulty || question.difficulty),
+          startedAt: Number.isFinite(startedAt.getTime()) ? startedAt.toISOString() : new Date().toISOString(),
+          completedAt: Number.isFinite(completedAt.getTime()) ? completedAt.toISOString() : new Date().toISOString(),
+          activeDurationSeconds: Math.max(0, Math.min(86_400, Number(attempt.durationSeconds) || 0)),
+          hintViewCount: Math.max(0, Math.min(100, Number(attempt.hintLevel) || 0)),
+          maxHintLevel: Math.max(0, Math.min(5, Number(attempt.hintLevel) || 0)),
+          confidenceBefore: Number.isFinite(Number(attempt.confidenceBefore)) ? Math.max(1, Math.min(5, Number(attempt.confidenceBefore))) : null,
+          confidenceAfter: Number.isFinite(Number(attempt.confidenceAfter)) ? Math.max(1, Math.min(5, Number(attempt.confidenceAfter))) : null,
+          finalAnswer: String(attempt.finalAnswer || "").slice(0, 30_000),
+          gradingStatus,
+          score,
+          verificationIssues: Array.isArray(attempt.grading?.issues) ? attempt.grading.issues.slice(0, 100) : [],
+          primaryErrorType: syncErrorType(attempt.errorType),
+          secondaryErrorTypes: [],
+          reflection: String(attempt.reflection || "").slice(0, 10_000),
+          selfExplanation: String(attempt.selfExplanation || "").slice(0, 10_000),
+          modelEvidence: attempt.model && typeof attempt.model === "object" && !Array.isArray(attempt.model) ? attempt.model : {},
+          modelScore: Number.isFinite(Number(attempt.modelScore?.total)) ? Number(attempt.modelScore.total) : null,
+          teacherReviewStatus: gradingStatus === "pending" || attempt.modelingRecordNeedsCheck ? "pending" : "notRequired"
+        };
+      });
+    return {
+      baseRevision: Number.isInteger(options.baseRevision) && options.baseRevision >= 0 ? options.baseRevision : 0,
+      profile: {
+        clientEntityId: profileClientEntityId,
+        displayName: String(profile.name || "本机学生").slice(0, 80),
+        grade: profile.grade || "高一",
+        curriculumVersion: `physics-studio-${APP_VERSION}`
+      },
+      attempts
+    };
+  }
+
+  function buildExamSyncPayload(state, profileId = state.activeProfileId, options = {}) {
+    const profile = assertCloudSyncAllowed(state, profileId);
+    const profileClientEntityId = syncClientEntityId(profile.portableProfileId, "profile-local");
+    const records = state.examRecords
+      .filter((record) => record.profileId === profile.id)
+      .filter((record) => Number.isFinite(Number(record.score)) && Number(record.totalScore) > 0 && Number(record.score) <= Number(record.totalScore))
+      .slice(-(Math.max(1, Math.min(100, Number(options.limit) || 100))))
+      .map((record) => ({
+        clientEntityId: syncClientEntityId(record.sourceRecordId || record.id),
+        profileClientEntityId,
+        examName: String(record.title || "未命名试卷").slice(0, 160),
+        occurredOn: /^\d{4}-\d{2}-\d{2}$/.test(String(record.examDate || ""))
+          ? record.examDate
+          : localCalendarDateKey(record.createdAt || new Date()),
+        score: Number(record.score),
+        maxScore: Number(record.totalScore),
+        knowledgePointScores: (record.weakTopicKeys || record.weakTopics || []).slice(0, 100)
+      }));
+    return {
+      baseRevision: Number.isInteger(options.baseRevision) && options.baseRevision >= 0 ? options.baseRevision : 0,
+      profile: {
+        clientEntityId: profileClientEntityId,
+        displayName: String(profile.name || "本机学生").slice(0, 80),
+        grade: profile.grade || "高一",
+        curriculumVersion: `physics-studio-${APP_VERSION}`
+      },
+      records
+    };
+  }
+
   window.PHYSICS_LEARNING_ENGINE = Object.freeze({
-    version: "2.7.0",
+    version: APP_VERSION,
     storageKey: STORAGE_KEY,
     masteryRules: MASTERY_RULES,
+    interventionComparisonRule: INTERVENTION_COMPARISON_RULE,
     misconceptionCatalog: Object.freeze(misconceptionCatalog),
     errorTypeDefinitions: ERROR_TYPE_DEFINITIONS,
     formulaCatalog: Object.freeze(formulaCatalog),
     constants: Object.freeze(constants),
     unitDefinitions: Object.freeze(unitDefinitions),
     createId,
+    localCalendarDateKey,
     defaultState,
     normalizeState,
     loadState,
     saveState,
     activeProfile,
     normalizeProfile,
+    normalizeAssessmentSession,
     addProfile,
+    createPortableProfileId,
+    resolveImportedStudentId,
+    importStudentReport,
+    bindImportedReportIdentity,
     updateProfile,
     deleteProfile,
     recordDiagnostic,
+    diagnosticClassificationLabel,
     misconceptionProfile,
     normalizeQuestionType,
+    isPendingManualReview,
+    isAutoScoredAttempt,
+    isValidAccuracyEvidence,
+    summarizeAttemptEvidence,
     normalizeErrorType,
     createHintLadder,
     socraticPrompts,
@@ -3504,7 +5602,10 @@
     verifyPhysicsAnswer,
     scoreModeling,
     recordAttempt,
+    completeManualReview,
+    automaticReviewRating,
     scheduleReview,
+    scheduleReviewFromAttempt,
     reviewsForProfile,
     dueReviews,
     isPublishedQuestion,
@@ -3513,23 +5614,40 @@
     masterySummary,
     topicPerformance,
     topicEvidenceProfile,
+    knowledgePointEvidenceSummary,
+    masteryDisplayLabel,
+    normalizeTopic,
+    resolveKnowledgePointIdentity,
+    topicKeyForQuestion,
+    topicCatalog,
+    resolveExamRecordTopics,
     summarizeLearning,
     modelingRadar,
     recommendations,
     addExamRecord,
     importExamRecords,
+    importLearningProfile,
     addGrowthRecord,
     growthTimeline,
     studentAnalysis,
+    buildStudentLearningDiagnosis,
     dailyTest,
     generatePlacementDiagnostic,
+    placementSessionForProfile,
+    placementStatus,
+    startPlacementAssessment,
+    refreshPlacementAssessment,
+    completePlacementAssessment,
     scheduleBroadCoverageCheck,
     recordBroadCoverageCheck,
     closedLoopStreak,
     activeLearningPlan,
     learningPlanProgress,
     buildTargetedLearningPlan,
+    buildComparableInterventionOutcome,
     saveTargetedLearningPlan,
+    buildTeacherPrescription,
+    buildTieredAssignmentDraft,
     transferVariants,
     validateDimension,
     convertUnit,
@@ -3538,6 +5656,8 @@
     linearRegression,
     generateAssignment,
     auditQuestion,
-    createReportPayload
+    createReportPayload,
+    buildLearningSyncPayload,
+    buildExamSyncPayload
   });
 })();

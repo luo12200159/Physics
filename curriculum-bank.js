@@ -55,6 +55,19 @@
     ].join("\n");
   }
 
+  function inferQuestionType(definition = {}) {
+    const explicit = String(definition.questionType || "").trim();
+    if (explicit) return explicit;
+    const text = [definition.title, definition.content, definition.solution].join(" ");
+    if (/选择题|单选|多选|[A-D][.、)]/.test(text)) return "单项选择题";
+    if (/填空|（\s*）|\(\s*\)|____|横线上/.test(text)) return "填空题";
+    if (/实验|探究|器材|测量|装置|数据处理/.test(text)) return "实验题";
+    if (/判断/.test(text)) return "判断题";
+    if (/简答|说明|解释|为什么|论述/.test(text)) return "简答题";
+    if (/求|计算|速度|质量|电流|电压|功率|能量|周期|距离|时间/.test(text)) return "计算题";
+    return "未标注";
+  }
+
   const definitions = [
     {
       id: "cs-original-v1-g8-01",
@@ -80,6 +93,7 @@
     },
     {
       id: "cs-original-v1-g8-03",
+      questionType: "简答题",
       grade: "八年级",
       topic: "声音特性",
       difficulty: "基础",
@@ -543,6 +557,7 @@
     const timestamp = new Date(Date.UTC(2026, 6, 23, 0, 0, index)).toISOString();
     return {
       ...definition,
+      questionType: inferQuestionType(definition),
       solution: formatDetailedSolution(definition),
       examPoints: definition.examPoints?.length ? [...definition.examPoints] : [definition.topic],
       stage: metadata.stage,
@@ -552,6 +567,11 @@
       copyrightNote: COPYRIGHT_NOTE,
       collection: "changsha-curriculum-original",
       originalExercise: true,
+      evidenceTier: "diagnostic-anchor",
+      modelDefinitionId: `curriculum-${definition.id}`,
+      retestGroupId: `curriculum-retest-${definition.id}`,
+      diagnosticEligible: true,
+      autoScorable: ["单项选择题", "多项选择题", "填空题", "判断题", "计算题"].includes(inferQuestionType(definition)),
       sourceLicense: "应用内原创",
       curriculumBook,
       curriculumChapter,
@@ -571,6 +591,15 @@
     };
   });
 
+  const normalizedQuestions = questions.map((question) => ({
+    ...question,
+    knowledgePointId: question.knowledgePointId || question.curriculumSectionId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
+    cognitiveDemand: question.cognitiveDemand || "基础",
+    representationType: question.representationType || "文字/公式",
+    independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
+    assessmentPurpose: question.assessmentPurpose || "diagnostic"
+  }));
+
   window.PHYSICS_CURRICULUM_BANK = Object.freeze({
     version: 3,
     contentVersion: "2026.07.29-detailed-solutions-r2",
@@ -578,6 +607,6 @@
     officialBasisUrl: OFFICIAL_BASIS_URL,
     title: "长沙八年级至高三物理原创同步题库",
     copyrightNote: COPYRIGHT_NOTE,
-    questions: Object.freeze(questions)
+    questions: Object.freeze(normalizedQuestions.map(Object.freeze))
   });
 })();

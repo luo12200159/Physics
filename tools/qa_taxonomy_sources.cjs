@@ -2,11 +2,10 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { pathToFileURL } = require("node:url");
-const { chromium } = require("playwright-core");
+const { installQaActivationStub, launchBrowser } = require("./browser-launcher.cjs");
 
 const appPath = process.argv[2];
 const outputDirectory = process.argv[3];
-const edgePath = "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe";
 
 if (!appPath || !outputDirectory) {
   throw new Error("Usage: node qa_taxonomy_sources.cjs <index.html> <output-directory>");
@@ -21,9 +20,8 @@ async function waitForTitle(page, title) {
 
 (async () => {
   fs.mkdirSync(outputDirectory, { recursive: true });
-  const browser = await chromium.launch({
+  const browser = await launchBrowser({
     headless: true,
-    executablePath: edgePath,
     args: ["--allow-file-access-from-files"]
   });
   const context = await browser.newContext({
@@ -31,6 +29,7 @@ async function waitForTitle(page, title) {
     acceptDownloads: true
   });
   const page = await context.newPage();
+  await installQaActivationStub(page, "taxonomy-qa");
   await page.addInitScript(() => {
     localStorage.setItem("physics-experience-v2", JSON.stringify({
       version: 2, onboarded: true, role: "teacher", displayName: "QA",
@@ -46,7 +45,7 @@ async function waitForTitle(page, title) {
 
   try {
     await page.goto(pathToFileURL(path.resolve(appPath)).href, { waitUntil: "domcontentloaded" });
-    await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "316");
+    await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "1900");
 
     const taxonomy = await page.evaluate(() => {
       const books = window.PHYSICS_CURRICULUM_TAXONOMY.books;
@@ -80,7 +79,7 @@ async function waitForTitle(page, title) {
     assert.ok(await page.locator("#curriculumPanel").isVisible());
     assert.equal(await page.locator(".curriculum-book-card").count(), 10);
     assert.match(await page.locator("#curriculumSummary").textContent(), /231/);
-    assert.match(await page.locator("#curriculumSummary").textContent(), /43/);
+    assert.match(await page.locator("#curriculumSummary").textContent(), /563/);
 
     await page.locator("#curriculumGradeFilter").selectOption("八年级");
     assert.equal(await page.locator(".curriculum-book-card").count(), 2);
@@ -109,8 +108,8 @@ async function waitForTitle(page, title) {
 
     await page.locator("#syncCenterButton").click();
     assert.ok(await page.locator("#syncModal").isVisible());
-    assert.equal(await page.locator(".resource-card").count(), 42);
-    assert.equal(await page.locator(".resource-rights").count(), 42);
+    assert.equal(await page.locator(".resource-card").count(), 44);
+    assert.equal(await page.locator(".resource-rights").count(), 44);
     await page.locator("#resourceKeywordInput").fill("明德");
     assert.equal(await page.locator(".resource-card").count(), 1);
     assert.match(await page.locator(".resource-card h4").textContent(), /明德教育集团/);
@@ -142,9 +141,10 @@ async function waitForTitle(page, title) {
     await page.locator("#answerInput").fill("字段保存正确。");
     page.once("dialog", (dialog) => dialog.accept());
     await page.locator('#questionForm button[type="submit"]').click();
-    await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "317");
     await page.locator('.stat-card[data-view-target="library"]').click();
     await waitForTitle(page, "我的物理题库");
+    await page.waitForFunction(() => [...document.querySelectorAll(".question-card")]
+      .some((card) => card.textContent.includes("授权导入映射校验题")));
     const savedCard = page.locator(".question-card", { hasText: "授权导入映射校验题" });
     await savedCard.locator(".question-title-button").click();
     assert.match(await page.locator("#detailContent").textContent(), /九年级全一册 · 欧姆定律 · 欧姆定律/);
