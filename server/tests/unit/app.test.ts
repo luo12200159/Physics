@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { APP_VERSION } from "../../src/version.js";
 import { buildTestApp } from "../helpers/test-app.js";
 
 describe("business application kernel", () => {
@@ -11,7 +12,7 @@ describe("business application kernel", () => {
     expect(response.json()).toEqual({
       status: "ok",
       service: "physics-studio-business",
-      version: "3.2.0",
+      version: APP_VERSION,
     });
 
     await app.close();

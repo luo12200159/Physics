@@ -178,6 +178,9 @@ async function installServerMock(page, role, calls) {
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignments` && method === "GET") {
       return json(route, 200, { items: [], nextCursor: null });
     }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/variant-sets` && method === "GET") {
+      return json(route, 200, { items: [], nextCursor: null });
+    }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/learning/summary` && method === "GET") {
       return json(route, 200, { items: [], nextCursor: null });
     }

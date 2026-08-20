@@ -891,7 +891,8 @@
   function syncStatus() {
     const queue = readSyncList(SYNC_QUEUE_KEY);
     const conflicts = readSyncList(SYNC_CONFLICT_KEY);
-    const authenticated = status().authenticated;
+    const sessionStatus = status();
+    const authenticated = sessionStatus.authenticated || sessionStatus.ownerAuthenticated;
     const offline = typeof navigator !== "undefined" && navigator.onLine === false;
     let state = "synced";
     let label = "已同步";
@@ -972,7 +973,7 @@
 
   async function flushSyncQueue() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return syncStatus();
-    if (!status().authenticated) return syncStatus();
+    if (!status().authenticated && !status().ownerAuthenticated) return syncStatus();
     const queue = readSyncList(SYNC_QUEUE_KEY);
     let accepted = 0;
     for (const event of queue) {
@@ -1065,6 +1066,84 @@
       }
       throw error;
     }
+  }
+
+  function normalizeVariantSetForSync(value = {}) {
+    const variants = Array.isArray(value.variants) ? value.variants
+      .filter((variant) => variant?.validation?.passed === true
+        && ["system-validated", "teacher-approved"].includes(variant.approvalStatus))
+      .slice(0, 3)
+      .map((variant) => ({
+        id: requiredText(variant.id, "变式题编号", 160),
+        variantRole: ["near", "reverse", "context"].includes(variant.variantRole) ? variant.variantRole : "near",
+        title: requiredText(variant.title, "变式题标题", 240),
+        content: requiredText(variant.content, "变式题干", 60000),
+        options: Array.isArray(variant.options) ? variant.options.slice(0, 12).map((option) => ({
+          key: String(option?.key || "").slice(0, 10),
+          text: String(option?.text || "").slice(0, 2000)
+        })) : [],
+        stage: variant.stage === "高中" ? "高中" : "初中",
+        grade: requiredText(variant.grade, "年级", 40),
+        topic: requiredText(variant.topic, "知识点", 160),
+        knowledgePointId: requiredText(variant.knowledgePointId || variant.topic, "知识点编号", 160),
+        questionType: requiredText(variant.questionType, "题型", 80),
+        difficulty: ["基础", "进阶", "挑战"].includes(variant.difficulty) ? variant.difficulty : "进阶",
+        changeSummary: requiredText(variant.changeSummary, "改变内容", 2000),
+        relationToParent: requiredText(variant.relationToParent, "与母题关系", 2000),
+        answer: requiredText(variant.answer, "标准答案", 30000),
+        solution: requiredText(variant.solution, "详细解析", 60000),
+        solutionDetail: variant.solutionDetail && typeof variant.solutionDetail === "object" ? variant.solutionDetail : {},
+        validation: variant.validation && typeof variant.validation === "object" ? variant.validation : {},
+        source: variant.generatedBy === "controlled-ai-gateway" ? "应用内 AI 生成变式" : "应用内已审核题模变式",
+        approvalStatus: variant.approvalStatus === "teacher-approved" ? "teacher-approved" : "system-validated"
+      })) : [];
+    if (variants.length < 2) throw inputError("每个同步题组至少需要 2 道已审核且通过质量门禁的变式。", "invalid_variant_set");
+    return {
+      clientEntityId: requiredText(value.id || value.clientEntityId, "变式题组编号", 160),
+      parentQuestionId: requiredText(value.parentQuestionId, "母题编号", 160),
+      sourceContentHash: requiredText(value.sourceContentHash, "母题内容摘要", 16),
+      cacheKey: requiredText(value.cacheKey, "变式缓存键", 600),
+      specVersion: value.specVersion === "variant_generation_v1" ? value.specVersion : "variant_generation_v1",
+      generatorVersion: requiredText(value.generatorVersion || "1.0.0", "生成器版本", 40),
+      status: "approved",
+      variants,
+      updatedAt: normalizeDateTime(value.updatedAt || new Date().toISOString(), "变式更新时间")
+    };
+  }
+
+  async function syncVariantSets(classId, input = {}) {
+    const id = uuid(classId, "班级编号");
+    const sets = (Array.isArray(input.sets) ? input.sets : []).slice(0, 20).map(normalizeVariantSetForSync);
+    if (!sets.length) throw inputError("没有可同步的已审核变式题组。", "invalid_variant_set");
+    const body = syncBody({ sets });
+    delete body.baseRevision;
+    delete body.clientCreatedAt;
+    const event = {
+      kind: "variant-set-sync",
+      path: `/v1/classes/${encodeURIComponent(id)}/variant-sets/sync`,
+      method: "POST",
+      body,
+      baseRevision: 0
+    };
+    if (isOffline() || (!status().authenticated && !currentOwnerCapability(id))) {
+      enqueueSyncEvent(event);
+      return Object.freeze({ queued: true, ...syncStatus() });
+    }
+    try {
+      const result = await requestJson(event.path, { method: event.method, body: event.body });
+      return Object.freeze({ ...result, queued: false, ...syncStatus() });
+    } catch (error) {
+      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+        enqueueSyncEvent(event);
+        return Object.freeze({ queued: true, ...syncStatus() });
+      }
+      throw error;
+    }
+  }
+
+  async function listVariantSets(classId) {
+    const id = uuid(classId, "班级编号");
+    return requestJson(`/v1/classes/${encodeURIComponent(id)}/variant-sets`, { method: "GET" });
   }
 
   async function listAssignments(classId) {
@@ -1643,7 +1722,7 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "3.2.0",
+    version: "3.3.0",
     configure,
     status,
     checkHealth,
@@ -1666,6 +1745,8 @@
     syncStatus,
     syncLearning,
     syncExamRecords,
+    syncVariantSets,
+    listVariantSets,
     flushSyncQueue,
     acknowledgeSyncConflict,
     listAssignments,

@@ -3,14 +3,14 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "3.2.0",
-    stateVersion: 8,
+    appVersion: "3.3.0",
+    stateVersion: 9,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.2.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.3.0");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
-  const STATE_VERSION = Math.max(8, Number(VERSION_SOURCE.stateVersion) || 8);
+  const STATE_VERSION = Math.max(9, Number(VERSION_SOURCE.stateVersion) || 9);
   const DAY = 24 * 60 * 60 * 1000;
   const MASTERY_RULES = Object.freeze({
     experimental: true,
@@ -1276,6 +1276,115 @@
       && question.contentReviewStatus !== "教师已退回");
   }
 
+  function normalizeVariantQuestion(value = {}, index = 0) {
+    if (!value || typeof value !== "object") return null;
+    const role = ["near", "reverse", "context"].includes(String(value.variantRole))
+      ? String(value.variantRole)
+      : ["near", "reverse", "context"][index] || "near";
+    const content = String(value.content || "").trim().slice(0, 60000);
+    const answer = String(value.answer || "").trim().slice(0, 30000);
+    const solution = String(value.solution || "").trim().slice(0, 60000);
+    if (!value.id || !content || !answer || !solution) return null;
+    const validation = value.validation && typeof value.validation === "object"
+      ? {
+        ...value.validation,
+        passed: value.validation.passed === true,
+        verificationStatus: String(value.validation.verificationStatus || (value.validation.passed ? "validated" : "failed")),
+        failedReasons: Array.isArray(value.validation.failedReasons) ? value.validation.failedReasons.slice(0, 50) : []
+      }
+      : { passed: false, verificationStatus: "unverified", checks: {}, failedReasons: ["缺少独立质量门禁记录"] };
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      sourceQuestionId: String(value.sourceQuestionId || "").slice(0, 200),
+      sourceCandidateId: String(value.sourceCandidateId || "").slice(0, 200),
+      variantRole: role,
+      variantRoleLabel: String(value.variantRoleLabel || ({ near: "近迁移", reverse: "逆向/结构迁移", context: "情境/表征迁移" }[role])).slice(0, 80),
+      sequence: Math.max(1, Math.min(3, Number(value.sequence) || index + 1)),
+      title: String(value.title || `专项变式 ${index + 1}`).slice(0, 240),
+      content,
+      answer,
+      solution,
+      options: Array.isArray(value.options) ? value.options.slice(0, 12) : [],
+      examPoints: Array.isArray(value.examPoints) ? value.examPoints.slice(0, 20) : [],
+      knowledgePoints: Array.isArray(value.knowledgePoints) ? value.knowledgePoints.slice(0, 20) : [],
+      questionType: normalizeQuestionType(value.questionType),
+      knowledgePointId: String(value.knowledgePointId || value.topicKey || "").slice(0, 200),
+      modelDefinitionId: String(value.modelDefinitionId || value.modelFamilyId || "").slice(0, 200),
+      modelFamilyId: String(value.modelFamilyId || value.modelDefinitionId || "").slice(0, 200),
+      transferGroupId: String(value.transferGroupId || value.retestGroupId || "").slice(0, 200),
+      independenceGroupId: String(value.independenceGroupId || value.modelDefinitionId || value.modelFamilyId || "").slice(0, 200),
+      changeSummary: String(value.changeSummary || "").slice(0, 2000),
+      relationToParent: String(value.relationToParent || "").slice(0, 2000),
+      source: String(value.source || "应用内变式").slice(0, 300),
+      approvalStatus: String(value.approvalStatus || "pending-teacher-review").slice(0, 80),
+      reviewRequired: value.reviewRequired !== false,
+      validation,
+      fullTextIncluded: true
+    };
+  }
+
+  function normalizeVariantSet(value = {}) {
+    if (!value || typeof value !== "object" || !value.id || !value.parentQuestionId) return null;
+    const variants = (Array.isArray(value.variants) ? value.variants : [])
+      .slice(0, 3)
+      .map(normalizeVariantQuestion)
+      .filter(Boolean);
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      cacheKey: String(value.cacheKey || "").slice(0, 600),
+      parentQuestionId: String(value.parentQuestionId).slice(0, 200),
+      sourceContentHash: String(value.sourceContentHash || "").slice(0, 160),
+      specVersion: String(value.specVersion || "variant_generation_v1").slice(0, 80),
+      generatorVersion: String(value.generatorVersion || "legacy").slice(0, 80),
+      variants,
+      status: String(value.status || (variants.length >= 2 ? "pending-review" : "unavailable")).slice(0, 80),
+      approvalStatus: String(value.approvalStatus || "pending-teacher-review").slice(0, 80),
+      reviewRequired: value.reviewRequired !== false,
+      stale: value.stale === true,
+      createdAt: String(value.createdAt || new Date().toISOString()),
+      updatedAt: String(value.updatedAt || value.createdAt || new Date().toISOString())
+    };
+  }
+
+  function normalizeVariantAttempt(value = {}) {
+    if (!value || typeof value !== "object" || !value.id || !value.attemptId || !value.variantQuestionId) return null;
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      variantSetId: String(value.variantSetId || "").slice(0, 240),
+      parentQuestionId: String(value.parentQuestionId || "").slice(0, 200),
+      variantQuestionId: String(value.variantQuestionId).slice(0, 240),
+      profileId: String(value.profileId || "student-default").slice(0, 200),
+      variantRole: ["near", "reverse", "context"].includes(String(value.variantRole)) ? String(value.variantRole) : "near",
+      attemptId: String(value.attemptId).slice(0, 240),
+      hintLevel: Math.max(0, Math.min(5, Number(value.hintLevel) || 0)),
+      gradingStatus: String(value.gradingStatus || "review-required").slice(0, 80),
+      verificationStatus: String(value.verificationStatus || "practice-only").slice(0, 80),
+      solutionViewed: value.solutionViewed === true || Number(value.hintLevel) >= 5,
+      completedAt: String(value.completedAt || value.createdAt || new Date().toISOString())
+    };
+  }
+
+  function normalizeVariantPreset(value = {}) {
+    if (!value || typeof value !== "object" || !value.id) return null;
+    return {
+      ...value,
+      id: String(value.id).slice(0, 200),
+      name: String(value.name || "常用变式组卷参数").slice(0, 120),
+      parentCount: Math.max(1, Math.min(30, Number(value.parentCount) || 3)),
+      variantsPerParent: Math.max(2, Math.min(3, Number(value.variantsPerParent) || 3)),
+      difficultyRatios: value.difficultyRatios && typeof value.difficultyRatios === "object"
+        ? value.difficultyRatios
+        : { basic: 50, advanced: 35, challenge: 15 },
+      includeWrong: value.includeWrong !== false,
+      includeReverse: value.includeReverse !== false,
+      includeContext: value.includeContext !== false,
+      updatedAt: String(value.updatedAt || new Date().toISOString())
+    };
+  }
+
   function defaultState() {
     return {
       version: STATE_VERSION,
@@ -1306,6 +1415,9 @@
       experimentRecords: [],
       temporaryLearningGroups: [],
       assessmentSessions: [],
+      variantSets: [],
+      variantAttempts: [],
+      variantPresets: [],
       settings: {
         dailyGoal: 5,
         preferredStage: "全部",
@@ -1343,6 +1455,15 @@
       // merged, deleted or reassigned during this migration.
       migrated.version = 8;
       if (!Array.isArray(migrated.importedReports)) migrated.importedReports = [];
+    }
+    if (version < 9) {
+      // v9 adds complete generated-variant sets and their evidence links. Old
+      // transferNotes/experimentRecords remain untouched and are not promoted
+      // to verified transfer evidence without their original verification.
+      migrated.version = 9;
+      if (!Array.isArray(migrated.variantSets)) migrated.variantSets = [];
+      if (!Array.isArray(migrated.variantAttempts)) migrated.variantAttempts = [];
+      if (!Array.isArray(migrated.variantPresets)) migrated.variantPresets = [];
     }
     return migrated;
   }
@@ -1427,6 +1548,15 @@
         : [],
       assessmentSessions: Array.isArray(migrated.assessmentSessions)
         ? migrated.assessmentSessions.slice(-200).map(normalizeAssessmentSession)
+        : [],
+      variantSets: Array.isArray(migrated.variantSets)
+        ? migrated.variantSets.slice(-1000).map(normalizeVariantSet).filter(Boolean)
+        : [],
+      variantAttempts: Array.isArray(migrated.variantAttempts)
+        ? migrated.variantAttempts.slice(-10000).map(normalizeVariantAttempt).filter(Boolean)
+        : [],
+      variantPresets: Array.isArray(migrated.variantPresets)
+        ? migrated.variantPresets.slice(-100).map(normalizeVariantPreset).filter(Boolean)
         : [],
       settings: { ...fallback.settings, ...(migrated.settings || {}) }
     };
@@ -1684,6 +1814,7 @@
     state.examRecords = state.examRecords.filter((record) => record.profileId !== profileId);
     state.growthRecords = state.growthRecords.filter((record) => record.profileId !== profileId);
     state.experimentRecords = state.experimentRecords.filter((record) => record.profileId !== profileId);
+    state.variantAttempts = (state.variantAttempts || []).filter((record) => record.profileId !== profileId);
     state.learningPlans = state.learningPlans.filter((plan) => plan.profileId !== profileId);
     state.assessmentSessions = (Array.isArray(state.assessmentSessions) ? state.assessmentSessions : [])
       .filter((session) => session.profileId !== profileId);
@@ -2352,6 +2483,152 @@
     return attempt;
   }
 
+  function saveVariantSet(state, input) {
+    const normalized = normalizeVariantSet(input);
+    if (!normalized) throw new Error("变式题组结构不完整，未保存。 ");
+    if (normalized.variants.length && normalized.variants.length < 2) {
+      throw new Error("正式变式题组至少需要 2 道完整题。 ");
+    }
+    state.variantSets = Array.isArray(state.variantSets) ? state.variantSets : [];
+    state.variantSets.forEach((set) => {
+      if (set.parentQuestionId === normalized.parentQuestionId
+        && set.id !== normalized.id
+        && set.sourceContentHash !== normalized.sourceContentHash) {
+        set.stale = true;
+        set.status = set.status === "approved" ? "stale" : set.status;
+        set.updatedAt = new Date().toISOString();
+      }
+    });
+    const index = state.variantSets.findIndex((set) => set.id === normalized.id || (normalized.cacheKey && set.cacheKey === normalized.cacheKey));
+    const saved = { ...normalized, updatedAt: new Date().toISOString() };
+    if (index >= 0) state.variantSets[index] = saved;
+    else state.variantSets.push(saved);
+    if (state.variantSets.length > 1000) state.variantSets.splice(0, state.variantSets.length - 1000);
+    return saved;
+  }
+
+  function variantSetForParent(state, parentQuestionId, sourceContentHash = "") {
+    const matches = (Array.isArray(state.variantSets) ? state.variantSets : [])
+      .filter((set) => set.parentQuestionId === parentQuestionId && set.stale !== true)
+      .filter((set) => !sourceContentHash || set.sourceContentHash === sourceContentHash)
+      .sort((first, second) => new Date(second.updatedAt || second.createdAt) - new Date(first.updatedAt || first.createdAt));
+    return matches[0] || null;
+  }
+
+  function decideVariantReview(state, setId, decision = {}) {
+    const set = (state.variantSets || []).find((item) => item.id === setId);
+    if (!set) throw new Error("未找到待审核变式题组。 ");
+    const action = ["approve", "reject", "pending"].includes(decision.action) ? decision.action : "pending";
+    const selected = new Set(Array.isArray(decision.variantIds) && decision.variantIds.length
+      ? decision.variantIds.map(String)
+      : set.variants.map((variant) => variant.id));
+    set.variants = set.variants.map((variant) => {
+      if (!selected.has(variant.id)) return variant;
+      if (action === "approve" && variant.validation?.passed !== true) {
+        throw new Error(`变式“${variant.title}”未通过质量门禁，不能批准。`);
+      }
+      return {
+        ...variant,
+        approvalStatus: action === "approve" ? "teacher-approved" : action === "reject" ? "teacher-rejected" : "pending-teacher-review",
+        reviewRequired: action !== "approve",
+        teacherReview: {
+          action,
+          reviewedBy: String(decision.reviewedBy || "local-teacher").slice(0, 120),
+          comment: String(decision.comment || "").slice(0, 2000),
+          reviewedAt: new Date().toISOString()
+        }
+      };
+    });
+    const approvedCount = set.variants.filter((variant) => ["system-validated", "teacher-approved"].includes(variant.approvalStatus) && variant.validation?.passed).length;
+    const pendingCount = set.variants.filter((variant) => variant.approvalStatus === "pending-teacher-review").length;
+    set.approvalStatus = approvedCount >= 2 ? "teacher-approved" : pendingCount ? "pending-teacher-review" : "rejected";
+    set.status = approvedCount >= 2 ? "approved" : pendingCount ? "pending-review" : "rejected";
+    set.reviewRequired = pendingCount > 0;
+    set.updatedAt = new Date().toISOString();
+    return set;
+  }
+
+  function recordVariantAttempt(state, input = {}) {
+    const set = (state.variantSets || []).find((item) => item.id === input.variantSetId);
+    if (!set || set.stale === true) throw new Error("变式题组不存在或母题已更新。 ");
+    const variant = set.variants.find((item) => item.id === input.variantQuestionId);
+    if (!variant) throw new Error("未找到本次变式题。 ");
+    const approved = ["system-validated", "teacher-approved"].includes(variant.approvalStatus)
+      && variant.validation?.passed === true;
+    if (!approved) throw new Error("该变式尚未通过质量门禁和必要审核，不能进入正式训练。 ");
+    const hintLevel = Math.max(0, Math.min(5, Number(input.hintLevel) || 0));
+    const solutionViewed = input.solutionViewed === true || hintLevel >= 5;
+    const attempt = recordAttempt(state, {
+      ...input,
+      question: variant,
+      questionId: variant.id,
+      topic: variant.topic,
+      knowledgePointId: variant.knowledgePointId,
+      modelDefinitionId: variant.modelDefinitionId,
+      modelFamilyId: variant.modelFamilyId,
+      independenceGroupId: variant.independenceGroupId,
+      questionType: variant.questionType,
+      stage: variant.stage,
+      hintLevel,
+      transferType: variant.variantRole
+    });
+    const gradingStatus = String(attempt.grading?.status || "review-required");
+    const verifiedTransfer = gradingStatus === "correct" && hintLevel <= 1 && !solutionViewed;
+    const link = normalizeVariantAttempt({
+      id: createId("variant-attempt"),
+      variantSetId: set.id,
+      parentQuestionId: set.parentQuestionId,
+      variantQuestionId: variant.id,
+      profileId: attempt.profileId,
+      variantRole: variant.variantRole,
+      attemptId: attempt.id,
+      hintLevel,
+      gradingStatus,
+      completedAt: attempt.completedAt,
+      verificationStatus: verifiedTransfer ? "verified-transfer" : gradingStatus === "review-required" ? "pending-manual-review" : "practice-only",
+      solutionViewed,
+      independentCorrect: verifiedTransfer,
+      validationVersion: variant.validation?.version || 1,
+      sourceContentHash: set.sourceContentHash,
+      createdAt: attempt.createdAt
+    });
+    state.variantAttempts = Array.isArray(state.variantAttempts) ? state.variantAttempts : [];
+    state.variantAttempts.push(link);
+    if (state.variantAttempts.length > 10000) state.variantAttempts.splice(0, state.variantAttempts.length - 10000);
+    return { attempt, variantAttempt: link };
+  }
+
+  function variantSetProgress(state, setId, profileId = state.activeProfileId) {
+    const set = (state.variantSets || []).find((item) => item.id === setId) || null;
+    if (!set) return { set: null, completed: 0, total: 0, results: [], complete: false };
+    const records = (state.variantAttempts || []).filter((item) => item.variantSetId === setId && item.profileId === profileId);
+    const latestByQuestion = new Map();
+    records.forEach((record) => {
+      const previous = latestByQuestion.get(record.variantQuestionId);
+      if (!previous || new Date(record.completedAt) > new Date(previous.completedAt)) latestByQuestion.set(record.variantQuestionId, record);
+    });
+    const trainable = trainableVariants(set);
+    const results = trainable.map((variant) => ({ variant, record: latestByQuestion.get(variant.id) || null }));
+    const completed = results.filter((item) => item.record).length;
+    return { set, completed, total: trainable.length, results, complete: trainable.length >= 2 && completed === trainable.length };
+  }
+
+  function trainableVariants(set) {
+    return (Array.isArray(set?.variants) ? set.variants : []).filter((variant) =>
+      variant?.validation?.passed === true
+      && ["system-validated", "teacher-approved"].includes(variant.approvalStatus));
+  }
+
+  function saveVariantPreset(state, input = {}) {
+    const normalized = normalizeVariantPreset({ ...input, id: input.id || createId("variant-preset"), updatedAt: new Date().toISOString() });
+    if (!normalized) throw new Error("组卷参数无效。 ");
+    state.variantPresets = Array.isArray(state.variantPresets) ? state.variantPresets : [];
+    const index = state.variantPresets.findIndex((preset) => preset.id === normalized.id);
+    if (index >= 0) state.variantPresets[index] = normalized;
+    else state.variantPresets.push(normalized);
+    return normalized;
+  }
+
   function completeManualReview(state, attemptId, review = {}) {
     const attempt = state.attempts.find((item) => item.id === attemptId);
     if (!attempt || !isPendingManualReview(attempt)) {
@@ -2705,7 +2982,9 @@
         && record.type === "transfer"
         && String(record.response || "").trim().length >= 10
         && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
-    });
+    }).concat((state.variantAttempts || [])
+      .filter((record) => record.profileId === profileId && record.verificationStatus === "verified-transfer")
+      .map((record) => ({ ...record, questionId: record.parentQuestionId, type: "verified-variant" })));
     const catalog = topicCatalog(eligibleQuestions, profile?.grade || "");
     const topicEntries = new Map();
     const addTopic = (label, explicitKey = "") => {
@@ -2995,13 +3274,19 @@
   }
 
   function transferEvidence(state, questionId, profileId = state.activeProfileId) {
-    return state.experimentRecords.filter((record) => {
+    const legacy = state.experimentRecords.filter((record) => {
       return record?.type === "transfer"
         && record.questionId === questionId
         && record.profileId === profileId
         && String(record.response || "").trim().length >= 10
         && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
     });
+    const variants = (state.variantAttempts || []).filter((record) => {
+      return record?.parentQuestionId === questionId
+        && record.profileId === profileId
+        && record.verificationStatus === "verified-transfer";
+    });
+    return [...legacy, ...variants];
   }
 
   function questionMasteryEvidence(state, questionId, profileId = state.activeProfileId, now = Date.now()) {
@@ -3052,7 +3337,7 @@
     else reasons.push(`已完成 ${attempts.length} 次正式作答`);
     if (independentCorrect.length) reasons.push(`${independentCorrect.length} 次低提示独立正确`);
     if (independentDates.length) reasons.push(`分布在 ${independentDates.length} 个日期`);
-    if (transfers.length) reasons.push(`完成 ${transfers.length} 道迁移记录（尚需人工核对质量）`);
+    if (transfers.length) reasons.push(`完成 ${transfers.length} 条已核验迁移证据`);
     if (latestWeak) reasons.push("近期存在错误或高提示依赖");
     if (reviewDue) reasons.push("已到间隔复习时间");
 
@@ -3569,6 +3854,21 @@
     result.collections.assessmentSessions = mergeImportedCollection(
       state, "assessmentSessions", payload.assessmentSessions, profile.id, "placement", normalizeAssessmentSession
     );
+    result.collections.variantAttempts = mergeImportedCollection(
+      state, "variantAttempts", payload.variantAttempts, profile.id, "variant-attempt", normalizeVariantAttempt
+    );
+    const importedVariantSets = (Array.isArray(payload.variantSets) ? payload.variantSets : [])
+      .map(normalizeVariantSet)
+      .filter(Boolean);
+    let variantSetsAdded = 0;
+    importedVariantSets.forEach((set) => {
+      const existing = (state.variantSets || []).find((item) => item.id === set.id || (set.cacheKey && item.cacheKey === set.cacheKey));
+      if (!existing) {
+        state.variantSets.push({ ...set, importedForProfileId: profile.id, importedAt: new Date().toISOString() });
+        variantSetsAdded += 1;
+      }
+    });
+    result.collections.variantSets = { added: importedVariantSets.slice(0, variantSetsAdded), skipped: [], conflicts: [], errors: [] };
     const reviewRecords = payload.reviews && typeof payload.reviews === "object"
       ? Object.values(payload.reviews).map((review) => ({ ...review, id: review.id || review.questionId }))
       : [];
@@ -5199,6 +5499,7 @@
 
   function generateAssignment(questions, options = {}) {
     const count = Math.max(1, Math.min(50, Number(options.count) || 10));
+    const preferredQuestionIds = new Set(Array.isArray(options.preferredQuestionIds) ? options.preferredQuestionIds.map(String) : []);
     const candidates = questions.filter((question) => {
       const topicMatch = !options.topic || options.topic === "全部" || question.topic === options.topic;
       const difficultyMatch = !options.difficulty || options.difficulty === "全部" || question.difficulty === options.difficulty;
@@ -5208,11 +5509,35 @@
     });
     const ranked = candidates.sort((a, b) => {
       const difficultyOrder = { 基础: 1, 进阶: 2, 挑战: 3 };
-      return (difficultyOrder[a.difficulty] || 2) - (difficultyOrder[b.difficulty] || 2)
+      return (preferredQuestionIds.has(a.id) ? -1 : 0) - (preferredQuestionIds.has(b.id) ? -1 : 0)
+        || (difficultyOrder[a.difficulty] || 2) - (difficultyOrder[b.difficulty] || 2)
         || a.title.localeCompare(b.title, "zh-CN");
     });
     const selected = [];
-    if (ranked.length) {
+    const ratios = options.difficulty === "全部" && options.difficultyRatios && typeof options.difficultyRatios === "object"
+      ? ["基础", "进阶", "挑战"].map((difficulty) => ({ difficulty, weight: Math.max(0, Number(options.difficultyRatios[difficulty]) || 0) }))
+      : [];
+    const ratioTotal = ratios.reduce((sum, item) => sum + item.weight, 0);
+    if (ranked.length && ratioTotal > 0) {
+      const quotas = ratios.map((item) => {
+        const exact = count * item.weight / ratioTotal;
+        return { ...item, exact, quota: Math.floor(exact), fraction: exact - Math.floor(exact) };
+      });
+      let remainingQuota = count - quotas.reduce((sum, item) => sum + item.quota, 0);
+      quotas.slice().sort((a, b) => b.fraction - a.fraction).forEach((item) => {
+        if (remainingQuota <= 0) return;
+        quotas.find((entry) => entry.difficulty === item.difficulty).quota += 1;
+        remainingQuota -= 1;
+      });
+      quotas.forEach(({ difficulty, quota }) => {
+        const pool = ranked.filter((question) => question.difficulty === difficulty && !selected.includes(question));
+        const take = Math.min(quota, pool.length);
+        if (!take) return;
+        const step = pool.length / take;
+        for (let index = 0; index < take; index += 1) selected.push(pool[Math.min(pool.length - 1, Math.floor(index * step))]);
+      });
+      ranked.filter((question) => !selected.includes(question)).slice(0, Math.max(0, count - selected.length)).forEach((question) => selected.push(question));
+    } else if (ranked.length) {
       const step = ranked.length / Math.min(count, ranked.length);
       for (let index = 0; index < Math.min(count, ranked.length); index += 1) {
         selected.push(ranked[Math.min(ranked.length - 1, Math.floor(index * step))]);
@@ -5225,6 +5550,7 @@
       grade: options.grade || "全部",
       topic: options.topic || "全部",
       difficulty: options.difficulty || "全部",
+      difficultyRatios: ratioTotal > 0 ? Object.fromEntries(ratios.map((item) => [item.difficulty, item.weight])) : null,
       questionIds: selected.map((question) => question.id),
       questionCount: selected.length,
       reviewStatus: "教师待审核",
@@ -5394,6 +5720,8 @@
       growthRecords: state.growthRecords.filter((record) => record.profileId === profile.id),
       diagnosticAttempts: state.diagnosticAttempts.filter((record) => record.profileId === profile.id),
       experimentRecords: state.experimentRecords.filter((record) => record.profileId === profile.id),
+      variantSets: (state.variantSets || []).filter((set) => (state.variantAttempts || []).some((record) => record.profileId === profile.id && record.variantSetId === set.id)),
+      variantAttempts: (state.variantAttempts || []).filter((record) => record.profileId === profile.id),
       learningPlans: state.learningPlans.filter((record) => record.profileId === profile.id),
       assessmentSessions: (state.assessmentSessions || []).filter((record) => record.profileId === profile.id),
       analysis: {
@@ -5497,7 +5825,7 @@
           knowledgePointIds: [syncClientEntityId(attempt.topicKey || topicKeyForLabel(attempt.topic), "topic-unknown")],
           questionType: syncQuestionType(attempt.questionType || question.questionType),
           modelFamilyId: attempt.modelFamilyId ? syncClientEntityId(attempt.modelFamilyId) : null,
-          variantRole: ["near", "far", "counter", "review"].includes(attempt.transferType) ? attempt.transferType : "core",
+          variantRole: ["near", "reverse", "context", "far", "counter", "review"].includes(attempt.transferType) ? attempt.transferType : "core",
           difficulty: syncDifficulty(attempt.difficulty || question.difficulty),
           startedAt: Number.isFinite(startedAt.getTime()) ? startedAt.toISOString() : new Date().toISOString(),
           completedAt: Number.isFinite(completedAt.getTime()) ? completedAt.toISOString() : new Date().toISOString(),
@@ -5602,6 +5930,15 @@
     verifyPhysicsAnswer,
     scoreModeling,
     recordAttempt,
+    normalizeVariantSet,
+    normalizeVariantAttempt,
+    saveVariantSet,
+    variantSetForParent,
+    decideVariantReview,
+    recordVariantAttempt,
+    variantSetProgress,
+    trainableVariants,
+    saveVariantPreset,
     completeManualReview,
     automaticReviewRating,
     scheduleReview,

@@ -1444,9 +1444,14 @@ function renderInsights() {
   const learningQuestions = state.questions.filter(isCompletePracticeQuestion);
   const wrong = learningQuestions.filter((question) => Boolean(question.wrong)).length;
   const topics = getTopicStats();
-  const transferCount = learningQuestions.reduce((sum, question) => {
+  const learningState = window.PHYSICS_LEARNING_ENGINE?.loadState?.();
+  const activeProfileId = learningState?.activeProfileId;
+  const completedVariantCount = (learningState?.variantAttempts || [])
+    .filter((record) => record.profileId === activeProfileId && record.completedAt).length;
+  const legacyTransferCount = learningQuestions.reduce((sum, question) => {
     return sum + Object.keys(question.transferNotes || {}).length;
   }, 0);
+  const transferCount = completedVariantCount + legacyTransferCount;
   const coverage = state.knowledgePointEvidence;
 
   els.analysisMasteryRate.textContent = coverage?.coverageLabel || "0/0";
@@ -1478,6 +1483,13 @@ function renderViewLayout() {
 
 function getTopicStats() {
   const engine = window.PHYSICS_LEARNING_ENGINE;
+  const learningState = engine?.loadState?.();
+  const activeProfileId = learningState?.activeProfileId;
+  const variantCountByParent = new Map();
+  (learningState?.variantAttempts || []).forEach((record) => {
+    if (record.profileId !== activeProfileId || !record.completedAt) return;
+    variantCountByParent.set(record.parentQuestionId, (variantCountByParent.get(record.parentQuestionId) || 0) + 1);
+  });
   const evidenceByKey = new Map((state.knowledgePointEvidence?.byTopic || [])
     .map((item) => [item.key, item]));
   const topicMap = new Map();
@@ -1498,7 +1510,7 @@ function getTopicStats() {
     if (["mastered", "due"].includes(getMasteryEvidence(question).code)) current.mastered += 1;
     if (question.wrong) current.wrong += 1;
     if (hasVideo(question)) current.videos += 1;
-    current.transfer += Object.keys(question.transferNotes || {}).length;
+    current.transfer += Object.keys(question.transferNotes || {}).length + (variantCountByParent.get(question.id) || 0);
     topicMap.set(topicKey, current);
   });
 
@@ -1684,7 +1696,7 @@ function buildLearningAdvice({ total, wrong, topics, transferCount }) {
   if (topics[0]) advice.push(`优先检查“${topics[0].topic}”，当前为${topics[0].evidenceStatus}，已有 ${topics[0].evidenceSampleSize} 条可追溯证据。`);
   const wrongWithoutVideo = state.questions.filter((question) => question.wrong && !hasVideo(question)).length;
   if (wrongWithoutVideo > 0) advice.push(`为 ${wrongWithoutVideo} 道缺少视频的错题补充方法视频，便于复盘关键步骤。`);
-  if (transferCount === 0) advice.push("完成一道典型题后，至少保存一条举一反三记录，检验方法是否能够迁移。");
+  if (transferCount === 0) advice.push("完成一道典型题后，进入专项变式并独立完成至少一题，检验方法是否能够迁移。");
   if (advice.length < 3) advice.push("定期复查已掌握题目，确认能够在不看解析的情况下重建推理过程。");
   return advice.slice(0, 4);
 }
@@ -1844,7 +1856,7 @@ function questionCardTemplate(question) {
           <div class="card-actions">
             ${question.syncOrigin === "changsha-api" ? '<span class="remote-badge">↗ 网络来源</span>' : ""}
             <button class="wrong-button ${question.wrong ? "active" : ""}" data-action="wrong" type="button">${question.wrong ? "移出错题" : "加入错题"}</button>
-            <button class="transfer-button" data-action="transfer" type="button">举一反三</button>
+            <button class="transfer-button" data-action="transfer" type="button">专项变式</button>
             <button class="coach-button" data-action="learn" type="button">分步训练</button>
             <span class="mastery-evidence-badge evidence-${escapeHtml(mastery.code)}" title="${escapeHtml(mastery.reasons.join("；"))}">${escapeHtml(window.PHYSICS_LEARNING_ENGINE?.masteryDisplayLabel?.(mastery) || mastery.status)}</span>
             <button class="view-button" data-action="view" type="button">查看解析</button>
@@ -3148,89 +3160,82 @@ function readBlobAsDataUrl(blob) {
 
 function buildTransferMarkup(question) {
   const notes = question.transferNotes || {};
+  const variantSet = getTransferVariantSet(question);
+  const variants = getTransferVariants(question);
   return `
     <section class="detail-section transfer-detail-section">
       <h3>TRANSFER</h3>
       <div>
-        <div class="transfer-intro"><strong>举一反三</strong><span>用同一物理规律处理变化后的问题</span></div>
-        <div class="transfer-variant-grid">
-          ${getTransferVariants(question).map((variant) => `
-            <button class="transfer-variant-card ${notes[variant.key] ? "completed" : ""}" data-detail-action="transfer" data-id="${escapeHtml(question.id)}" data-variant="${variant.key}" type="button">
-              <span>${variant.index}</span>
-              <strong>${escapeHtml(variant.title)}</strong>
-              <small>${escapeHtml(variant.brief)}</small>
-              <em>${notes[variant.key] ? "已保存记录 ✓" : "开始练习 →"}</em>
-            </button>`).join("")}
-        </div>
+        <div class="transfer-intro"><strong>专项变式训练</strong><span>完整试题 · 独立作答 · 分步解析 · 正确性门禁</span></div>
+        ${variants.length >= 2 ? `
+          <div class="transfer-variant-grid">
+            ${variants.map((variant, index) => `
+              <button class="transfer-variant-card" data-detail-action="transfer" data-id="${escapeHtml(question.id)}" type="button">
+                <span>${String(index + 1).padStart(2, "0")}</span>
+                <strong>${escapeHtml(variant.variantRoleLabel || variant.variantRole)}</strong>
+                <small>${escapeHtml(variant.changeSummary || variant.title)}</small>
+                <em>${escapeHtml(variantSet?.status === "approved" ? "开始独立作答 →" : "查看审核状态 →")}</em>
+              </button>`).join("")}
+          </div>` : `
+          <div class="transfer-empty-state">
+            <p>系统会先匹配已审核题模并独立校验；找不到合格题时不会用文字任务冒充变式题。</p>
+            <button class="primary-button" data-detail-action="transfer" data-id="${escapeHtml(question.id)}" type="button">生成专项变式</button>
+          </div>`}
+        ${Object.keys(notes).length ? `
+          <details class="legacy-transfer-notes">
+            <summary>旧版手工迁移记录（${Object.keys(notes).length}）</summary>
+            ${Object.entries(notes).map(([key, note]) => `<article><strong>${escapeHtml(key)}</strong><p>${escapeHtml(note?.text || "")}</p></article>`).join("")}
+            <small>旧记录继续保留；未经教师通过或有效核验时不计入正式掌握证据。</small>
+          </details>` : ""}
       </div>
     </section>`;
 }
 
-function getTransferVariants(question) {
-  const title = question.title;
-  const topic = question.topic || "当前知识点";
-  return [
-    {
-      key: "condition",
-      index: "01",
-      title: "改变条件",
-      brief: "改变一个关键已知量，预测并验证结论变化。",
-      prompt: `围绕“${title}”，保留“${topic}”的核心规律，改变一个关键已知量或约束条件。先定性预测结论如何变化，再重新列式计算或论证。`,
-      steps: ["找出决定结论的关键条件", "说明改变条件后哪些规律保持不变", "重新列式并比较新旧结论"]
-    },
-    {
-      key: "reverse",
-      index: "02",
-      title: "逆向设问",
-      brief: "把原结论作为已知，反求一个原有条件。",
-      prompt: `以“${title}”的结论或中间量作为新的已知条件，反求原题中的一个条件。围绕“${topic}”写出等量关系，并检查所得条件是否符合物理情境。`,
-      steps: ["选定一个可反求的条件", "从原规律倒推方程", "检查数值范围、方向和单位"]
-    },
-    {
-      key: "context",
-      index: "03",
-      title: "情境迁移",
-      brief: "换一个现实情境，识别仍然适用的物理模型。",
-      prompt: `把“${title}”迁移到一个不同的生活、实验或工程情境中。说明新情境为何仍可使用“${topic}”相关规律，并指出模型成立所需的条件。`,
-      steps: ["设计一个新的具体情境", "对应原题中的物理量与研究对象", "说明适用条件并完成求解框架"]
-    }
-  ];
+function getTransferVariantSet(question) {
+  const engine = window.PHYSICS_LEARNING_ENGINE;
+  const generator = window.PhysicsStudioVariantGenerator;
+  if (!engine || !generator || !question) return null;
+  const learningState = engine.loadState();
+  const contentHash = generator.sourceContentHash(question);
+  return engine.variantSetForParent(learningState, question.id, contentHash);
 }
 
-function openTransferPractice(question, variantKey) {
-  const variants = getTransferVariants(question);
-  const variant = variants.find((item) => item.key === variantKey) || variants[0];
-  const saved = question.transferNotes?.[variant.key];
-  state.activeTransfer = { questionId: question.id, variantKey: variant.key };
+function getTransferVariants(question) {
+  return getTransferVariantSet(question)?.variants || [];
+}
+
+async function openTransferPractice(question) {
+  const engine = window.PHYSICS_LEARNING_ENGINE;
+  const generator = window.PhysicsStudioVariantGenerator;
+  if (!engine || !generator) {
+    showToast("专项变式模块未完整加载，请重新启动应用。", true);
+    return;
+  }
+  let learningState = engine.loadState();
+  let set = engine.variantSetForParent(learningState, question.id, generator.sourceContentHash(question));
+  if (!set || set.variants.length < 2) {
+    showToast("正在匹配并校验完整变式题…");
+    const profile = engine.activeProfile(learningState);
+    set = await generator.generateVariantSet(question, {
+      questions: state.questions,
+      existingSets: learningState.variantSets,
+      count: 3,
+      allowAi: document.body.classList.contains("role-teacher"),
+      minorUnder14: profile?.minorAgeBand === "under14",
+      guardianConsentStatus: profile?.guardianConsentStatus,
+      personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
+    });
+    if (!set.variants?.length) {
+      showToast(set.message || "当前没有可验证的完整变式题", true);
+      return;
+    }
+    engine.saveVariantSet(learningState, set);
+    engine.saveState(learningState);
+  }
   if (els.detailModal.open) els.detailModal.close();
-  els.transferContent.innerHTML = `
-    <header class="detail-cover transfer-cover">
-      <button class="icon-button close-detail" data-transfer-action="close" type="button" aria-label="关闭">×</button>
-      <span class="modal-index">TRANSFER PRACTICE · ${variant.index}</span>
-      <h2>${escapeHtml(variant.title)}</h2>
-      <span class="detail-source">原题：${escapeHtml(question.title)} · ${escapeHtml(question.topic || "未分类")}</span>
-    </header>
-    <div class="detail-body transfer-body">
-      <section class="transfer-prompt">
-        <span>练习任务</span>
-        <p>${escapeHtml(variant.prompt)}</p>
-      </section>
-      <section class="transfer-steps">
-        <h3>建议步骤</h3>
-        <ol>${variant.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>
-      </section>
-      <label class="field transfer-note-field">
-        <span>我的推理与答案 <i>*</i></span>
-        <textarea id="transferNoteInput" rows="8" placeholder="记录条件变化、所用规律、方程、结论与检验…">${escapeHtml(saved?.text || "")}</textarea>
-        <small>记录会保存在当前题目中，并计入学情分析的变式练习记录。</small>
-      </label>
-      <div class="detail-actions transfer-actions">
-        <button class="ghost-button" data-transfer-action="original" type="button">查看原题解析</button>
-        <button class="primary-button" data-transfer-action="save" type="button">保存练习记录</button>
-      </div>
-    </div>`;
-  els.transferModal.showModal();
-  setTimeout(() => document.getElementById("transferNoteInput")?.focus(), 50);
+  document.dispatchEvent(new CustomEvent("physics-studio-start-learning", {
+    detail: { questionId: question.id, tab: "transfer", variantSetId: set.id, generateVariants: false }
+  }));
 }
 
 function handleTransferClick(event) {

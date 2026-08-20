@@ -2,6 +2,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const project = path.resolve(__dirname, "..");
+const version = JSON.parse(fs.readFileSync(path.join(project, "version.json"), "utf8")).appVersion;
 
 function read(relativePath) {
   return fs.readFileSync(path.join(project, relativePath), "utf8");
@@ -23,6 +24,7 @@ assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.StorageRe
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.TeacherModeLock", "teacher-mode-lock.js")');
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.QuestionAnswerService", "question-answer-service.js")');
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.PhysicsVisuals", "physics-visuals.js")');
+assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.VariantGenerator", "variant-generator.js")');
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.LanClassroomService", "物理研习室-班级服务.exe")');
 assertIncludes("tools/build_release.ps1", "PhysicsStudio.Payload.StorageRepository");
 assertIncludes("tools/build_release.ps1", "'storage-repository.js'");
@@ -31,9 +33,11 @@ assertIncludes("Launcher.cs", '"storage-repository.js"');
 assertIncludes("Launcher.cs", '"teacher-mode-lock.js"');
 assertIncludes("Launcher.cs", '"question-answer-service.js"');
 assertIncludes("Launcher.cs", '"physics-visuals.js"');
+assertIncludes("Launcher.cs", '"variant-generator.js"');
 assertIncludes("Uninstaller.cs", '"storage-repository.js"');
 assertIncludes("Uninstaller.cs", '"teacher-mode-lock.js"');
 assertIncludes("Uninstaller.cs", '"physics-visuals.js"');
+assertIncludes("Uninstaller.cs", '"variant-generator.js"');
 assertIncludes("android/tools/build_android.ps1", "'storage-repository.js'");
 assertIncludes("android/tools/build_android.ps1", "'question-answer-service.js'");
 assertIncludes("android/tools/build_android.ps1", "'add', '-f'");
@@ -44,14 +48,18 @@ assertIncludes("tools/build_release.ps1", "LanClassroomService.cs");
 assertIncludes("tools/build_release.ps1", "LanClassroomNative.cs");
 assertIncludes("tools/build_release.ps1", "PhysicsStudio.Payload.LanClassroomService");
 assertIncludes("tools/build_release.ps1", "PhysicsStudio.Payload.PhysicsVisuals");
+assertIncludes("tools/build_release.ps1", "PhysicsStudio.Payload.VariantGenerator");
 assertIncludes("tools/build_release.ps1", "'physics-visuals.js'");
+assertIncludes("tools/build_release.ps1", "'variant-generator.js'");
 assertIncludes("android/tools/build_android.ps1", "'physics-visuals.js'");
+assertIncludes("android/tools/build_android.ps1", "'variant-generator.js'");
 assertIncludes("安装应用.ps1", "'physics-visuals.js'");
+assertIncludes("安装应用.ps1", "'variant-generator.js'");
 assertIncludes("tools/build_release.ps1", '"费曼物理-安装程序-v$Version.exe"');
 assertIncludes("tools/build_release.ps1", '"费曼物理-Windows-v$Version.zip"');
 assertIncludes("tools/build_release.ps1", '"费曼物理-源码-v$Version.zip"');
 assertIncludes("android/tools/build_android.ps1", '"费曼物理-Android-v$VersionName.apk"');
-assertIncludes("Installer.cs", 'private const string AppVersion = "3.2.0";');
+assertIncludes("Installer.cs", `private const string AppVersion = "${version}";`);
 assertIncludes(".gitignore", "物理研习室-班级服务.exe");
 assertIncludes("tools/build_windows_current.ps1", "Test-Path -LiteralPath (Join-Path $_.FullName 'Android')");
 if (read("tools/build_windows_current.ps1").includes('Join-Path $projectDirectory "发布')) {

@@ -12,7 +12,7 @@ if (!buildScript.includes(".Replace('\\', '/')")) {
 if (!buildScript.includes("qa_release_zip_portability.cjs")) {
   throw new Error("build_release.ps1 must run the source ZIP portability gate after packaging");
 }
-for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js"]) {
+for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js"]) {
   if (!buildScript.includes(required)) throw new Error(`source ZIP staging list missing ${required}`);
 }
 
@@ -48,7 +48,7 @@ const names = centralDirectoryNames(fs.readFileSync(zipPath));
 if (names.some((name) => name.includes("\\") || name.split("/").includes(".."))) {
   throw new Error("ZIP contains Windows separators or traversal entries");
 }
-for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js"]) {
+for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js"]) {
   if (!names.includes(required)) throw new Error(`ZIP missing ${required}`);
 }
 

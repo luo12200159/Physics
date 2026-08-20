@@ -342,6 +342,12 @@
       studentDataCache = null;
       renderRoleExperience();
     });
+    document.addEventListener("physics-studio-assignment-confirmed", (event) => {
+      void publishConfirmedAssignment(event.detail?.assignment);
+    });
+    document.addEventListener("physics-studio-tiered-assignment-confirmed", (event) => {
+      void publishConfirmedAssignment(event.detail?.assignment);
+    });
     onboarding.querySelector("form").addEventListener("submit", saveOnboarding);
     onboarding.querySelectorAll('input[name="experienceRole"]').forEach((input) => {
       input.addEventListener("change", updateOnboardingVisibility);
@@ -1408,7 +1414,7 @@
         <header><div><span>判定规则</span><h2>用学习行为证明“真的会”</h2></div><button data-shell-action="mastery-help" type="button">完整规则</button></header>
         <div>
           <article><strong>${rules.masteredIndependentDates ?? 2}</strong><span>个不同日期低提示独立正确</span></article>
-          <article><strong>${rules.masteredTransferEvidence ?? 1}</strong><span>道迁移记录</span></article>
+          <article><strong>${rules.masteredTransferEvidence ?? 1}</strong><span>道经核验迁移作答</span></article>
           <article><strong>≤ ${rules.independentHintMaximum ?? 1}</strong><span>独立正确的提示等级</span></article>
         </div>
       </section>
@@ -2816,7 +2822,7 @@
           <label><span>截止时间（可选）</span><input name="dueAt" type="datetime-local"></label>
           <label><span>题目编号（可选，逗号分隔）</span><input name="questionIds" maxlength="8000" placeholder="题目ID1,题目ID2"></label>
           <label><span>知识点编号（可选，逗号分隔）</span><input name="knowledgePointKeys" maxlength="8000" placeholder="topic:niu-dun-yun-dong-ding-lv"></label>
-          <label><span>预定达标条件</span><textarea name="target" rows="2" required maxlength="1000" placeholder="例如：3题中至少2题低提示独立正确，并完成1条迁移记录"></textarea></label>
+          <label><span>预定达标条件</span><textarea name="target" rows="2" required maxlength="1000" placeholder="例如：3题中至少2题低提示独立正确，并完成1道经核验专项变式"></textarea></label>
           <label><span><input name="publish" type="checkbox" checked> 教师确认后立即发布</span></label>
           <button type="submit"${disabled}>创建并${ui.classroom.busy ? "处理" : "发布"}</button>
         </form>
@@ -2966,8 +2972,74 @@
   async function loadStudentAssignments(classId) {
     const client = window.PhysicsStudioClassroom;
     if (!client?.listAssignments || !classId) return;
-    const response = await client.listAssignments(classId);
+    const [response, variantResponse] = await Promise.all([
+      client.listAssignments(classId),
+      client.listVariantSets ? client.listVariantSets(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
+    ]);
     ui.classroom.assignments = Array.isArray(response?.items) ? response.items : [];
+    if (engine?.saveVariantSet && Array.isArray(variantResponse?.items) && variantResponse.items.length) {
+      const state = engine.loadState();
+      variantResponse.items.forEach((remote) => {
+        engine.saveVariantSet(state, {
+          id: remote.clientEntityId,
+          cacheKey: remote.cacheKey,
+          parentQuestionId: remote.parentQuestionId,
+          sourceContentHash: remote.sourceContentHash,
+          specVersion: remote.specVersion,
+          generatorVersion: remote.generatorVersion,
+          variants: remote.variants,
+          generationMode: "classroom-approved-sync",
+          status: "approved",
+          approvalStatus: "teacher-approved",
+          reviewRequired: false,
+          stale: false,
+          updatedAt: remote.updatedAt,
+          createdAt: remote.updatedAt
+        });
+      });
+      engine.saveState(state);
+    }
+  }
+
+  async function publishConfirmedAssignment(assignment) {
+    if (!assignment?.questionIds?.length || experience.role !== "teacher") return;
+    const client = window.PhysicsStudioClassroom;
+    const classId = ui.classroom.selectedClassId;
+    if (!client?.createAssignment || !classId) {
+      ui.classroom.message = "作业已保存在本机待发布；请先进入班级并选择目标班级。";
+      ui.classroom.error = false;
+      return;
+    }
+    try {
+      const state = engine?.loadState?.();
+      const selectedSets = (state?.variantSets || []).filter((set) => (assignment.variantSetIds || []).includes(set.id)
+        && set.status === "approved" && set.stale !== true);
+      if (selectedSets.length && client.syncVariantSets) {
+        await client.syncVariantSets(classId, { sets: selectedSets });
+      }
+      const response = await client.createAssignment(classId, {
+        title: assignment.title,
+        instructions: `母题 ${assignment.parentQuestionIds?.length || assignment.questionCount} 道；完整变式 ${assignment.variantQuestionIds?.length || 0} 道。答案与完整解析须在学生提交后显示。`,
+        targetType: "class",
+        targetId: null,
+        questionIds: assignment.questionIds,
+        knowledgePointKeys: assignment.knowledgePointIds || (assignment.topic && assignment.topic !== "全部" ? [assignment.topic] : []),
+        target: assignment.target || "完成作答、订正和专项复盘；不以一次训练形成长期能力结论。",
+        publish: true
+      });
+      ui.classroom.message = response?.queued
+        ? "作业和已审核变式已保存在同步队列，恢复联网后自动下发。"
+        : "作业和已审核变式已下发到当前班级。";
+      ui.classroom.error = false;
+      if (classroomDialog?.open) {
+        await loadClassroomDetail(classId);
+        renderClassroom();
+      }
+    } catch (error) {
+      ui.classroom.error = true;
+      ui.classroom.message = error?.message || "作业发布失败；本机预览和学习数据仍保留。";
+      if (classroomDialog?.open) renderClassroom();
+    }
   }
 
   async function syncStudentLearningData(client, classId) {
@@ -3361,7 +3433,7 @@
       <div class="mastery-help-list">
         <article><strong>学习中</strong><p>完成过练习，但尚未出现低提示独立正确。</p></article>
         <article><strong>已有独立正确证据</strong><p>至少一次正确，最高提示等级不超过 ${rules?.independentHintMaximum ?? 1}；这不是跨日期掌握结论。</p></article>
-        <article><strong>已掌握</strong><p>不同日期低提示独立正确至少 ${rules?.masteredIndependentDates ?? 2} 次，并完成至少 ${rules?.masteredTransferEvidence ?? 1} 道迁移记录。</p></article>
+        <article><strong>已掌握</strong><p>不同日期低提示独立正确至少 ${rules?.masteredIndependentDates ?? 2} 次，并完成至少 ${rules?.masteredTransferEvidence ?? 1} 道经核验迁移作答。</p></article>
         <article><strong>待复习</strong><p>达到掌握标准，但已到间隔复习时间。</p></article>
         <article><strong>需巩固</strong><p>近期存在错误或提示依赖证据；建模记录不完整只作为检查线索，不能单独判定知识点薄弱。</p></article>
       </div>

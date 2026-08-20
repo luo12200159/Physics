@@ -68,6 +68,7 @@
     managedStudentId: "",
     planPreview: null,
     tieredAssignmentPreview: null,
+    assignmentPreview: null,
     studentImportDraft: null,
     examImportDraft: null,
     matrixTopicKey: "",
@@ -81,7 +82,9 @@
     derivedLearningCache: null,
     teacherHydrationPending: false,
     teacherHydrated: false,
-    teacherViewDrafts: Object.create(null)
+    teacherViewDrafts: Object.create(null),
+    variantTraining: null,
+    variantGenerationStatus: ""
   };
 
   const tabs = [
@@ -124,7 +127,11 @@
       if (lab.dialog?.open) renderPanel();
     });
     document.addEventListener("physics-studio-start-learning", (event) => {
-      openLab("tutor", event.detail?.questionId || "");
+      const requestedTab = event.detail?.tab === "transfer" ? "transfer" : "tutor";
+      if (event.detail?.variantSetId) {
+        lab.variantTraining = { setId: event.detail.variantSetId, order: [], index: 0, session: null, summaryVisible: false };
+      }
+      openLab(requestedTab, event.detail?.questionId || "");
     });
     document.addEventListener("physics-studio-open-lab", (event) => {
       openLab(event.detail?.tab || "dashboard", event.detail?.questionId || "", event.detail?.diagnosticId || "");
@@ -405,7 +412,7 @@
         updateRayOutput();
       });
       if (lab.tab === "sensors") requestAnimationFrame(() => renderMotionChart());
-      if (lab.tab === "tutor" && lab.session) startSessionTimer();
+      if ((lab.tab === "tutor" && lab.session) || (lab.tab === "transfer" && lab.variantTraining?.session)) startSessionTimer();
       if (options.scrollTo || options.preserveScroll) {
         requestAnimationFrame(() => {
           if (!lab.panel) return;
@@ -814,6 +821,13 @@
   }
 
   function extractChoiceOptions(question) {
+    if (Array.isArray(question.options) && question.options.length >= 2) {
+      return question.options.slice(0, 12).map((option, index) => {
+        if (Array.isArray(option)) return { label: String(option[0] || String.fromCharCode(65 + index)), text: String(option[1] || "") };
+        if (option && typeof option === "object") return { label: String(option.key || option.id || String.fromCharCode(65 + index)), text: String(option.text || option.label || "") };
+        return { label: String.fromCharCode(65 + index), text: String(option || "") };
+      }).filter((option) => option.text);
+    }
     const content = String(question.content || "");
     const marker = /(?:^|\n|[ \u3000]{2,})([A-H])[.．、]\s*/gm;
     const matches = [];
@@ -1462,45 +1476,153 @@
     </section>`;
   }
 
+  function activeVariantSet(question) {
+    const generator = window.PhysicsStudioVariantGenerator;
+    if (!generator || !question) return null;
+    const hash = generator.sourceContentHash(question);
+    const requested = lab.variantTraining?.setId
+      ? (lab.state.variantSets || []).find((set) => set.id === lab.variantTraining.setId && !generator.isSetStale(set, question))
+      : null;
+    return requested || engine.variantSetForParent(lab.state, question.id, hash);
+  }
+
+  async function prepareVariantTraining(question, options = {}) {
+    const generator = window.PhysicsStudioVariantGenerator;
+    if (!generator) throw new Error("专项变式生成模块未加载。 ");
+    let set = activeVariantSet(question);
+    if (!set || set.variants.length < 2) {
+      lab.variantGenerationStatus = "正在匹配已审核题模并执行质量校验…";
+      if (lab.dialog?.open && lab.tab === "transfer") renderPanel();
+      const profile = engine.activeProfile(lab.state);
+      set = await generator.generateVariantSet(question, {
+        questions: getQuestions(),
+        existingSets: lab.state.variantSets,
+        count: Math.max(2, Math.min(3, Number(options.count) || 3)),
+        allowAi: options.allowAi === true && isTeacherRole(),
+        minorUnder14: profile?.minorAgeBand === "under14",
+        guardianConsentStatus: profile?.guardianConsentStatus,
+        personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
+      });
+      if (set.variants?.length) {
+        set = engine.saveVariantSet(lab.state, set);
+        saveLearningState();
+      }
+    }
+    lab.variantGenerationStatus = "";
+    if (!set?.variants?.length) return set;
+    const trainable = engine.trainableVariants(set);
+    if (set.status === "approved" && trainable.length < 2) {
+      throw new Error("该题组不足 2 道已通过审核与质量门禁的变式题。 ");
+    }
+    const current = lab.variantTraining?.setId === set.id ? lab.variantTraining : null;
+    const order = current?.order?.length
+      ? current.order.filter((id) => trainable.some((variant) => variant.id === id))
+      : trainable.map((variant) => variant.id);
+    lab.variantTraining = {
+      setId: set.id,
+      order,
+      index: Math.max(0, Math.min(order.length - 1, Number(current?.index) || 0)),
+      session: current?.session || null,
+      summaryVisible: current?.summaryVisible === true
+    };
+    return set;
+  }
+
+  function currentVariantContext(question) {
+    const set = activeVariantSet(question);
+    if (!set || !lab.variantTraining || lab.variantTraining.setId !== set.id) return { set, variant: null, progress: null };
+    const progress = engine.variantSetProgress(lab.state, set.id, lab.state.activeProfileId);
+    if (progress.complete) return { set, variant: null, progress };
+    const completedIds = new Set(progress.results.filter((item) => item.record).map((item) => item.variant.id));
+    const order = lab.variantTraining.order.length
+      ? lab.variantTraining.order
+      : engine.trainableVariants(set).map((variant) => variant.id);
+    let index = order.findIndex((id, candidateIndex) => candidateIndex >= lab.variantTraining.index && !completedIds.has(id));
+    if (index < 0) index = order.findIndex((id) => !completedIds.has(id));
+    if (index < 0) return { set, variant: null, progress };
+    lab.variantTraining.index = index;
+    const variant = set.variants.find((item) => item.id === order[index]) || null;
+    if (variant && (!lab.variantTraining.session || lab.variantTraining.session.questionId !== variant.id)) {
+      lab.variantTraining.session = { ...newSession(variant), solutionViewed: false, variantSetId: set.id };
+    }
+    return { set, variant, progress };
+  }
+
+  function renderVariantSolutionDetail(variant) {
+    const detail = variant.solutionDetail || {};
+    const laws = Array.isArray(detail.laws) ? detail.laws : [];
+    const steps = Array.isArray(detail.steps) ? detail.steps : [];
+    return `<section class="variant-solution-detail">
+      <h4>思路总览</h4><p>${escapeHtml(detail.overview || "按题目模型建立方程并核对适用条件。")}</p>
+      <h4>已知与所求</h4><p>${(detail.known || []).map(escapeHtml).join("；") || "见题干"}；所求：${escapeHtml(detail.unknown || "见题干")}</p>
+      <h4>研究对象和过程</h4><p>${escapeHtml(detail.researchObject || "见题干")}；${escapeHtml(detail.process || "按状态或过程分析")}</p>
+      <h4>规律与适用条件</h4><ul>${laws.map((law) => `<li><strong>${escapeHtml(law.name || law)}</strong>${law.condition ? `：${escapeHtml(law.condition)}` : ""}</li>`).join("") || `<li>${escapeHtml((variant.examPoints || []).join("、"))}</li>`}</ul>
+      <h4>分步推导</h4><ol>${steps.map((step) => `<li><p>${escapeHtml(step.reasoning || "")}</p>${step.equation ? `<code>${escapeHtml(step.equation)}</code>` : ""}${step.substitution ? `<small>代入：${escapeHtml(step.substitution)}</small>` : ""}${step.result ? `<strong>结果：${escapeHtml(step.result)}</strong>` : ""}</li>`).join("")}</ol>
+      <h4>标准答案</h4><pre>${escapeHtml(detail.finalAnswer || variant.answer)}</pre>
+      <h4>结果检验</h4><ul>${(detail.checks || []).map((check) => `<li>${escapeHtml(check)}</li>`).join("")}</ul>
+      <h4>易错点</h4><ul>${(detail.pitfalls || []).map((pitfall) => `<li>${escapeHtml(pitfall)}</li>`).join("")}</ul>
+      <h4>与母题的差异</h4><p>${escapeHtml(detail.parentDifference || variant.changeSummary || variant.relationToParent)}</p>
+    </section>`;
+  }
+
+  function renderVariantSummary(set, progress) {
+    const records = progress.results.map((item) => item.record).filter(Boolean);
+    const independent = records.filter((record) => record.verificationStatus === "verified-transfer");
+    const reverse = records.find((record) => record.variantRole === "reverse");
+    let conclusion = `已完成 ${records.length}/${progress.total} 道专项变式。`;
+    if (independent.length === records.length) conclusion += " 本组均为低提示独立正确，可作为本次迁移证据。";
+    else if (reverse && reverse.verificationStatus !== "verified-transfer") conclusion += " 母题相关练习已完成，但逆向设问仍依赖提示或需要订正。";
+    else conclusion += " 当前仅形成练习记录；需后续复测，不据此形成长期能力结论。";
+    return `<section class="lab-card variant-set-summary">
+      <span class="lab-section-index">SPECIALIZED TRAINING COMPLETE</span>
+      <h3>专项训练完成</h3><p>${escapeHtml(conclusion)}</p>
+      <div class="variant-progress-list">${progress.results.map((item) => `<article><span>${escapeHtml(item.variant.variantRoleLabel)}</span><strong>${escapeHtml(item.record?.gradingStatus || "未完成")}</strong><small>提示 ${item.record?.hintLevel ?? "-"}/5 · ${item.record?.verificationStatus === "verified-transfer" ? "已核验迁移证据" : "练习记录"}</small></article>`).join("")}</div>
+      <p class="tool-help">专项结束后继续使用既有间隔复习；不会立即无限推送同模型题。</p>
+      <button class="lab-primary-button" data-lab-tab="review" type="button">查看复习安排</button>
+    </section>`;
+  }
+
+  function renderApprovedVariantTeacherPreview(parent, set) {
+    return `<section class="variant-training-layout variant-teacher-preview">
+      <aside class="lab-card variant-parent-card"><span class="lab-section-index">PARENT PROBLEM</span><h3>${escapeHtml(parent.title)}</h3><p>${escapeHtml(parent.content)}</p><p><strong>知识点：</strong>${escapeHtml(parent.topic)} · <strong>难度：</strong>${escapeHtml(parent.difficulty)}</p></aside>
+      <main class="lab-card"><div class="lab-card-head"><div><span>VALIDATED VARIANT SET</span><h3>专项变式并排预览</h3></div><strong>${set.variants.length} 道</strong></div>
+        <div class="variant-review-grid">${set.variants.map((variant) => `<section><span>${escapeHtml(variant.variantRoleLabel)}</span><h4>${escapeHtml(variant.title)}</h4><p>${escapeHtml(variant.content)}</p><p><strong>改变：</strong>${escapeHtml(variant.changeSummary)}</p><p><strong>答案：</strong>${escapeHtml(variant.answer)}</p><details><summary>详细解法</summary>${renderVariantSolutionDetail(variant)}</details><small>质量门禁：${variant.validation?.passed ? "通过" : "未通过"} · 来源：${escapeHtml(variant.source)}</small></section>`).join("")}</div>
+        <div class="teacher-inline-actions"><button class="lab-primary-button" data-lab-action="add-approved-variant-set" data-set-id="${escapeHtml(set.id)}" type="button">加入作业预览</button><button class="lab-secondary-button" data-lab-action="choose-question" type="button">更换母题</button></div>
+      </main>
+    </section>`;
+  }
+
   function renderTransfer() {
     const question = getQuestion(lab.selectedQuestionId);
-    if (!question) return renderQuestionPicker("先选择一道母题，再进行跨情境迁移");
-    const variants = engine.transferVariants(question);
-    const records = lab.state.experimentRecords.filter((record) => {
-      return record.type === "transfer" && record.questionId === question.id && record.profileId === lab.state.activeProfileId;
-    });
-    return `
-      <section class="lab-two-column transfer-lab">
-        ${lab.lastCompleted?.attempt?.questionId === question.id && !lab.lastCompleted.review ? `
-          <div class="transfer-required-banner">
-            <strong>母题已完成，还差一道迁移练习</strong>
-            <span>完成下方任一变式后，系统才安排下一次间隔复习；迁移回答仅记录完成证据，仍需人工核对质量。</span>
-          </div>` : ""}
-        <div class="lab-card">
-          <button class="lab-back-button" data-lab-action="choose-question" type="button">← 更换母题</button>
-          <span class="lab-section-index">SOURCE PROBLEM</span>
-          <h3>${escapeHtml(question.title)}</h3>
-          <p class="transfer-source-stem">${escapeHtml(question.content)}</p>
-          <div class="tutor-points"><strong>核心结构</strong><span>${escapeHtml(question.topic)}</span>${(question.examPoints || []).map((point) => `<span>${escapeHtml(point)}</span>`).join("")}</div>
-          <button class="lab-secondary-button" data-start-question="${escapeHtml(question.id)}" type="button">先完成母题分步训练</button>
-        </div>
-        <div class="transfer-variants">
-          ${variants.map((variant, index) => {
-            const record = records.find((item) => item.variantIndex === index);
-            return `
-              <article class="lab-card ${record ? "completed" : ""}">
-                <span>${escapeHtml(variant.type)}</span>
-                <h3>${escapeHtml(variant.title)}</h3>
-                <p>${escapeHtml(variant.prompt)}</p>
-                <label>
-                  <span>写出新情境中的模型、适用条件和关键方程</span>
-                  <textarea id="transferResponse${index}" rows="4">${escapeHtml(record?.response || "")}</textarea>
-                </label>
-                <button data-save-transfer="${index}" type="button">${record ? "更新迁移记录" : "保存迁移记录"}</button>
-              </article>`;
-          }).join("")}
-        </div>
-      </section>`;
+    if (!question) return renderQuestionPicker("先选择一道母题，再开始专项变式训练");
+    const set = activeVariantSet(question);
+    if (lab.variantGenerationStatus) return `<section class="lab-card variant-loading"><h3>专项变式训练</h3><p>${escapeHtml(lab.variantGenerationStatus)}</p></section>`;
+    if (!set || set.variants.length < 2) return `<section class="lab-two-column transfer-lab">
+      <div class="lab-card"><button class="lab-back-button" data-lab-action="choose-question" type="button">← 更换母题</button><span class="lab-section-index">SOURCE PROBLEM</span><h3>${escapeHtml(question.title)}</h3><p class="transfer-source-stem">${escapeHtml(question.content)}</p></div>
+      <div class="lab-card transfer-empty-state"><h3>生成完整专项变式</h3><p>系统优先复用已审核题模，独立检查题干、答案、解析、数值和单位。无法验证时不会把文字任务当成试题。</p><button class="lab-primary-button" data-lab-action="generate-variant-set" type="button">生成 2—3 道完整变式</button></div>
+    </section>`;
+    if (set.status !== "approved") return `<section class="lab-card variant-review-required"><h3>变式题组等待审核</h3><p>${set.generationMode === "controlled-ai-gateway" ? "AI 生成题必须由教师审核后才能进入学生正式训练。" : "该题组未通过正式发布条件。"}</p>${isTeacherRole() ? `<button class="lab-primary-button" data-lab-action="open-variant-review" data-set-id="${escapeHtml(set.id)}" type="button">立即审核</button>` : ""}</section>`;
+    if (isTeacherRole()) return renderApprovedVariantTeacherPreview(question, set);
+    if (!lab.variantTraining || lab.variantTraining.setId !== set.id) {
+      lab.variantTraining = { setId: set.id, order: engine.trainableVariants(set).map((variant) => variant.id), index: 0, session: null, summaryVisible: false };
+    }
+    const { variant, progress } = currentVariantContext(question);
+    if (!variant && progress?.complete) return renderVariantSummary(set, progress);
+    if (!variant) return `<section class="lab-card"><p>变式题组状态无法恢复，请重新进入。</p></section>`;
+    const session = lab.variantTraining.session;
+    const hints = engine.createHintLadder(variant);
+    return `<section class="variant-training-layout">
+      <aside class="lab-card variant-parent-card"><span class="lab-section-index">PARENT PROBLEM</span><h3>${escapeHtml(question.title)}</h3><p>${escapeHtml(question.content)}</p><div class="tutor-points"><strong>核心结构</strong><span>${escapeHtml(question.topic)}</span></div><small>母题仅用于比较；当前作答对象是右侧完整变式题。</small></aside>
+      <main class="variant-exam-workbench">
+        <header class="lab-card variant-progress-header"><div><span>专项变式 ${progress.completed + 1}/${progress.total}</span><strong>${escapeHtml(variant.variantRoleLabel)}</strong></div><time id="variantSessionTimer">${formatDuration((Date.now() - session.startedAt) / 1000)}</time></header>
+        <section class="lab-card variant-question-card"><div class="tutor-meta"><span>${escapeHtml(variant.grade)}</span><span>${escapeHtml(variant.topic)}</span><span>${escapeHtml(variant.difficulty)} · ${escapeHtml(variant.questionType)}</span></div><h3>${escapeHtml(variant.title)}</h3><div class="tutor-stem">${escapeHtml(variant.content)}</div><p class="variant-change-summary"><strong>本题变化：</strong>${escapeHtml(variant.changeSummary)}</p>${variant.visualSpec && window.PHYSICS_VISUALS?.renderVisualSpec ? window.PHYSICS_VISUALS.renderVisualSpec(variant.visualSpec) : ""}</section>
+        <section class="lab-card variant-answer-card"><div class="lab-card-head"><div><span>INDEPENDENT RESPONSE</span><h3>先独立作答</h3></div><strong>提示 ${session.hintLevel}/5</strong></div>${renderResponseInput(variant, session)}
+          <div class="variant-hint-row">${hints.slice(0, 4).map((hint) => `<button data-variant-hint-level="${hint.level}" type="button"${hint.level > session.hintLevel + 1 ? " disabled" : ""}>${session.hintLevel >= hint.level ? escapeHtml(hint.text) : `${hint.level}级提示`}</button>`).join("")}<button data-variant-reveal-solution type="button">查看完整解答</button></div>
+          <div class="answer-actions"><button class="lab-primary-button" data-lab-action="grade-variant-answer" type="button">提交本题</button></div>
+          ${session.grading ? `${renderGrading(variant, session.grading)}${renderVariantSolutionDetail(variant)}<div class="reflection-grid"><label><span>本题主要错因</span><select id="labErrorType">${["", ...engine.errorTypeDefinitions.map((item) => item.label)].map((value) => `<option value="${escapeHtml(value)}"${session.errorType === value ? " selected" : ""}>${escapeHtml(value || "本次无错误或待判断")}</option>`).join("")}</select></label><label><span>作答后置信度</span><input id="confidenceAfter" type="range" min="1" max="5" value="${session.confidenceAfter}"></label><label class="wide"><span>一句话说明本题规律与母题差异</span><textarea id="labSelfExplanation" rows="3">${escapeHtml(session.selfExplanation)}</textarea></label></div><button class="lab-complete-button" data-lab-action="complete-variant-attempt" type="button">保存本题并继续</button>` : ""}
+        </section>
+      </main>
+    </section>`;
   }
 
   function renderReview() {
@@ -2344,6 +2466,15 @@
       detail: "这是题库来源与解析审核，不是学生作答批阅。",
       action: "审核内容"
     });
+    const pendingVariantSets = (lab.state.variantSets || []).filter((set) => set.status === "pending-review" && set.stale !== true);
+    if (pendingVariantSets.length) items.unshift({
+      profileId: lab.managedStudentId || lab.state.activeProfileId,
+      tone: "warning",
+      actionId: "variant.review",
+      title: `待审核 AI 变式 ${pendingVariantSets.length} 组`,
+      detail: "AI 变式尚未进入学生训练；可在今日页直接通过、退回、编辑或重新生成。",
+      action: "立即审核"
+    });
     return items.slice(0, 12);
   }
 
@@ -2351,8 +2482,35 @@
     return items.length ? items.map((item) => `
       <article class="teacher-todo-item todo-${escapeHtml(item.tone)}">
         <div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span></div>
-        <button class="lab-primary-button" data-lab-action="select-student" data-profile-id="${escapeHtml(item.profileId)}" data-todo-action="${escapeHtml(item.action)}" data-action-id="${escapeHtml(item.actionId || "student.open")}" type="button">${escapeHtml(item.action)}</button>
+        <button class="lab-primary-button" data-lab-action="${item.actionId === "variant.review" ? "open-variant-review-queue" : "select-student"}" data-profile-id="${escapeHtml(item.profileId)}" data-todo-action="${escapeHtml(item.action)}" data-action-id="${escapeHtml(item.actionId || "student.open")}" type="button">${escapeHtml(item.action)}</button>
       </article>`).join("") : `<p class="teacher-todo-empty">今日没有需要立即处理的待办；仍可从下方高级工具查看完整记录。</p>`;
+  }
+
+  function renderVariantReviewQueue(questions) {
+    const pending = (lab.state.variantSets || []).filter((set) => set.status === "pending-review" && set.stale !== true);
+    if (!pending.length) return "";
+    const questionMap = new Map(questions.map((question) => [question.id, question]));
+    return `<section class="lab-card variant-review-queue" id="variantReviewQueue">
+      <div class="lab-card-head"><div><span>AI VARIANT REVIEW</span><h3>待审核 AI 变式</h3></div><strong>${pending.length} 组</strong></div>
+      <p>每组先显示母题、改变内容、答案、解法和独立校验结果。教师确认前不会下发。</p>
+      ${pending.map((set) => {
+        const parent = questionMap.get(set.parentQuestionId);
+        return `<article class="variant-review-set" data-variant-review-set="${escapeHtml(set.id)}">
+          <header><div><span>母题</span><h4>${escapeHtml(parent?.title || set.parentQuestionId)}</h4><p>${escapeHtml(parent?.content || "母题正文未在当前设备加载")}</p></div><strong>${escapeHtml(set.generationMode === "controlled-ai-gateway" ? "应用内 AI 生成变式" : "本地题模")}</strong></header>
+          <div class="variant-review-grid">${set.variants.map((variant) => `<section data-variant-edit-card="${escapeHtml(variant.id)}">
+            <span>${escapeHtml(variant.variantRoleLabel)}</span>
+            <label>标题<input data-variant-edit-field="title" value="${escapeHtml(variant.title)}"></label>
+            <label>完整题干<textarea data-variant-edit-field="content" rows="5">${escapeHtml(variant.content)}</textarea></label>
+            <label>标准答案<textarea data-variant-edit-field="answer" rows="3">${escapeHtml(variant.answer)}</textarea></label>
+            <label>完整解析<textarea data-variant-edit-field="solution" rows="6">${escapeHtml(variant.solution)}</textarea></label>
+            <p><strong>变化：</strong>${escapeHtml(variant.changeSummary)}</p>
+            <p><strong>校验：</strong>${variant.validation?.passed ? "关键门禁通过" : `未通过：${escapeHtml((variant.validation?.failedReasons || []).join("；"))}`}</p>
+            <div class="teacher-inline-actions"><button data-variant-review="approve" data-set-id="${escapeHtml(set.id)}" data-variant-id="${escapeHtml(variant.id)}" type="button">通过</button><button data-variant-review="save-edit" data-set-id="${escapeHtml(set.id)}" data-variant-id="${escapeHtml(variant.id)}" type="button">保存编辑</button><button data-variant-review="regenerate-one" data-set-id="${escapeHtml(set.id)}" data-variant-id="${escapeHtml(variant.id)}" type="button">重新生成这一题</button><button data-variant-review="reject" data-set-id="${escapeHtml(set.id)}" data-variant-id="${escapeHtml(variant.id)}" type="button">退回</button></div>
+          </section>`).join("")}</div>
+          <footer class="teacher-inline-actions"><button class="lab-primary-button" data-variant-review="approve-all" data-set-id="${escapeHtml(set.id)}" type="button">全部通过</button><button class="lab-primary-button" data-variant-review="approve-and-add" data-set-id="${escapeHtml(set.id)}" type="button">全部通过并加入作业</button><button class="lab-secondary-button" data-variant-review="regenerate" data-set-id="${escapeHtml(set.id)}" type="button">重新生成本组</button></footer>
+        </article>`;
+      }).join("")}
+    </section>`;
   }
 
   function renderQuestionBankCoverage(coverage) {
@@ -2585,6 +2743,23 @@
     </section>`;
   }
 
+  function renderAssignmentPreview() {
+    const preview = lab.assignmentPreview;
+    if (!preview) return "";
+    const allQuestions = new Map(getQuestions().map((question) => [question.id, question]));
+    (lab.state.variantSets || []).forEach((set) => set.variants.forEach((variant) => allQuestions.set(variant.id, variant)));
+    return `<section class="targeted-plan-preview assignment-variant-preview">
+      <header><div><span>教师确认前不发布</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount} 题</strong></header>
+      <p><strong>母题：</strong>${preview.parentQuestionIds.length} 道 · <strong>完整变式：</strong>${preview.variantQuestionIds.length} 道 · <strong>适用范围：</strong>${escapeHtml(preview.grade)} / ${escapeHtml(preview.topic)}</p>
+      <ol>${preview.questionIds.map((id) => {
+        const question = allQuestions.get(id);
+        return `<li><div><strong>${escapeHtml(question?.title || id)}</strong><span>${escapeHtml(question?.difficulty || "未标注")} · ${escapeHtml(question?.variantRoleLabel || "母题")} · 来源：${escapeHtml(question?.source || "来源未标注")}</span>${question?.validation ? `<small>质量门禁：${question.validation.passed ? "通过" : "未通过"}</small>` : ""}</div></li>`;
+      }).join("")}</ol>
+      <p class="tool-help">只包含完整题干和已通过质量门禁的变式；生成结果不会自动发布。教师确认后才加入待发布作业。</p>
+      <div class="teacher-inline-actions"><button class="lab-primary-button" data-lab-action="confirm-assignment-preview" type="button">确认并加入待发布作业</button><button class="lab-secondary-button" data-lab-action="discard-assignment-preview" type="button">取消</button></div>
+    </section>`;
+  }
+
   function handleReviewShortcut(event) {
     if (!/[123]/.test(event.key) || event.altKey || event.ctrlKey || event.metaKey) return;
     const article = event.target.closest?.("[data-review-attempt]");
@@ -2631,6 +2806,7 @@
       </section>
       ${renderDataHealth(dataHealthIssues)}
       ${renderManualReviewQueue(lab.state, questions, profile?.id)}
+      ${renderVariantReviewQueue(questions)}
     </section>`;
   }
 
@@ -2891,10 +3067,21 @@
               <label><span>年级</span><select id="assignmentGrade"><option>全部</option>${["八年级", "九年级", "高一", "高二", "高三"].map((grade) => `<option${grade === profile?.grade ? " selected" : ""}>${grade}</option>`).join("")}</select></label>
               <label><span>知识点</span><select id="assignmentTopic"><option>全部</option>${topics.map((topic) => `<option>${escapeHtml(topic)}</option>`).join("")}</select></label>
               <label><span>难度</span><select id="assignmentDifficulty"><option>全部</option><option>基础</option><option>进阶</option><option>挑战</option></select></label>
-              <label><span>题量</span><input id="assignmentCount" type="number" min="1" max="50" value="10"></label>
+              <label><span>母题数量</span><input id="assignmentCount" type="number" min="1" max="20" value="5"></label>
+              <label><span><input id="assignmentIncludeVariants" type="checkbox" checked> 包含完整变式训练</span></label>
+              <label><span>每道母题变式数</span><select id="assignmentVariantCount"><option value="2">2 道</option><option value="3" selected>3 道</option></select></label>
+              <label><span><input id="assignmentIncludeWrong" type="checkbox"> 优先纳入当前学生错题</span></label>
+              <label><span><input id="assignmentIncludeReverse" type="checkbox" checked> 包含逆向题</span></label>
+              <label><span><input id="assignmentIncludeContext" type="checkbox" checked> 包含情境迁移题</span></label>
+              <label><span>基础比例</span><input id="assignmentBasicRatio" type="number" min="0" max="100" value="50"></label>
+              <label><span>进阶比例</span><input id="assignmentAdvancedRatio" type="number" min="0" max="100" value="30"></label>
+              <label><span>挑战比例</span><input id="assignmentChallengeRatio" type="number" min="0" max="100" value="20"></label>
+              <label class="wide"><span>调用常用参数</span><span class="teacher-inline-actions"><select id="assignmentPresetSelect"><option value="">请选择已保存参数</option>${(lab.state.variantPresets || []).map((preset) => `<option value="${escapeHtml(preset.id)}">${escapeHtml(preset.name)}</option>`).join("")}</select><button class="lab-secondary-button" data-lab-action="apply-assignment-preset" type="button">应用</button></span></label>
+              <label class="wide"><span>保存为常用参数（可选）</span><input id="assignmentPresetName" maxlength="80" placeholder="例如：九年级错题滚动训练"></label>
             </div>
             <button class="lab-primary-button" data-lab-action="generate-assignment" type="button">生成待审核作业</button>
-            <p class="tool-help">只选取完整题干记录；只有来源链接的真题索引不会被混入试卷。</p>
+            <p class="tool-help">只选取完整题干记录；只有来源链接的真题索引不会被混入试卷。AI 题必须先通过教师审核，组卷不会自动批准。</p>
+            ${renderAssignmentPreview()}
           </section>
         </div>` : ""}
 
@@ -3064,11 +3251,16 @@
       lab.panel?.scrollTo({ top: 0, behavior: "auto" });
       return;
     }
+    const variantReview = event.target.closest("[data-variant-review]");
+    if (variantReview && isTeacherRole()) {
+      await handleVariantReview(variantReview);
+      return;
+    }
     const actionTarget = event.target.closest("[data-lab-action]");
     const tabTarget = event.target.closest("[data-lab-tab]");
     const startQuestion = event.target.closest("[data-start-question]");
     if (actionTarget) {
-      handleAction(actionTarget.dataset.labAction, actionTarget);
+      await handleAction(actionTarget.dataset.labAction, actionTarget);
       return;
     }
     if (tabTarget) {
@@ -3106,6 +3298,30 @@
         }
       }));
       renderPanel({ scrollTo: `[data-hint-level="${level}"]` });
+      return;
+    }
+    const variantHint = event.target.closest("[data-variant-hint-level]");
+    if (variantHint && lab.variantTraining?.session) {
+      captureSessionForm();
+      const level = Number(variantHint.dataset.variantHintLevel);
+      if (level <= lab.variantTraining.session.hintLevel + 1) {
+        lab.variantTraining.session.hintLevel = Math.max(lab.variantTraining.session.hintLevel, level);
+        renderPanel({ scrollTo: ".variant-hint-row" });
+      }
+      return;
+    }
+    const revealVariant = event.target.closest("[data-variant-reveal-solution]");
+    if (revealVariant && lab.variantTraining?.session) {
+      captureSessionForm();
+      lab.variantTraining.session.hintLevel = 5;
+      lab.variantTraining.session.solutionViewed = true;
+      lab.variantTraining.session.grading = lab.variantTraining.session.grading || {
+        status: "review-required",
+        score: null,
+        summary: "已主动查看完整解答；本次不能计为独立完成。",
+        issues: []
+      };
+      renderPanel({ scrollTo: ".grading-result" });
       return;
     }
     const diagnostic = event.target.closest("[data-diagnostic-id]");
@@ -3164,7 +3380,7 @@
     }
   }
 
-  function handleAction(action, target) {
+  async function handleAction(action, target) {
     if (action === "close") closeLab();
     else if (action === "choose-question") {
       captureSessionForm();
@@ -3173,6 +3389,15 @@
       renderPanel();
     } else if (action === "submit-diagnostic") submitDiagnostic();
     else if (action === "grade-answer") gradeSessionAnswer();
+    else if (action === "generate-variant-set") await generateVariantSetAction();
+    else if (action === "grade-variant-answer") gradeVariantAnswer();
+    else if (action === "complete-variant-attempt") completeVariantAttempt();
+    else if (action === "open-variant-review") openVariantReview(target?.dataset.setId);
+    else if (action === "add-approved-variant-set") addApprovedVariantSetToAssignment(target?.dataset.setId);
+    else if (action === "open-variant-review-queue") {
+      lab.teacherView = "today";
+      renderPanel({ scrollTo: "#variantReviewQueue" });
+    }
     else if (action === "complete-attempt") completeAttempt();
     else if (action === "dismiss-completed") {
       lab.lastCompleted = null;
@@ -3185,7 +3410,10 @@
     else if (action === "fit-graph") fitGraphTool();
     else if (action === "clear-sketch") clearSketch();
     else if (action === "export-sketch") exportSketch();
-    else if (action === "generate-assignment") generateAssignment();
+    else if (action === "generate-assignment") await generateAssignment();
+    else if (action === "apply-assignment-preset") applyAssignmentPreset();
+    else if (action === "confirm-assignment-preview") confirmAssignmentPreview();
+    else if (action === "discard-assignment-preview") { lab.assignmentPreview = null; renderPanel(); }
     else if (action === "preview-tiered-assignment") previewTieredAssignment();
     else if (action === "confirm-tiered-assignment") confirmTieredAssignment();
     else if (action === "discard-tiered-assignment") {
@@ -3273,7 +3501,7 @@
   function deleteProfileLearningData() {
     const profile = engine.activeProfile(lab.state);
     if (!profile || !window.confirm(`删除“${profile.name}”的作答、诊断、试卷、复习、方案和实验记录？学生基本档案将保留。`)) return;
-    ["attempts", "diagnosticAttempts", "examRecords", "growthRecords", "experimentRecords", "learningPlans", "assessmentSessions", "broadCoverageChecks"].forEach((name) => {
+    ["attempts", "variantAttempts", "diagnosticAttempts", "examRecords", "growthRecords", "experimentRecords", "learningPlans", "assessmentSessions", "broadCoverageChecks"].forEach((name) => {
       lab.state[name] = (lab.state[name] || []).filter((record) => record.profileId !== profile.id);
     });
     Object.keys(lab.state.reviews || {}).forEach((key) => {
@@ -3340,10 +3568,11 @@
 
   function handleInput(event) {
     if (event.target.id === "labFinalAnswer") {
-      if (!lab.session) return;
-      lab.session.finalAnswer = event.target.value;
-      if (lab.session.grading) {
-        lab.session.grading = null;
+      const session = lab.tab === "transfer" ? lab.variantTraining?.session : lab.session;
+      if (!session) return;
+      session.finalAnswer = event.target.value;
+      if (session.grading) {
+        session.grading = null;
         lab.content.querySelector(".grading-result")?.remove();
         const complete = lab.content.querySelector('[data-lab-action="complete-attempt"]');
         if (complete) complete.disabled = true;
@@ -3352,11 +3581,13 @@
       const value = document.getElementById("diagnosticConfidenceValue");
       if (value) value.textContent = `${event.target.value}/5`;
     } else if (event.target.id === "confidenceBefore") {
-      if (lab.session) lab.session.confidenceBefore = Number(event.target.value);
+      const session = lab.tab === "transfer" ? lab.variantTraining?.session : lab.session;
+      if (session) session.confidenceBefore = Number(event.target.value);
       const value = document.getElementById("confidenceBeforeValue");
       if (value) value.textContent = `${event.target.value}/5`;
     } else if (event.target.id === "confidenceAfter") {
-      if (lab.session) lab.session.confidenceAfter = Number(event.target.value);
+      const session = lab.tab === "transfer" ? lab.variantTraining?.session : lab.session;
+      if (session) session.confidenceAfter = Number(event.target.value);
       const value = document.getElementById("confidenceAfterValue");
       if (value) value.textContent = `${event.target.value}/5`;
     } else if (event.target.id === "labQuestionSearch") {
@@ -3394,14 +3625,15 @@
 
   function handleChange(event) {
     if (event.target.matches("[data-lab-choice]")) {
-      if (!lab.session) return;
+      const session = lab.tab === "transfer" ? lab.variantTraining?.session : lab.session;
+      if (!session) return;
       const values = [...lab.content.querySelectorAll("[data-lab-choice]:checked")]
         .map((input) => input.value)
         .sort();
-      lab.session.finalAnswer = values.join("");
-      lab.session.grading = null;
+      session.finalAnswer = values.join("");
+      session.grading = null;
       const hidden = document.getElementById("labFinalAnswer");
-      if (hidden) hidden.value = lab.session.finalAnswer;
+      if (hidden) hidden.value = session.finalAnswer;
     } else if (event.target.id === "labProfileSelect") {
       if (event.target.value === "__new__") {
         const name = window.prompt("请输入本机档案名称（不要填写敏感身份信息）", "新学生");
@@ -3506,16 +3738,17 @@
   }
 
   function captureSessionForm() {
-    if (!lab.session || lab.tab !== "tutor") return;
+    const session = lab.tab === "transfer" ? lab.variantTraining?.session : lab.session;
+    if (!session || !["tutor", "transfer"].includes(lab.tab)) return;
     const value = (id) => document.getElementById(id)?.value;
-    lab.session.finalAnswer = value("labFinalAnswer") ?? lab.session.finalAnswer;
-    lab.session.errorType = value("labErrorType") ?? lab.session.errorType;
-    lab.session.reflection = value("labReflection") ?? lab.session.reflection;
-    lab.session.selfExplanation = value("labSelfExplanation") ?? lab.session.selfExplanation;
-    lab.session.confidenceBefore = Number(value("confidenceBefore") || lab.session.confidenceBefore);
-    lab.session.confidenceAfter = Number(value("confidenceAfter") || lab.session.confidenceAfter);
-    Object.keys(lab.session.model).forEach((key) => {
-      lab.session.model[key] = value(`model-${key}`) ?? lab.session.model[key];
+    session.finalAnswer = value("labFinalAnswer") ?? session.finalAnswer;
+    session.errorType = value("labErrorType") ?? session.errorType;
+    session.reflection = value("labReflection") ?? session.reflection;
+    session.selfExplanation = value("labSelfExplanation") ?? session.selfExplanation;
+    session.confidenceBefore = Number(value("confidenceBefore") || session.confidenceBefore);
+    session.confidenceAfter = Number(value("confidenceAfter") || session.confidenceAfter);
+    Object.keys(session.model).forEach((key) => {
+      session.model[key] = value(`model-${key}`) ?? session.model[key];
     });
   }
 
@@ -3596,6 +3829,288 @@
     renderPanel({ scrollTo: ".grading-result" });
   }
 
+  async function generateVariantSetAction() {
+    const question = getQuestion(lab.selectedQuestionId);
+    if (!question) return;
+    try {
+      const set = await prepareVariantTraining(question, { allowAi: isTeacherRole(), count: 3 });
+      if (!set?.variants?.length) {
+        showLabMessage(set?.message || "当前没有可验证的完整变式题", true);
+      } else if (set.status === "approved") {
+        showLabMessage(`已准备 ${set.variants.length} 道通过质量门禁的完整变式。`, false);
+      } else {
+        showLabMessage("AI 变式已进入教师审核队列，审核前不会提供给学生正式训练。", false);
+      }
+    } catch (error) {
+      lab.variantGenerationStatus = "";
+      showLabMessage(error.message || "完整变式生成失败。", true);
+    }
+    renderPanel();
+  }
+
+  function gradeVariantAnswer() {
+    captureSessionForm();
+    const parent = getQuestion(lab.selectedQuestionId);
+    const { variant } = currentVariantContext(parent);
+    const session = lab.variantTraining?.session;
+    if (!variant || !session) return;
+    if (!session.finalAnswer.trim()) {
+      showLabMessage("请先独立填写答案，再提交本题。", true);
+      document.getElementById("labFinalAnswer")?.focus();
+      return;
+    }
+    const grading = engine.gradeFinalAnswer(variant, session.finalAnswer);
+    grading.verification = engine.verifyPhysicsAnswer(variant, session.finalAnswer, session.model, grading);
+    session.grading = grading;
+    session.submittedAt = new Date().toISOString();
+    renderPanel({ scrollTo: ".grading-result" });
+  }
+
+  function adaptRemainingVariantOrder(set, completedRecord) {
+    if (!lab.variantTraining || lab.variantTraining.index !== 0) return;
+    const independentCorrect = completedRecord.verificationStatus === "verified-transfer";
+    const remaining = lab.variantTraining.order.slice(1).map((id) => set.variants.find((variant) => variant.id === id)).filter(Boolean);
+    const difficultyRank = { "基础": 0, "进阶": 1, "挑战": 2 };
+    if (!independentCorrect) {
+      remaining.sort((first, second) => {
+        const firstSameModel = first.modelDefinitionId === set.variants[0]?.modelDefinitionId ? 0 : 1;
+        const secondSameModel = second.modelDefinitionId === set.variants[0]?.modelDefinitionId ? 0 : 1;
+        return firstSameModel - secondSameModel
+          || (difficultyRank[first.difficulty] ?? 1) - (difficultyRank[second.difficulty] ?? 1)
+          || first.sequence - second.sequence;
+      });
+      lab.variantTraining.order = [lab.variantTraining.order[0], ...remaining.map((variant) => variant.id)];
+    }
+  }
+
+  function completeVariantAttempt() {
+    captureSessionForm();
+    const parent = getQuestion(lab.selectedQuestionId);
+    const { set, variant } = currentVariantContext(parent);
+    const session = lab.variantTraining?.session;
+    if (!set || !variant || !session?.grading) return;
+    if (session.selfExplanation.trim().length < 8) {
+      showLabMessage("请先用一句话说明本题规律、适用条件或与母题的差异。", true);
+      document.getElementById("labSelfExplanation")?.focus();
+      return;
+    }
+    if (["incorrect", "partial"].includes(session.grading.status) && !session.errorType) {
+      showLabMessage("请先选择本题最主要的错误类型。", true);
+      document.getElementById("labErrorType")?.focus();
+      return;
+    }
+    try {
+      const durationSeconds = Math.max(1, Math.round((Date.now() - session.startedAt) / 1000));
+      const result = engine.recordVariantAttempt(lab.state, {
+        variantSetId: set.id,
+        variantQuestionId: variant.id,
+        startedAt: new Date(session.startedAt).toISOString(),
+        completedAt: new Date().toISOString(),
+        durationSeconds,
+        confidenceBefore: session.confidenceBefore,
+        confidenceAfter: session.confidenceAfter,
+        hintLevel: session.hintLevel,
+        finalAnswer: session.finalAnswer,
+        grading: session.grading,
+        errorType: session.errorType,
+        reflection: session.reflection,
+        selfExplanation: session.selfExplanation,
+        model: session.model,
+        solutionViewed: session.solutionViewed
+      });
+      adaptRemainingVariantOrder(set, result.variantAttempt);
+      lab.variantTraining.index += 1;
+      lab.variantTraining.session = null;
+      saveLearningState();
+      document.dispatchEvent(new CustomEvent("physics-learning-event", {
+        detail: {
+          type: "variant-attempt-completed",
+          questionId: variant.id,
+          parentQuestionId: parent.id,
+          variantSetId: set.id,
+          variantRole: variant.variantRole,
+          gradingStatus: result.variantAttempt.gradingStatus,
+          hintLevel: result.variantAttempt.hintLevel,
+          verificationStatus: result.variantAttempt.verificationStatus,
+          durationSeconds
+        }
+      }));
+      renderPanel({ preserveScroll: false });
+    } catch (error) {
+      showLabMessage(error.message || "变式作答保存失败。", true);
+    }
+  }
+
+  function openVariantReview(setId) {
+    if (!isTeacherRole()) return;
+    const set = (lab.state.variantSets || []).find((item) => item.id === setId);
+    if (!set) return;
+    lab.teacherView = "today";
+    lab.tab = "teacher";
+    renderPanel({ scrollTo: `[data-variant-review-set="${setId}"]` });
+  }
+
+  function addApprovedVariantSetToAssignment(setId) {
+    if (!isTeacherRole()) return;
+    const set = (lab.state.variantSets || []).find((item) => item.id === setId && item.status === "approved" && item.stale !== true);
+    const parent = set ? getQuestion(set.parentQuestionId) : null;
+    const variants = set?.variants?.filter((variant) => variant.validation?.passed === true
+      && ["system-validated", "teacher-approved"].includes(variant.approvalStatus)) || [];
+    if (!set || !parent || variants.length < 2) {
+      showLabMessage("该题组尚未满足加入作业的审核与质量门禁。", true);
+      return;
+    }
+    lab.assignmentPreview = {
+      id: engine.createId("assignment"),
+      title: `${parent.topic || "物理"}专项变式训练`,
+      stage: parent.stage,
+      grade: parent.grade,
+      topic: parent.topic,
+      difficulty: "分层",
+      parentQuestionIds: [parent.id],
+      variantSetIds: [set.id],
+      variantQuestionIds: variants.map((variant) => variant.id),
+      questionIds: [parent.id, ...variants.map((variant) => variant.id)],
+      questionCount: variants.length + 1,
+      targetProfileIds: lab.managedStudentId ? [lab.managedStudentId] : [],
+      knowledgePointIds: [parent.knowledgePointId || parent.topicKey || parent.topic].filter(Boolean),
+      reviewStatus: "教师待确认",
+      publishStatus: "preview-only",
+      createdAt: new Date().toISOString()
+    };
+    lab.teacherView = "manage";
+    lab.tab = "teacher";
+    renderPanel({ scrollTo: ".assignment-variant-preview" });
+  }
+
+  async function handleVariantReview(target) {
+    if (!isTeacherRole()) {
+      showLabMessage("只有已解锁的教师模式可以审核变式题。", true);
+      return;
+    }
+    const action = String(target?.dataset.variantReview || "");
+    const setId = String(target?.dataset.setId || "");
+    const variantId = String(target?.dataset.variantId || "");
+    const set = (lab.state.variantSets || []).find((item) => item.id === setId);
+    const parent = set ? getQuestion(set.parentQuestionId) : null;
+    if (!set || !parent) {
+      showLabMessage("未找到待审核题组或母题，未执行操作。", true);
+      return;
+    }
+    try {
+      if (action === "approve" || action === "approve-all" || action === "approve-and-add" || action === "reject") {
+        const variantIds = ["approve-all", "approve-and-add"].includes(action) ? set.variants.map((variant) => variant.id) : [variantId];
+        engine.decideVariantReview(lab.state, set.id, {
+          action: action === "reject" ? "reject" : "approve",
+          variantIds,
+          reviewedBy: lab.state.profiles?.find((profile) => profile.id === lab.state.activeProfileId)?.name || "local-teacher"
+        });
+        saveLearningState();
+        showLabMessage(action === "reject" ? "已退回该变式，未进入正式训练。" : "审核结果已保存。", false);
+        if (action === "approve-and-add") {
+          lab.assignmentPreview = {
+            id: engine.createId("assignment"),
+            title: `${parent.topic || "物理"}专项变式训练`,
+            stage: parent.stage,
+            grade: parent.grade,
+            topic: parent.topic,
+            difficulty: "分层",
+            parentQuestionIds: [parent.id],
+            variantSetIds: [set.id],
+            variantQuestionIds: set.variants.map((variant) => variant.id),
+            questionIds: [parent.id, ...set.variants.map((variant) => variant.id)],
+            questionCount: set.variants.length + 1,
+            targetProfileIds: lab.managedStudentId ? [lab.managedStudentId] : [],
+            knowledgePointIds: [parent.knowledgePointId || parent.topicKey || parent.topic].filter(Boolean),
+            reviewStatus: "教师待确认",
+            publishStatus: "preview-only",
+            createdAt: new Date().toISOString()
+          };
+          lab.teacherView = "manage";
+          renderPanel({ scrollTo: ".assignment-variant-preview" });
+          return;
+        }
+      } else if (action === "save-edit") {
+        const variant = set.variants.find((item) => item.id === variantId);
+        const card = lab.panel?.querySelector(`[data-variant-edit-card="${variantId}"]`);
+        if (!variant || !card) throw new Error("未找到要编辑的变式题。 ");
+        const read = (field) => String(card.querySelector(`[data-variant-edit-field="${field}"]`)?.value || "").trim();
+        const updated = {
+          ...variant,
+          title: read("title"),
+          content: read("content"),
+          answer: read("answer"),
+          solution: read("solution"),
+          approvalStatus: "pending-teacher-review",
+          reviewRequired: true,
+          teacherEditedAt: new Date().toISOString()
+        };
+        updated.solutionDetail = {
+          ...(variant.solutionDetail || {}),
+          overview: read("solution") || variant.solutionDetail?.overview || "",
+          steps: [{
+            reasoning: read("solution"),
+            equation: "",
+            substitution: "",
+            result: read("answer")
+          }],
+          finalAnswer: read("answer"),
+          parentDifference: variant.changeSummary || variant.solutionDetail?.parentDifference || ""
+        };
+        updated.validation = window.PhysicsStudioVariantGenerator.validateVariant(parent, updated);
+        const index = set.variants.findIndex((item) => item.id === variantId);
+        set.variants[index] = updated;
+        set.status = "pending-review";
+        set.approvalStatus = "pending-teacher-review";
+        set.reviewRequired = true;
+        engine.saveVariantSet(lab.state, set);
+        saveLearningState();
+        showLabMessage(updated.validation.passed
+          ? "编辑已保存并重新通过独立质量门禁，仍需教师点击“通过”。"
+          : `编辑已保存，但质量门禁未通过：${(updated.validation.failedReasons || []).join("；")}`,
+        !updated.validation.passed);
+      } else if (action === "regenerate" || action === "regenerate-one") {
+        const regenerated = await window.PhysicsStudioVariantGenerator.generateVariantSet(parent, {
+          questions: getQuestions(),
+          existingSets: [],
+          count: Math.max(2, Math.min(3, set.variants.length || 3)),
+          allowAi: true,
+          aiTutor: window.PhysicsStudioAITutor,
+          aiContext: {
+            profile: lab.state.profiles?.find((profile) => profile.id === lab.state.activeProfileId),
+            guardianConsentStatus: lab.state.profiles?.find((profile) => profile.id === lab.state.activeProfileId)?.guardianConsentStatus
+          }
+        });
+        if (action === "regenerate-one") {
+          const previous = set.variants.find((variant) => variant.id === variantId);
+          const replacement = regenerated.variants?.find((variant) => variant.variantRole === previous?.variantRole);
+          if (!previous || !replacement) throw new Error("服务未返回相同迁移角色的替换题，原题已保留。 ");
+          set.stale = false;
+          set.status = "pending-review";
+          set.approvalStatus = "pending-teacher-review";
+          set.reviewRequired = true;
+          set.variants = set.variants.map((variant) => variant.id === variantId ? replacement : variant);
+          engine.saveVariantSet(lab.state, set);
+        } else {
+          set.stale = true;
+          set.status = "stale";
+          set.updatedAt = new Date().toISOString();
+          regenerated.id = `${regenerated.id}-r${Date.now().toString(36)}`;
+          regenerated.cacheKey = `${regenerated.cacheKey}|review-regeneration|${Date.now()}`;
+          engine.saveVariantSet(lab.state, regenerated);
+        }
+        saveLearningState();
+        showLabMessage(regenerated.variants?.length >= 2
+          ? "已重新生成并进入质量门禁；AI 生成内容仍需教师审核。"
+          : "重新生成后仍没有至少 2 道可验证变式题。",
+        !(regenerated.variants?.length >= 2));
+      }
+    } catch (error) {
+      showLabMessage(error.message || "变式审核操作失败。", true);
+    }
+    renderPanel({ scrollTo: "#variantReviewQueue" });
+  }
+
   async function completeAttempt() {
     captureSessionForm();
     const question = getQuestion(lab.session?.questionId);
@@ -3655,6 +4170,12 @@
     lab.lastCompleted = { title: question.title, review, attempt };
     lab.session = null;
     lab.tab = "transfer";
+    try {
+      await prepareVariantTraining(question, { allowAi: false, count: 3 });
+    } catch (error) {
+      lab.variantGenerationStatus = "";
+      console.warn("Variant preparation failed", error);
+    }
     document.dispatchEvent(new CustomEvent("physics-learning-event", {
       detail: {
         type: "attempt-completed",
@@ -3739,9 +4260,11 @@
   function startSessionTimer() {
     stopSessionTimer();
     const update = () => {
-      const timer = document.getElementById("sessionTimer");
-      if (!timer || !lab.session) return;
-      timer.textContent = formatDuration((Date.now() - lab.session.startedAt) / 1000);
+      const variantSession = lab.tab === "transfer" ? lab.variantTraining?.session : null;
+      const session = variantSession || lab.session;
+      const timer = document.getElementById(variantSession ? "variantSessionTimer" : "sessionTimer");
+      if (!timer || !session) return;
+      timer.textContent = formatDuration((Date.now() - session.startedAt) / 1000);
     };
     update();
     lab.sessionTimer = window.setInterval(update, 1000);
@@ -3919,22 +4442,168 @@
     }, "image/png");
   }
 
-  function generateAssignment() {
-    const assignment = engine.generateAssignment(getQuestions(), {
+  async function generateAssignment() {
+    const includeVariants = Boolean(document.getElementById("assignmentIncludeVariants")?.checked);
+    const variantCount = Math.max(2, Math.min(3, Number(document.getElementById("assignmentVariantCount")?.value) || 3));
+    const includeReverse = Boolean(document.getElementById("assignmentIncludeReverse")?.checked);
+    const includeContext = Boolean(document.getElementById("assignmentIncludeContext")?.checked);
+    const preferredQuestionIds = Boolean(document.getElementById("assignmentIncludeWrong")?.checked)
+      ? [...new Set((lab.state.attempts || [])
+        .filter((attempt) => attempt.profileId === (lab.managedStudentId || lab.state.activeProfileId)
+          && ["incorrect", "partial"].includes(attempt.grading?.status))
+        .map((attempt) => attempt.questionId))]
+      : [];
+    const settings = {
       title: document.getElementById("assignmentTitle")?.value.trim(),
       stage: document.getElementById("assignmentStage")?.value,
       grade: document.getElementById("assignmentGrade")?.value,
       topic: document.getElementById("assignmentTopic")?.value,
       difficulty: document.getElementById("assignmentDifficulty")?.value,
-      count: Number(document.getElementById("assignmentCount")?.value)
-    });
+      count: Number(document.getElementById("assignmentCount")?.value),
+      preferredQuestionIds,
+      difficultyRatios: {
+        "基础": Number(document.getElementById("assignmentBasicRatio")?.value) || 0,
+        "进阶": Number(document.getElementById("assignmentAdvancedRatio")?.value) || 0,
+        "挑战": Number(document.getElementById("assignmentChallengeRatio")?.value) || 0
+      }
+    };
+    const assignment = engine.generateAssignment(getQuestions(), settings);
     if (!assignment.questionCount) {
       showLabMessage("当前条件下没有完整且可用于组卷的题目。", true);
       return;
     }
-    lab.state.assignments.push(assignment);
+    assignment.parentQuestionIds = assignment.questionIds.slice();
+    assignment.variantQuestionIds = [];
+    assignment.variantSetIds = [];
+    assignment.targetProfileIds = lab.managedStudentId ? [lab.managedStudentId] : [];
+    assignment.variantOptions = { includeVariants, variantCount, includeReverse, includeContext };
+    let pendingReviewCount = 0;
+    if (includeVariants) {
+      const questionMap = new Map(getQuestions().map((question) => [question.id, question]));
+      const profile = lab.state.profiles?.find((item) => item.id === (lab.managedStudentId || lab.state.activeProfileId));
+      for (const parentId of assignment.parentQuestionIds) {
+        const parent = questionMap.get(parentId);
+        if (!parent) continue;
+        let set = await window.PhysicsStudioVariantGenerator.generateVariantSet(parent, {
+          questions: getQuestions(),
+          existingSets: lab.state.variantSets,
+          count: variantCount,
+          allowAi: true,
+          minorUnder14: profile?.minorAgeBand === "under14",
+          guardianConsentStatus: profile?.guardianConsentStatus,
+          personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
+        });
+        if (set.variants?.length) set = engine.saveVariantSet(lab.state, set);
+        if (set.status !== "approved") {
+          if (set.status === "pending-review") pendingReviewCount += 1;
+          continue;
+        }
+        const allowed = set.variants
+          .filter((variant) => variant.variantRole === "near"
+            || (variant.variantRole === "reverse" && includeReverse)
+            || (variant.variantRole === "context" && includeContext))
+          .filter((variant) => variant.validation?.passed === true
+            && ["system-validated", "teacher-approved"].includes(variant.approvalStatus))
+          .slice(0, variantCount);
+        if (allowed.length < 2) continue;
+        assignment.variantSetIds.push(set.id);
+        assignment.variantQuestionIds.push(...allowed.map((variant) => variant.id));
+      }
+      assignment.questionIds.push(...assignment.variantQuestionIds);
+      assignment.questionCount = assignment.questionIds.length;
+    }
+    assignment.reviewStatus = "教师待确认";
+    assignment.publishStatus = "preview-only";
+    assignment.variantSetIds = [...new Set(assignment.variantSetIds)];
+    assignment.variantQuestionIds = [...new Set(assignment.variantQuestionIds)];
+    assignment.questionIds = [...new Set(assignment.questionIds)];
+    assignment.questionCount = assignment.questionIds.length;
+    const presetName = document.getElementById("assignmentPresetName")?.value.trim();
+    if (presetName) {
+      engine.saveVariantPreset(lab.state, {
+        name: presetName,
+        stage: settings.stage,
+        grade: settings.grade,
+        topic: settings.topic,
+        difficulty: settings.difficulty,
+        parentCount: settings.count,
+        variantsPerParent: variantCount,
+        includeVariants,
+        includeWrong: preferredQuestionIds.length > 0,
+        includeReverse,
+        includeContext,
+        difficultyRatios: {
+          basic: settings.difficultyRatios["基础"],
+          advanced: settings.difficultyRatios["进阶"],
+          challenge: settings.difficultyRatios["挑战"]
+        }
+      });
+    }
+    lab.assignmentPreview = assignment;
     saveLearningState();
-    renderPanel();
+    showLabMessage(pendingReviewCount
+      ? `${pendingReviewCount} 组 AI 变式正在等待教师审核，本次预览未将其加入作业。`
+      : "作业预览已生成，请核对学生范围、题目来源、数量和变式校验状态。",
+    false);
+    renderPanel({ scrollTo: ".assignment-variant-preview" });
+  }
+
+  function applyAssignmentPreset() {
+    const presetId = document.getElementById("assignmentPresetSelect")?.value;
+    const preset = (lab.state.variantPresets || []).find((item) => item.id === presetId);
+    if (!preset) {
+      showLabMessage("请先选择一组已保存的常用参数。", true);
+      return;
+    }
+    const setValue = (id, value) => {
+      const field = document.getElementById(id);
+      if (field && value !== undefined && value !== null) field.value = String(value);
+    };
+    const setChecked = (id, value) => {
+      const field = document.getElementById(id);
+      if (field) field.checked = value === true;
+    };
+    setValue("assignmentStage", preset.stage || "全部");
+    setValue("assignmentGrade", preset.grade || "全部");
+    setValue("assignmentTopic", preset.topic || "全部");
+    setValue("assignmentDifficulty", preset.difficulty || "全部");
+    setValue("assignmentCount", preset.parentCount);
+    setValue("assignmentVariantCount", preset.variantsPerParent);
+    setValue("assignmentBasicRatio", preset.difficultyRatios?.basic ?? 50);
+    setValue("assignmentAdvancedRatio", preset.difficultyRatios?.advanced ?? 35);
+    setValue("assignmentChallengeRatio", preset.difficultyRatios?.challenge ?? 15);
+    setChecked("assignmentIncludeVariants", preset.includeVariants !== false);
+    setChecked("assignmentIncludeWrong", preset.includeWrong !== false);
+    setChecked("assignmentIncludeReverse", preset.includeReverse !== false);
+    setChecked("assignmentIncludeContext", preset.includeContext !== false);
+    showLabMessage(`已应用常用参数“${preset.name}”，生成前仍可调整。`, false);
+  }
+
+  function confirmAssignmentPreview() {
+    const assignment = lab.assignmentPreview;
+    if (!assignment?.questionIds?.length) return;
+    const approvedVariantIds = new Set((lab.state.variantSets || [])
+      .filter((set) => set.status === "approved" && set.stale !== true)
+      .flatMap((set) => set.variants
+        .filter((variant) => variant.validation?.passed === true
+          && ["system-validated", "teacher-approved"].includes(variant.approvalStatus))
+        .map((variant) => variant.id)));
+    if ((assignment.variantQuestionIds || []).some((id) => !approvedVariantIds.has(id))) {
+      showLabMessage("预览中有变式已失效或未通过审核，请重新生成预览。", true);
+      return;
+    }
+    const saved = {
+      ...assignment,
+      reviewStatus: "教师已确认·待发布",
+      publishStatus: "ready-for-classroom-publish",
+      teacherConfirmedAt: new Date().toISOString()
+    };
+    lab.state.assignments.push(saved);
+    lab.assignmentPreview = null;
+    saveLearningState();
+    document.dispatchEvent(new CustomEvent("physics-studio-assignment-confirmed", { detail: { assignment: { ...saved } } }));
+    showLabMessage("作业已加入待发布列表；班级同步开启时可继续下发。", false);
+    renderPanel({ scrollTo: ".assignment-list" });
   }
 
   function previewTieredAssignment() {
@@ -3978,6 +4647,7 @@
     const assignment = lab.state.assignments.find((item) => item.id === assignmentId);
     if (!assignment) return;
     const questionMap = new Map(getQuestions().map((question) => [question.id, question]));
+    (lab.state.variantSets || []).forEach((set) => set.variants.forEach((variant) => questionMap.set(variant.id, variant)));
     const payload = {
       format: "physics-teacher-assignment",
       version: 1,

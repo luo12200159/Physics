@@ -27,6 +27,10 @@ import type {
   SubmissionView,
   SyncExamRecordsRequest,
   SyncLearningRequest,
+  SyncVariantSetsRequest,
+  VariantSetListResponse,
+  VariantSetSyncResponse,
+  VariantSetView,
 } from "./contracts.js";
 
 interface ClassAccessRow {
@@ -86,6 +90,21 @@ interface SnapshotRow {
   payload: Record<string, unknown>;
   updated_at: Date;
   profile_id: string;
+}
+
+interface VariantSetRow {
+  id: string;
+  class_id: string;
+  client_entity_id: string;
+  parent_question_id: string;
+  source_content_hash: string;
+  cache_key: string;
+  spec_version: string;
+  generator_version: string;
+  status: "approved";
+  payload: Record<string, unknown>;
+  payload_hash: Buffer;
+  updated_at: Date;
 }
 
 export interface LearningServiceOptions {
@@ -240,6 +259,22 @@ function reviewView(row: ReviewCaseRow): ReviewCaseView {
     currentScore: row.current_score === null ? null : Number(row.current_score),
     revision: row.revision,
     submittedAt: row.submitted_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+}
+
+function variantSetView(row: VariantSetRow): VariantSetView {
+  const payload = parseSnapshot(row.payload);
+  return {
+    clientEntityId: row.client_entity_id,
+    classId: row.class_id,
+    parentQuestionId: row.parent_question_id,
+    sourceContentHash: row.source_content_hash,
+    cacheKey: row.cache_key,
+    specVersion: row.spec_version,
+    generatorVersion: row.generator_version,
+    status: "approved",
+    variants: Array.isArray(payload.variants) ? payload.variants as VariantSetView["variants"] : [],
     updatedAt: row.updated_at.toISOString(),
   };
 }
@@ -520,6 +555,113 @@ export class LearningService {
       return { statusCode: 200, body: asJson(response) };
     }));
     return result.body as unknown as ExamSyncResponse;
+  }
+
+  async syncVariantSets(
+    actor: Actor,
+    classId: string,
+    input: SyncVariantSetsRequest,
+    context: LearningMutationContext,
+  ): Promise<VariantSetSyncResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "assignment.create", access);
+    requireActiveClass(access);
+    const now = this.now();
+    const result = await withTransaction(this.options.pool, async (tx) => executeIdempotently(tx, {
+      ...context.idempotency,
+      actorId: actor.userId,
+      expiresAt: apiExpiry(now),
+    }, async () => {
+      let accepted = 0;
+      let duplicates = 0;
+      const items: VariantSetView[] = [];
+      for (const item of input.sets) {
+        if (item.variants.some((variant) => {
+          const validation = parseSnapshot(variant.validation);
+          return validation.passed !== true
+            || !["teacher-approved", "system-validated"].includes(variant.approvalStatus);
+        })) {
+          throw new ApiError(400, "variant_not_approved", "Every synced variant must pass validation and teacher/system approval");
+        }
+        const payload = JSON.stringify(item);
+        const payloadHash = createHash("sha256").update(payload, "utf8").digest();
+        const existing = await tx.query<VariantSetRow>(
+          `select id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                  cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at
+             from class_variant_sets
+            where class_id = $1 and (client_entity_id = $2 or cache_key = $3)
+            for update`,
+          [classId, item.clientEntityId, item.cacheKey],
+        );
+        if (existing.rows.length > 1) {
+          throw new ApiError(409, "variant_identity_conflict", "Variant set identity and cache key refer to different records");
+        }
+        const current = existing.rows[0];
+        if (current?.payload_hash.equals(payloadHash)) {
+          duplicates += 1;
+          items.push(variantSetView(current));
+          continue;
+        }
+        const updated = current
+          ? await tx.query<VariantSetRow>(
+            `update class_variant_sets
+                set client_entity_id = $3, parent_question_id = $4, source_content_hash = $5,
+                    cache_key = $6, spec_version = $7, generator_version = $8,
+                    status = 'approved', payload = $9::jsonb, payload_hash = $10, updated_at = $11
+              where id = $1 and class_id = $2
+            returning id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                      cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at`,
+            [current.id, classId, item.clientEntityId, item.parentQuestionId, item.sourceContentHash,
+              item.cacheKey, item.specVersion, item.generatorVersion, payload, payloadHash, now],
+          )
+          : await tx.query<VariantSetRow>(
+            `insert into class_variant_sets(
+               id, class_id, client_entity_id, parent_question_id, source_content_hash,
+               cache_key, spec_version, generator_version, status, payload, payload_hash,
+               created_by, created_at, updated_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'approved', $9::jsonb, $10, $11, $12, $12)
+            returning id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                      cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at`,
+            [randomUUID(), classId, item.clientEntityId, item.parentQuestionId, item.sourceContentHash,
+              item.cacheKey, item.specVersion, item.generatorVersion, payload, payloadHash, actor.userId, now],
+          );
+        const row = updated.rows[0];
+        if (!row) throw new Error("Variant set sync did not return a row");
+        accepted += 1;
+        items.push(variantSetView(row));
+      }
+      const response: VariantSetSyncResponse = { accepted, duplicates, items };
+      await appendAudit(tx, {
+        actorId: actor.userId,
+        actorRole: actor.role,
+        action: "variant.sets.sync",
+        resourceType: "class",
+        resourceId: classId,
+        classId,
+        result: "succeeded",
+        beforeState: null,
+        afterState: asJson({ accepted, duplicates, clientEntityIds: items.map((item) => item.clientEntityId) }),
+        reason: null,
+        requestId: context.requestId,
+        ipHash: hashAuditIp(this.options.auditIpKey, context.ip),
+      });
+      return { statusCode: 200, body: asJson(response) };
+    }));
+    return result.body as unknown as VariantSetSyncResponse;
+  }
+
+  async listVariantSets(actor: Actor, classId: string): Promise<VariantSetListResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "class.read", access);
+    requireActiveClass(access);
+    const result = await this.options.pool.query<VariantSetRow>(
+      `select id, class_id, client_entity_id, parent_question_id, source_content_hash,
+              cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at
+         from class_variant_sets where class_id = $1 and status = 'approved'
+        order by updated_at desc limit 500`,
+      [classId],
+    );
+    return { items: result.rows.map(variantSetView) };
   }
 
   async createAssignment(

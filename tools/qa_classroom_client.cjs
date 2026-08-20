@@ -123,7 +123,7 @@ async function main() {
       "version", "configure", "status", "checkHealth", "login", "logout", "createClass",
       "listClasses", "getClass", "deleteClass", "createInvite", "parseInvitePayload", "discoverServices", "joinClassByInviteCode", "joinInvite", "updateDisplayName", "listRoster", "listGroups",
       "createGroup", "updateMembership", "syncStatus", "syncLearning",
-      "syncExamRecords", "flushSyncQueue", "acknowledgeSyncConflict",
+      "syncExamRecords", "syncVariantSets", "listVariantSets", "flushSyncQueue", "acknowledgeSyncConflict",
       "listAssignments", "createAssignment", "submitAssignment", "getClassLearningSummary",
       "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots"
     ]
@@ -251,6 +251,50 @@ async function main() {
   assert.equal(flushed.pending, 0);
   assert.equal(api.syncStatus().state, "synced");
 
+  const syncedVariantSet = {
+    id: "variant-set-local-1",
+    parentQuestionId: "question-parent-1",
+    sourceContentHash: "0123456789abcdef",
+    cacheKey: "question-parent-1:0123456789abcdef:variant_generation_v1:1.0.0",
+    specVersion: "variant_generation_v1",
+    generatorVersion: "1.0.0",
+    status: "approved",
+    updatedAt: "2026-08-20T12:00:00.000Z",
+    variants: ["near", "reverse"].map((role) => ({
+      id: `variant-${role}-1`,
+      variantRole: role,
+      title: role === "near" ? "近迁移" : "逆向迁移",
+      content: "一辆小车做匀加速直线运动，请根据给定条件求末速度。",
+      options: [],
+      stage: "高中",
+      grade: "高一",
+      topic: "匀变速直线运动",
+      knowledgePointId: "hs-kinematics-uniform-acceleration",
+      questionType: "计算题",
+      difficulty: "基础",
+      changeSummary: "改变已知量和设问组合",
+      relationToParent: "保持同一运动学模型",
+      answer: "4 m/s",
+      solution: "以小车为研究对象，使用 v=v0+at，统一单位后代入并检验量纲，得到 4 m/s。",
+      solutionDetail: { overview: "建立匀变速直线运动模型" },
+      validation: { passed: true, checks: ["unit", "dimension"] },
+      approvalStatus: "system-validated"
+    }))
+  };
+  navigator.onLine = false;
+  const queuedVariants = await api.syncVariantSets(CLASS_ID, { sets: [syncedVariantSet] });
+  const duplicateQueuedVariants = await api.syncVariantSets(CLASS_ID, { sets: [syncedVariantSet] });
+  assert.equal(queuedVariants.queued, true);
+  assert.equal(duplicateQueuedVariants.queued, true);
+  assert.equal(api.syncStatus().pending, 1, "offline variant sync must deduplicate the same cache payload");
+  navigator.onLine = true;
+  fetchHandler = async (call) => {
+    assert.equal(call.url, `https://classroom.example/api/v1/classes/${CLASS_ID}/variant-sets/sync`);
+    return jsonResponse(200, { accepted: 1, duplicates: 0, items: [] });
+  };
+  const variantFlushed = await api.flushSyncQueue();
+  assert.equal(variantFlushed.pending, 0);
+
   const routeStart = calls.length;
   fetchHandler = async (call) => {
     if (call.url.endsWith(`/v1/classes/${CLASS_ID}/invites`)) {
@@ -288,6 +332,7 @@ async function main() {
     target: "完成 5 题并提交迁移记录",
     publish: true
   });
+  await api.listVariantSets(CLASS_ID);
   const routeCalls = calls.slice(routeStart);
   assert.deepEqual(
     routeCalls.map((call) => [call.options.method, call.url]),
@@ -301,7 +346,8 @@ async function main() {
       ["GET", `https://classroom.example/api/v1/classes/${CLASS_ID}/groups`],
       ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/groups`],
       ["PATCH", `https://classroom.example/api/v1/memberships/${MEMBERSHIP_ID}`],
-      ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/assignments`]
+      ["POST", `https://classroom.example/api/v1/classes/${CLASS_ID}/assignments`],
+      ["GET", `https://classroom.example/api/v1/classes/${CLASS_ID}/variant-sets`]
     ]
   );
   routeCalls.forEach((call) => {

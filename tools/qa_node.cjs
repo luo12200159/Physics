@@ -13,6 +13,8 @@ const scripts = [
   "qa_learning_engine.cjs",
   "qa_review_evidence_integrity.cjs",
   "qa_physics_visuals.cjs",
+  "qa_variant_generator.cjs",
+  "qa_variant_ui_sync.cjs",
   "qa_learning_p0.cjs",
   "qa_identity_isolation.cjs",
   "qa_placement_status.cjs",

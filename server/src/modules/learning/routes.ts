@@ -23,6 +23,9 @@ import {
   SubmissionViewSchema,
   SyncExamRecordsRequestSchema,
   SyncLearningRequestSchema,
+  SyncVariantSetsRequestSchema,
+  VariantSetListResponseSchema,
+  VariantSetSyncResponseSchema,
   LearningSyncResponseSchema,
   type AssignmentParams,
   type AssignmentRequest,
@@ -33,6 +36,7 @@ import {
   type SubmissionRequest,
   type SyncExamRecordsRequest,
   type SyncLearningRequest,
+  type SyncVariantSetsRequest,
 } from "./contracts.js";
 import type { LearningService } from "./service.js";
 
@@ -89,6 +93,34 @@ export function registerLearningRoutes(app: FastifyInstance, service: LearningSe
       request.body,
       { ip: request.ip, requestId: String(request.id), idempotency: request.mutationIdempotency! },
     );
+    return reply.status(200).send(response);
+  });
+
+  app.post<{ Params: ClassLearningParams; Body: SyncVariantSetsRequest }>("/v1/classes/:classId/variant-sets/sync", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassLearningParamsSchema,
+      body: SyncVariantSetsRequestSchema,
+      response: { 200: VariantSetSyncResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.syncVariantSets(
+      actorFrom(request.authSession!),
+      request.params.classId,
+      request.body,
+      { ip: request.ip, requestId: String(request.id), idempotency: request.mutationIdempotency! },
+    );
+    return reply.status(200).send(response);
+  });
+
+  app.get<{ Params: ClassLearningParams }>("/v1/classes/:classId/variant-sets", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassLearningParamsSchema,
+      response: { 200: VariantSetListResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.listVariantSets(actorFrom(request.authSession!), request.params.classId);
     return reply.status(200).send(response);
   });
 

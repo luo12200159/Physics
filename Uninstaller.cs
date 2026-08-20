@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("费曼物理卸载程序")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("3.2.0.0")]
-[assembly: AssemblyFileVersion("3.2.0.0")]
+[assembly: AssemblyVersion("3.3.0.0")]
+[assembly: AssemblyFileVersion("3.3.0.0")]
 
 internal static class UninstallerProgram
 {
@@ -163,6 +163,7 @@ internal static class UninstallerProgram
             && File.Exists(Path.Combine(directory, "content-catalog.js"))
             && File.Exists(Path.Combine(directory, "learning-engine.js"))
             && File.Exists(Path.Combine(directory, "physics-visuals.js"))
+            && File.Exists(Path.Combine(directory, "variant-generator.js"))
             && File.Exists(Path.Combine(directory, "teacher-mode-lock.js"))
             && File.Exists(Path.Combine(directory, "app.js"))
             && File.Exists(Path.Combine(directory, "learning-lab.js"))

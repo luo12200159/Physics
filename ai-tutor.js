@@ -7,7 +7,7 @@
   const MAX_RESPONSE_CHARS = 180000;
 
   function appVersion() {
-    return String(window.PHYSICS_LEARNING_ENGINE?.version || "3.2.0");
+    return String(window.PHYSICS_LEARNING_ENGINE?.version || "3.3.0");
   }
 
   function storage() {
@@ -34,6 +34,17 @@
     required: [
       "diagnosisType", "nextPrompt", "hintLevel", "feedback",
       "verification", "canRevealSolution", "reviewRequired"
+    ]
+  });
+
+  const variantGenerationSchema = Object.freeze({
+    name: "variant_generation_v1",
+    required: ["variants", "generationNotes", "reviewRequired"],
+    variantRequired: [
+      "id", "variantRole", "title", "content", "options", "stage", "grade",
+      "topic", "knowledgePointId", "knowledgePoints", "examPoints", "questionType",
+      "difficulty", "changeSummary", "relationToParent", "answer", "solution",
+      "solutionDetail", "crossVerification", "reviewRequired"
     ]
   });
 
@@ -360,6 +371,165 @@
     }
   }
 
+  function validateVariantGeneration(value, parentQuestion, requestedCount) {
+    if (!value || typeof value !== "object" || !Array.isArray(value.variants)) {
+      throw new Error("变式生成服务缺少 variants 数组。 ");
+    }
+    if (value.variants.length < 2 || value.variants.length > Math.min(3, requestedCount)) {
+      throw new Error("变式生成服务必须返回 2 至 3 道完整题。 ");
+    }
+    const roles = new Set();
+    const variants = value.variants.map((variant, index) => {
+      if (!variant || typeof variant !== "object") throw new Error(`第 ${index + 1} 道变式结构无效。`);
+      variantGenerationSchema.variantRequired.forEach((field) => {
+        if (!(field in variant)) throw new Error(`第 ${index + 1} 道变式缺少字段：${field}。`);
+      });
+      const role = ["near", "reverse", "context"].includes(variant.variantRole)
+        ? variant.variantRole
+        : "";
+      if (!role || roles.has(role)) throw new Error("变式角色缺失或重复。 ");
+      roles.add(role);
+      if (variant.stage !== parentQuestion.stage || variant.grade !== parentQuestion.grade) {
+        throw new Error("AI 变式超出母题学段或年级。 ");
+      }
+      const detail = variant.solutionDetail;
+      const detailRequired = ["overview", "known", "unknown", "researchObject", "process", "laws", "steps", "finalAnswer", "checks", "pitfalls", "parentDifference"];
+      if (!detail || typeof detail !== "object") throw new Error("AI 变式缺少结构化解题过程。 ");
+      detailRequired.forEach((field) => {
+        if (!(field in detail)) throw new Error(`结构化解题过程缺少字段：${field}。`);
+      });
+      if (!Array.isArray(detail.steps) || !detail.steps.length) throw new Error("AI 变式没有分步推导。 ");
+      const steps = detail.steps.slice(0, 30).map((step) => {
+        if (!step || typeof step !== "object" || typeof step.reasoning !== "string") {
+          throw new Error("AI 变式推导步骤格式错误。 ");
+        }
+        return {
+          reasoning: String(step.reasoning).slice(0, 5000),
+          equation: String(step.equation || "").slice(0, 1000),
+          substitution: String(step.substitution || "").slice(0, 2000),
+          result: String(step.result || "").slice(0, 2000)
+        };
+      });
+      const content = String(variant.content || "").trim();
+      const answer = String(variant.answer || "").trim();
+      const solution = String(variant.solution || "").trim();
+      if (!content || !answer || !solution) throw new Error("AI 变式题干、答案或解析为空。 ");
+      const crossVerification = variant.crossVerification;
+      if (!crossVerification || crossVerification.passed !== true
+        || !Array.isArray(crossVerification.checks)
+        || crossVerification.checks.length === 0
+        || !Array.isArray(crossVerification.criticalIssues)
+        || crossVerification.criticalIssues.length > 0) {
+        throw new Error("AI 变式缺少独立求解校验证据。 ");
+      }
+      return {
+        id: String(variant.id).slice(0, 220),
+        variantRole: role,
+        title: String(variant.title || `专项变式 ${index + 1}`).slice(0, 240),
+        content: content.slice(0, 60000),
+        options: Array.isArray(variant.options) ? variant.options.slice(0, 12) : [],
+        stage: variant.stage,
+        grade: variant.grade,
+        topic: String(variant.topic || parentQuestion.topic).slice(0, 120),
+        knowledgePointId: String(variant.knowledgePointId || parentQuestion.knowledgePointId || "").slice(0, 200),
+        knowledgePoints: Array.isArray(variant.knowledgePoints) ? variant.knowledgePoints.slice(0, 20).map((item) => String(item).slice(0, 160)) : [],
+        examPoints: Array.isArray(variant.examPoints) ? variant.examPoints.slice(0, 20).map((item) => String(item).slice(0, 160)) : [],
+        questionType: String(variant.questionType || "未标注").slice(0, 50),
+        difficulty: ["基础", "进阶", "挑战"].includes(variant.difficulty) ? variant.difficulty : "进阶",
+        modelDefinitionId: String(variant.modelDefinitionId || "").slice(0, 200),
+        transferGroupId: String(variant.transferGroupId || "").slice(0, 200),
+        independenceGroupId: String(variant.independenceGroupId || "").slice(0, 200),
+        changeSummary: String(variant.changeSummary || "").slice(0, 2000),
+        relationToParent: String(variant.relationToParent || "").slice(0, 2000),
+        answer: answer.slice(0, 30000),
+        correctAnswer: String(variant.correctAnswer || "").slice(0, 2000),
+        correctAnswers: Array.isArray(variant.correctAnswers) ? variant.correctAnswers.slice(0, 12).map(String) : [],
+        solution: solution.slice(0, 60000),
+        solutionDetail: {
+          overview: String(detail.overview || "").slice(0, 5000),
+          known: Array.isArray(detail.known) ? detail.known.slice(0, 30).map(String) : [],
+          unknown: String(detail.unknown || "").slice(0, 3000),
+          researchObject: String(detail.researchObject || "").slice(0, 3000),
+          process: String(detail.process || "").slice(0, 5000),
+          laws: Array.isArray(detail.laws) ? detail.laws.slice(0, 20) : [],
+          steps,
+          finalAnswer: String(detail.finalAnswer || answer).slice(0, 30000),
+          checks: Array.isArray(detail.checks) ? detail.checks.slice(0, 20).map(String) : [],
+          pitfalls: Array.isArray(detail.pitfalls) ? detail.pitfalls.slice(0, 20).map(String) : [],
+          parentDifference: String(detail.parentDifference || variant.changeSummary || "").slice(0, 3000)
+        },
+        crossVerification: {
+          passed: true,
+          checks: crossVerification.checks.slice(0, 30).map((item) => String(item).slice(0, 500)),
+          criticalIssues: Array.isArray(crossVerification.criticalIssues)
+            ? crossVerification.criticalIssues.slice(0, 20).map((item) => String(item).slice(0, 1000))
+            : [],
+          verifier: "independent-second-pass"
+        },
+        source: "应用内 AI 生成变式",
+        reviewRequired: true
+      };
+    });
+    return {
+      variants,
+      generationNotes: String(value.generationNotes || "").slice(0, 5000),
+      reviewRequired: true
+    };
+  }
+
+  async function generateVariants(input = {}) {
+    assertAiConsent(input);
+    const question = normalizeQuestionInput(input.question);
+    const requestedCount = Math.max(2, Math.min(3, Number(input.count) || 3));
+    const identifiers = Array.isArray(input.personalIdentifiers) ? input.personalIdentifiers : [];
+    const redactedQuestion = {
+      ...question,
+      title: redactPersonalData(question.title, identifiers),
+      content: redactPersonalData(question.content, identifiers)
+    };
+    const rawModel = input.itemModel && typeof input.itemModel === "object" ? input.itemModel : {};
+    const itemModel = {
+      sourceQuestionId: String(rawModel.sourceQuestionId || question.id).slice(0, 200),
+      questionType: String(rawModel.questionType || question.questionType).slice(0, 50),
+      stage: question.stage,
+      grade: question.grade,
+      topic: question.topic,
+      knowledgePointId: String(rawModel.knowledgePointId || question.knowledgePointId || "").slice(0, 200),
+      examPoints: Array.isArray(rawModel.examPoints) ? rawModel.examPoints.slice(0, 20).map(String) : question.examPoints,
+      difficulty: String(rawModel.difficulty || question.difficulty).slice(0, 30),
+      modelDefinitionId: String(rawModel.modelDefinitionId || question.modelDefinitionId || "").slice(0, 200),
+      researchObject: String(rawModel.researchObject || "").slice(0, 1000),
+      knownQuantities: Array.isArray(rawModel.knownQuantities) ? rawModel.knownQuantities.slice(0, 20).map(String) : [],
+      unknownQuantity: String(rawModel.unknownQuantity || "").slice(0, 1000),
+      coreLaws: Array.isArray(rawModel.coreLaws) ? rawModel.coreLaws.slice(0, 20).map(String) : [],
+      lawConditions: Array.isArray(rawModel.lawConditions) ? rawModel.lawConditions.slice(0, 20).map(String) : [],
+      variableRelations: Array.isArray(rawModel.variableRelations) ? rawModel.variableRelations.slice(0, 20).map(String) : [],
+      constraints: Array.isArray(rawModel.constraints) ? rawModel.constraints.slice(0, 20).map(String) : [],
+      representationType: String(rawModel.representationType || question.representationType || "文字/公式").slice(0, 80),
+      visualDependency: Boolean(rawModel.visualDependency)
+    };
+    const payload = await requestJson("/v1/physics/generate-variants", {
+      protocolVersion: 1,
+      model: loadConfig().model,
+      task: "physics_variant_generation",
+      generationMode: "generate_then_independently_verify",
+      requestedCount,
+      parentQuestion: redactedQuestion,
+      itemModel,
+      responseSchema: variantGenerationSchema,
+      rules: [
+        "返回2至3道完整可作答题，不得返回泛化练习建议",
+        "近迁移不能只机械替换一个数字",
+        "逆向题必须改变已知—未知结构",
+        "情境题不得缺图；没有受支持图形时使用可完整验证的文字题",
+        "不得虚构中高考、学校或试卷来源",
+        "每道题必须重新求解并给出结构化步骤",
+        "所有 AI 题必须进入教师审核，不得自行写入正式掌握状态"
+      ]
+    }, 120000);
+    return validateVariantGeneration(payload, question, requestedCount);
+  }
+
   async function testConnection() {
     const result = await requestJson("/v1/physics/health", {
       protocolVersion: 1,
@@ -378,6 +548,11 @@
       stage: ["初中", "高中"].includes(question.stage) ? question.stage : "初中",
       grade: String(question.grade || "八年级").slice(0, 12),
       topic: String(question.topic || "待分类").slice(0, 100),
+      knowledgePointId: String(question.knowledgePointId || question.topicKey || "").slice(0, 200),
+      questionType: String(question.questionType || "未标注").slice(0, 50),
+      difficulty: String(question.difficulty || "进阶").slice(0, 30),
+      modelDefinitionId: String(question.modelDefinitionId || question.modelFamilyId || "").slice(0, 200),
+      representationType: String(question.representationType || "文字/公式").slice(0, 80),
       examPoints: Array.isArray(question.examPoints)
         ? question.examPoints.slice(0, 20).map((item) => String(item).slice(0, 100))
         : [],
@@ -459,6 +634,7 @@
     status,
     redactPersonalData,
     tutorTurn,
+    generateVariants,
     solveQuestion,
     analyzeDocument,
     testConnection

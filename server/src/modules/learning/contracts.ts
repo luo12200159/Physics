@@ -16,6 +16,12 @@ export const ClassLearningParamsSchema = StrictObject({ classId: UuidSchema });
 export const AssignmentParamsSchema = StrictObject({ assignmentId: UuidSchema });
 export const ReviewCaseParamsSchema = StrictObject({ reviewId: UuidSchema });
 
+const VariantRoleSchema = Type.Union([
+  Type.Literal("near"),
+  Type.Literal("reverse"),
+  Type.Literal("context"),
+]);
+
 export const ProfileSyncSchema = StrictObject({
   clientEntityId: ClientEntityIdSchema,
   displayName: Type.String({ minLength: 1, maxLength: 80 }),
@@ -42,6 +48,8 @@ export const LearningAttemptSyncSchema = StrictObject({
     Type.Literal("diagnostic"),
     Type.Literal("core"),
     Type.Literal("near"),
+    Type.Literal("reverse"),
+    Type.Literal("context"),
     Type.Literal("far"),
     Type.Literal("counter"),
     Type.Literal("review"),
@@ -84,6 +92,69 @@ export const SyncLearningRequestSchema = StrictObject({
   clientCreatedAt: Type.Optional(DateTimeSchema),
   profile: ProfileSyncSchema,
   attempts: Type.Array(LearningAttemptSyncSchema, { maxItems: 100 }),
+});
+
+export const VariantQuestionSyncSchema = StrictObject({
+  id: ClientEntityIdSchema,
+  variantRole: VariantRoleSchema,
+  title: Type.String({ minLength: 1, maxLength: 240 }),
+  content: Type.String({ minLength: 12, maxLength: 60_000 }),
+  options: Type.Array(JsonObjectSchema, { maxItems: 12 }),
+  stage: Type.Union([Type.Literal("初中"), Type.Literal("高中")]),
+  grade: Type.String({ minLength: 1, maxLength: 40 }),
+  topic: Type.String({ minLength: 1, maxLength: 160 }),
+  knowledgePointId: ClientEntityIdSchema,
+  questionType: Type.String({ minLength: 1, maxLength: 80 }),
+  difficulty: Type.Union([Type.Literal("基础"), Type.Literal("进阶"), Type.Literal("挑战")]),
+  changeSummary: Type.String({ minLength: 1, maxLength: 2_000 }),
+  relationToParent: Type.String({ minLength: 1, maxLength: 2_000 }),
+  answer: Type.String({ minLength: 1, maxLength: 30_000 }),
+  solution: Type.String({ minLength: 20, maxLength: 60_000 }),
+  solutionDetail: JsonObjectSchema,
+  validation: JsonObjectSchema,
+  source: Type.Union([Type.Literal("应用内 AI 生成变式"), Type.Literal("应用内已审核题模变式")]),
+  approvalStatus: Type.Union([Type.Literal("teacher-approved"), Type.Literal("system-validated")]),
+});
+
+export const VariantSetSyncItemSchema = StrictObject({
+  clientEntityId: ClientEntityIdSchema,
+  parentQuestionId: ClientEntityIdSchema,
+  sourceContentHash: Type.String({ pattern: "^[0-9a-f]{16}$" }),
+  cacheKey: Type.String({ minLength: 8, maxLength: 600 }),
+  specVersion: Type.Literal("variant_generation_v1"),
+  generatorVersion: Type.String({ minLength: 1, maxLength: 40 }),
+  status: Type.Literal("approved"),
+  variants: Type.Array(VariantQuestionSyncSchema, { minItems: 2, maxItems: 3 }),
+  updatedAt: DateTimeSchema,
+});
+
+export const SyncVariantSetsRequestSchema = StrictObject({
+  deviceId: DeviceIdSchema,
+  clientEventId: Type.Optional(UuidSchema),
+  sets: Type.Array(VariantSetSyncItemSchema, { minItems: 1, maxItems: 20 }),
+});
+
+export const VariantSetViewSchema = StrictObject({
+  clientEntityId: ClientEntityIdSchema,
+  classId: UuidSchema,
+  parentQuestionId: ClientEntityIdSchema,
+  sourceContentHash: Type.String({ pattern: "^[0-9a-f]{16}$" }),
+  cacheKey: Type.String({ minLength: 8, maxLength: 600 }),
+  specVersion: Type.String({ minLength: 1, maxLength: 80 }),
+  generatorVersion: Type.String({ minLength: 1, maxLength: 40 }),
+  status: Type.Literal("approved"),
+  variants: Type.Array(VariantQuestionSyncSchema, { minItems: 2, maxItems: 3 }),
+  updatedAt: DateTimeSchema,
+});
+
+export const VariantSetSyncResponseSchema = StrictObject({
+  accepted: Type.Integer({ minimum: 0 }),
+  duplicates: Type.Integer({ minimum: 0 }),
+  items: Type.Array(VariantSetViewSchema, { maxItems: 20 }),
+});
+
+export const VariantSetListResponseSchema = StrictObject({
+  items: Type.Array(VariantSetViewSchema, { maxItems: 500 }),
 });
 
 export const ExamRecordSyncSchema = StrictObject({
@@ -227,6 +298,10 @@ export type ClassLearningParams = Static<typeof ClassLearningParamsSchema>;
 export type AssignmentParams = Static<typeof AssignmentParamsSchema>;
 export type ReviewCaseParams = Static<typeof ReviewCaseParamsSchema>;
 export type SyncLearningRequest = Static<typeof SyncLearningRequestSchema>;
+export type SyncVariantSetsRequest = Static<typeof SyncVariantSetsRequestSchema>;
+export type VariantSetSyncResponse = Static<typeof VariantSetSyncResponseSchema>;
+export type VariantSetListResponse = Static<typeof VariantSetListResponseSchema>;
+export type VariantSetView = Static<typeof VariantSetViewSchema>;
 export type SyncExamRecordsRequest = Static<typeof SyncExamRecordsRequestSchema>;
 export type LearningSyncResponse = Static<typeof LearningSyncResponseSchema>;
 export type ExamSyncResponse = Static<typeof ExamSyncResponseSchema>;

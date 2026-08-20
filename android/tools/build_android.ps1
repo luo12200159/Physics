@@ -201,6 +201,7 @@ Copy-Item -LiteralPath (Join-Path $WebRoot 'question-answer-service.js') -Destin
 Copy-Item -LiteralPath (Join-Path $WebRoot 'storage-repository.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-engine.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'physics-visuals.js') -Destination $AssetsDirectory -Force
+Copy-Item -LiteralPath (Join-Path $WebRoot 'variant-generator.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'teacher-mode-lock.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'app.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.js') -Destination $AssetsDirectory -Force

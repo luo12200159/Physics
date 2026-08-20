@@ -98,7 +98,7 @@ function createLauncherFixture(directory, serviceExe) {
     "curriculum-bank.js", "exam-question-index.js", "mock-exam-bank.js", "original-practice-bank.js",
     "targeted-practice-bank.js", "vendor/jsQR.js", "vendor/fflate.js", "security.js", "backup.js",
     "backup-validator.js", "ai-tutor.js", "document-import.js", "content-catalog.js", "classroom-config.js",
-    "classroom-client.js", "question-answer-service.js", "learning-engine.js", "teacher-mode-lock.js", "app.js",
+    "classroom-client.js", "question-answer-service.js", "learning-engine.js", "physics-visuals.js", "variant-generator.js", "teacher-mode-lock.js", "app.js",
     "learning-lab.js", "experience-shell.js",
   ];
   for (const relative of files) {

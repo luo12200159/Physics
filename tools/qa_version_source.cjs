@@ -10,7 +10,7 @@ const serverPackage = JSON.parse(fs.readFileSync(path.join(root, "server", "pack
 assert.match(version.appVersion, /^\d+\.\d+\.\d+$/);
 assert.equal(packageJson.version, version.appVersion, "package.json must follow version.json");
 assert.equal(serverPackage.version, version.appVersion, "server/package.json must follow version.json");
-assert.equal(version.stateVersion, 8);
+assert.equal(version.stateVersion, 9);
 assert.equal(version.reportFormatVersion, 4);
 
 const engine = read("learning-engine.js");
