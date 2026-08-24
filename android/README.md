@@ -1,7 +1,7 @@
 # 费曼物理 Android 版
-当前发布版本：v3.3.0。学生端无需账号密码，可通过邀请码、摄像头二维码或二维码图片加入同一局域网内由 Windows 或 Android 教师设备托管的班级。
+当前发布版本：v3.4.0。Android 现在提供学生端与教师端两个独立安装包；学生可通过账号同步，或只用备注名和邀请码/二维码加入班级。
 
-这是与 Windows 版并列的 3.3.0 独立 Android 外壳。它把项目根目录的网页、教材目录、题库、完整变式训练模块、离线二维码识别库、局域网班级主机和图标打包进 APK，并通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口在系统 WebView 中离线运行。包名、URL scheme、私有存储和备份标识保持兼容。
+学生端包名为 `com.physicsstudio.student`，教师端包名为 `com.physicsstudio.teacher`。两个包通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口运行共享学习模块，但只打包各自的页面和业务脚本。旧单体包 `com.physicsstudio.studyroom` 不会被覆盖；数据通过完整 `.pslab` 显式迁移。
 
 ## 平台能力
 
@@ -20,7 +20,7 @@
 - 包含 400 道“物理研习室原创·长沙模拟考结构适配专项”，九年级和高三各 200 道；这些题为应用内原创，并非长沙学校模拟卷原题，未复制第三方试卷题干、图像或答案
 - 共用 3.3.0 学习闭环：学生档案、每日测试、前概念诊断、分步导师、五级提示、完整专项变式、多表征物理模型、透明校验、基于真实作答的间隔复习、学习报告、教师变式审核与分层作业预览
 - 学生可在“我的”页面直接打开“加入老师班级”，填写备注名和邀请码，或实时扫描/选择教师二维码；不要求登录名和密码，加入流程只申请 `student` 权限。
-- Android 会在应用运行期间托管持久化班级服务，并通过原生桥立即使用本机回环地址创建班级；分享二维码只携带其他设备可达的私有局域网地址。原生网络桥只允许访问 TCP 8788 上的回环或私有局域网地址，并通过 UDP 18788 发现同一网络中的 Windows/Android 班级主机；不会让包含原生桥的 WebView 打开任意远程网页。
+- 正式班级以构建时注入或应用内配置的 HTTPS 服务为主。教师端继续提供局域网课堂主机作为可选降级；学生端不启动班级主机，也不能通过本地状态取得教师权限。
 - 教师可解析 DOCX、PDF、旧版 Word 与扫描图片；离线能力不足时可调用配置好的受控 ChatGPT 服务端，解析结果必须人工审核
 
 ## 已知边界
@@ -35,7 +35,7 @@
 
 ## 构建
 
-运行 `tools/build_android.ps1`。版本与文件名从根目录 `version.json` 读取。脚本使用工作目录同级的 `.android-build-tools` 中的 OpenJDK 17、Android SDK Platform 36 和 Build Tools 36.0.0，不依赖 Gradle 或 Maven。
+运行 `tools/build_dual_android.ps1` 同时构建两个包；也可用 `tools/build_android.ps1 -Edition student|teacher` 单独构建。版本与文件名从根目录 `version.json` 读取。脚本使用工作目录同级的 `.android-build-tools` 中的 OpenJDK 17、Android SDK Platform 36 和 Build Tools 36.0.0，不依赖 Gradle 或 Maven。
 
 首次构建会在 `signing` 目录生成签名证书和随机密码配置。该目录决定后续版本能否覆盖升级，必须私下备份，不能随 APK 公开分发。
 

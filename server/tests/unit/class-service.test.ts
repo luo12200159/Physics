@@ -43,6 +43,25 @@ describe("class service class-scoped ownership", () => {
     expect(connect).not.toHaveBeenCalled();
   });
 
+  it("does not let a student account create a class", async () => {
+    const connect = vi.fn();
+    const service = createClassesService({
+      pool: { connect } as unknown as Pool,
+      auditIpKey: "unit-audit-ip-key-at-least-32-characters",
+      syncOutboxRetentionDays: 180,
+    });
+    await expect(service.createClass(actor("student", "reauthenticated"), {
+      name: "学生越权班级",
+      grade: "高一",
+      subject: "物理",
+      schoolLabel: null,
+    }, mutationContext())).rejects.toMatchObject({
+      statusCode: 403,
+      code: "resource_forbidden",
+    });
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it("allows an authenticated teacher session to perform routine class management", () => {
     expect(authorize(actor("teacher", "password"), "class.manage", {
       classId: null,
@@ -53,7 +72,7 @@ describe("class service class-scoped ownership", () => {
     })).toEqual({ allowed: true });
   });
 
-  it("allows a non-parent account to manage the class it created", () => {
+  it("keeps legacy student-owned classes manageable without granting new class creation", () => {
     expect(authorize(actor("student", "reauthenticated"), "class.manage", {
       classId: "60000000-0000-4000-8000-000000000003",
       ownerTeacherId: TEACHER_ID,

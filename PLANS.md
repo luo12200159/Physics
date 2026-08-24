@@ -1,3 +1,18 @@
+# v3.4.0 Android 双应用发布计划
+
+- [x] 盘点 Android WebView、共享 Web 资源、服务端 RBAC、备份和测试调用链。
+- [x] 建立 `app-student` / `app-teacher` 两个独立 application module、包名和入口。
+- [x] 从学生包移除教师管理 bundle，从教师包移除学生作答 bundle。
+- [x] 使用服务端账号角色约束建班、任务、花名册、审核和学情访问。
+- [x] 增加学生/教师注册与 Android Keystore 长期凭据保护。
+- [x] 保留 `.pslab` 显式迁移、旧题目 ID、学习 state v9 和离线学习。
+- [x] 修复动态模型参数映射并增加实时曲线和立体视觉。
+- [x] 完成服务端类型检查、单元测试、生产构建和双入口浏览器 smoke test。
+- [x] 生成学生端和教师端 v3.4.0 APK/ZIP，并校验包名和资源隔离。
+- [ ] 在具备 Docker/Podman 的 CI 中执行 PostgreSQL/Redis Testcontainers 集成套件。
+- [ ] 获得并注入实际生产 HTTPS 域名后，执行跨公网端到端验收与容量测试。
+- [ ] 使用正式 Android 发布密钥执行 release/AAB 签名；当前只生成项目现有开发签名 APK。
+
 # v3.3.0 费曼物理专项变式发布计划
 
 ## 2026-08-20 完整变式训练闭环

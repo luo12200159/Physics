@@ -41,6 +41,7 @@ export interface ClassServiceOptions {
   pool: Pool;
   auditIpKey: string | Buffer;
   ownerCapabilitySecret?: string | Buffer;
+  allowAnonymousClassCreation?: boolean;
   syncOutboxRetentionDays: number;
   now?: () => Date;
 }
@@ -177,12 +178,11 @@ export class ClassesService {
     input: CreateClassRequest,
     context: ClassMutationContext,
   ): Promise<ClassView> {
-    // Class creation is the operation that grants class-scoped owner/teacher
-    // authority.  It must not depend on a pre-existing global teacher role or
-    // an administrator-created invitation.  Parent accounts remain excluded
-    // by the authorization policy because their scope is guardian-only.
-    if (actor.role === "parent") {
-      throw new ApiError(403, "resource_forbidden", "Parent accounts cannot create classes");
+    // The split Android applications use server RBAC as the authority
+    // boundary. A student must never become a class owner by calling the API
+    // directly or by changing client-side role state.
+    if (actor.role !== "teacher" && actor.role !== "administrator") {
+      throw new ApiError(403, "resource_forbidden", "Only teacher accounts can create classes");
     }
     const name = trimmed(input.name, 120, "Class name");
     const schoolLabel = input.schoolLabel === undefined || input.schoolLabel === null
@@ -241,6 +241,9 @@ export class ClassesService {
     input: CreateClassRequest,
     context: Pick<ClassMutationContext, "ip" | "requestId">,
   ): Promise<AnonymousClassCreated> {
+    if (this.options.allowAnonymousClassCreation !== true) {
+      throw new ApiError(403, "resource_forbidden", "Anonymous class creation is available only in explicit local classroom mode");
+    }
     const name = trimmed(input.name, 120, "Class name");
     const schoolLabel = input.schoolLabel === undefined || input.schoolLabel === null
       ? null

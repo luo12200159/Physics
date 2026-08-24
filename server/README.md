@@ -5,7 +5,7 @@
 - 班级业务服务：Fastify + PostgreSQL + Redis，默认开发端口 `8788`。教师建班、邀请码、成员关系、删除班级和学习同步都以该服务的持久化结果为准。
 - 受控 AI 网关：`physics-ai-gateway.mjs`，默认开发端口 `8787`。它不承担班级功能。
 
-v3.3.0 受控网关实现 `POST /v1/physics/solve`、`POST /v1/physics/tutor-turn` 与 `POST /v1/physics/generate-variants`。变式生成与交叉验证使用独立请求；缺少网关时客户端只使用可核验本地题模或审核题族，不把泛化文字任务描述为完整变式。
+v3.4.0 受控网关实现 `POST /v1/physics/solve`、`POST /v1/physics/tutor-turn` 与 `POST /v1/physics/generate-variants`。变式生成与交叉验证使用独立请求；缺少网关时客户端只使用可核验本地题模或审核题族，不把泛化文字任务描述为完整变式。
 
 客户端不再把 `127.0.0.1:8787` 猜作班级服务。Windows/Android 安装包必须在构建时注入已部署的 HTTPS 班级服务地址，或由用户在“在线班级连接”中明确填写。
 
@@ -52,7 +52,7 @@ pnpm run dev
 
 ```powershell
 .\tools\build_release.ps1 -ClassroomServerUrl https://classroom.example.com
-.\android\tools\build_android.ps1 -ClassroomServerUrl https://classroom.example.com
+.\android\tools\build_dual_android.ps1 -ClassroomServerUrl https://classroom.example.com
 ```
 
 ## 班级接口
@@ -60,8 +60,9 @@ pnpm run dev
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/health/live` | 服务存活检查 |
-| `POST` | `/v1/classes/anonymous` | 无预先账号建班；返回仅绑定该班级的 owner capability |
-| `POST` | `/v1/classes` | 已登录应用用户建班 |
+| `POST` | `/v1/auth/register` | 注册 student 或 teacher 账号；生产环境启用限流 |
+| `POST` | `/v1/classes/anonymous` | 仅显式开发/局域网模式允许；生产环境拒绝匿名建班 |
+| `POST` | `/v1/classes` | 已登录 teacher/administrator 建班；student 返回 403 |
 | `GET` | `/v1/classes` | 列出当前身份可访问的活动班级 |
 | `GET` | `/v1/classes/:classId` | 读取有权访问的班级 |
 | `DELETE` | `/v1/classes/:classId` | owner 删除班级并吊销邀请码、owner capability 和成员关系 |
@@ -73,7 +74,7 @@ pnpm run dev
 | `POST` | `/v1/classes/:classId/variant-sets/sync` | owner/教师同步已批准变式集，按稳定键去重 |
 | `GET` | `/v1/classes/:classId/variant-sets` | 有权成员增量读取已批准变式集 |
 
-除健康检查和两个匿名入口外，写请求需带项目既有的 `Idempotency-Key`。匿名学生的重复加入由 `(class_id, user_id)` 数据库唯一约束和服务逻辑做成幂等，不重复生成 membership。
+除健康检查、注册和两个匿名入口外，写请求需带项目既有的 `Idempotency-Key`。匿名学生的重复加入由 `(class_id, user_id)` 数据库唯一约束和服务逻辑做成幂等，不重复生成 membership。正式云部署应保持匿名建班关闭；局域网原生主机的 owner capability 仍只作用于单个班级。
 
 ## 数据库迁移
 

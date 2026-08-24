@@ -366,17 +366,24 @@ $rootSourceFiles = @(
     'curriculum-bank.js',
     'curriculum-taxonomy.js',
     'document-import.js',
+    'dual-app-common.js',
+    'dual-app-data.js',
+    'dual-app.css',
     'exam-question-index.js',
     'experience-shell.css',
     'experience-shell.js',
     'index.html',
+    'student-index.html',
+    'student-app.js',
+    'teacher-index.html',
+    'teacher-app.js',
     'Installer.cs',
     'LanClassroomNative.cs',
     'LanClassroomService.cs',
     'Launcher.cs',
     'learning-engine.js',
-        'physics-visuals.js',
-        'variant-generator.js',
+    'physics-visuals.js',
+    'variant-generator.js',
     'teacher-mode-lock.js',
     'learning-lab.css',
     'learning-lab.js',
@@ -428,7 +435,7 @@ New-Item -ItemType Directory -Path $androidStage | Out-Null
 foreach ($relativePath in @('AndroidManifest.xml', 'README.md', '安装说明.txt')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory "android\$relativePath") -Destination $androidStage
 }
-foreach ($directoryName in @('res', 'src', 'tools')) {
+foreach ($directoryName in @('app-student', 'app-teacher', 'res', 'src', 'tools')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory "android\$directoryName") -Destination $androidStage -Recurse
 }
 

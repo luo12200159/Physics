@@ -14,6 +14,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
 import android.provider.Settings;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import android.util.Log;
 import android.util.Base64;
 import android.view.View;
@@ -42,8 +44,10 @@ import java.io.OutputStream;
 import java.io.IOException;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +56,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 
 @SuppressWarnings("deprecation")
 public final class MainActivity extends Activity {
@@ -68,6 +77,8 @@ public final class MainActivity extends Activity {
     private static final String ACTIVATION_PREFERENCES = "physics_studio_activation_v1";
     private static final String ACTIVATION_CODE_KEY = "activation_code";
     private static final String ACTIVATION_FALLBACK_DEVICE_KEY = "fallback_device_secret";
+    private static final String SECURE_CREDENTIAL_PREFERENCES = "physics_studio_secure_credentials_v1";
+    private static final String SECURE_KEY_ALIAS_PREFIX = "physics_studio_credential_";
     private static final int MAX_OCR_IMAGE_DATA_URL_LENGTH = 12 * 1024 * 1024;
 
     private WebView webView;
@@ -79,12 +90,16 @@ public final class MainActivity extends Activity {
     private final ExecutorService classroomExecutor = Executors.newFixedThreadPool(2);
     private volatile LanClassroomHost classroomHost;
     private volatile boolean classroomHostClosing;
+    private String appEdition = "legacy";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        appEdition = readAppEdition();
         configureSystemBars();
-        startClassroomHost();
+        if ("teacher".equals(appEdition) || "legacy".equals(appEdition)) {
+            startClassroomHost();
+        }
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(244, 246, 242));
@@ -112,8 +127,28 @@ public final class MainActivity extends Activity {
 
         configureWebView();
         if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-            webView.loadUrl(START_URL);
+            webView.loadUrl(startUrlForIntent(getIntent()));
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (webView != null && "student".equals(appEdition)) {
+            webView.loadUrl(startUrlForIntent(intent));
+        }
+    }
+
+    private String startUrlForIntent(Intent intent) {
+        if (!"student".equals(appEdition) || intent == null) return START_URL;
+        Uri data = intent.getData();
+        if (data == null || !"physicsstudio".equals(data.getScheme()) || !"join".equals(data.getHost())) {
+            return START_URL;
+        }
+        String payload = data.toString();
+        if (payload.length() > 600) return START_URL;
+        return START_URL + "?join=" + Uri.encode(payload);
     }
 
     private void startClassroomHost() {
@@ -137,6 +172,20 @@ public final class MainActivity extends Activity {
                 }
             }
         });
+    }
+
+    private String readAppEdition() {
+        try {
+            Bundle metadata = getPackageManager()
+                .getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA)
+                .metaData;
+            String value = metadata == null ? "" : metadata.getString("physicsStudioEdition", "");
+            if ("student".equals(value) || "teacher".equals(value)) return value;
+        } catch (PackageManager.NameNotFoundException ignored) {
+            // The installed package always has application metadata. Keep the
+            // legacy boundary if the manifest is unexpectedly incomplete.
+        }
+        return "legacy";
     }
 
     private void configureSystemBars() {
@@ -408,6 +457,65 @@ public final class MainActivity extends Activity {
     }
 
     private final class AndroidBridge {
+        @JavascriptInterface
+        public String getAppEdition() {
+            return appEdition;
+        }
+
+        @JavascriptInterface
+        public boolean saveSecureCredential(String name, String value) {
+            if (!isAllowedSecureCredentialName(name) || value == null || value.length() > 65536) {
+                return false;
+            }
+            try {
+                SecretKey key = secureCredentialKey();
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, key, new SecureRandom());
+                byte[] encrypted = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
+                byte[] iv = cipher.getIV();
+                JSONObject envelope = new JSONObject();
+                envelope.put("v", 1);
+                envelope.put("iv", Base64.encodeToString(iv, Base64.NO_WRAP));
+                envelope.put("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP));
+                return getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                    .edit()
+                    .putString(name, envelope.toString())
+                    .commit();
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String readSecureCredential(String name) {
+            if (!isAllowedSecureCredentialName(name)) return "";
+            String encoded = getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                .getString(name, "");
+            if (encoded == null || encoded.isEmpty()) return "";
+            try {
+                JSONObject envelope = new JSONObject(encoded);
+                if (envelope.optInt("v", 0) != 1) return "";
+                byte[] iv = Base64.decode(envelope.optString("iv", ""), Base64.NO_WRAP);
+                byte[] encrypted = Base64.decode(envelope.optString("ciphertext", ""), Base64.NO_WRAP);
+                if (iv.length != 12 || encrypted.length < 16 || encrypted.length > 70000) return "";
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, secureCredentialKey(), new GCMParameterSpec(128, iv));
+                byte[] clear = cipher.doFinal(encrypted);
+                return clear.length > 65536 ? "" : new String(clear, StandardCharsets.UTF_8);
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean deleteSecureCredential(String name) {
+            if (!isAllowedSecureCredentialName(name)) return false;
+            return getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .remove(name)
+                .commit();
+        }
+
         /**
          * The current dependency-free Android shell is compiled directly with android.jar and
          * does not bundle an OCR model. Android itself does not expose a general text-recognition
@@ -632,6 +740,30 @@ public final class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    private boolean isAllowedSecureCredentialName(String name) {
+        return "refresh-token".equals(name)
+            || "authenticated-user".equals(name)
+            || "owner-capabilities".equals(name);
+    }
+
+    private SecretKey secureCredentialKey() throws Exception {
+        String alias = SECURE_KEY_ALIAS_PREFIX + getPackageName();
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        keyStore.load(null);
+        java.security.Key existing = keyStore.getKey(alias, null);
+        if (existing instanceof SecretKey) return (SecretKey)existing;
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build());
+        return generator.generateKey();
     }
 
     private static boolean isSafeClassroomRequestId(String value) {

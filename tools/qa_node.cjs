@@ -43,6 +43,8 @@ const scripts = [
   "qa_student_diagnosis.cjs",
   "qa_classroom_offline_create.cjs",
   "qa_v3_classroom.cjs",
+  "qa_dual_android_apps.cjs",
+  "qa_dual_visual_models.cjs",
 ];
 
 for (const script of scripts) {

@@ -15,6 +15,7 @@ import type {
   ChangePasswordRequest,
   ChangePasswordResponse,
   LoginRequest,
+  RegisterRequest,
   ReauthenticateRequest,
   ReauthenticateResponse,
   RefreshRequest,
@@ -202,7 +203,7 @@ export class AuthService {
   }
 
   private async enforceRateLimit(
-    kind: "login" | "refresh" | "reauthenticate",
+    kind: "login" | "refresh" | "reauthenticate" | "register",
     identity: string,
     ip: string,
     maximum: number,
@@ -230,6 +231,64 @@ export class AuthService {
     if (attempts > maximum) {
       throw new ApiError(429, "rate_limit_exceeded", "Too many authentication attempts");
     }
+  }
+
+  async register(input: RegisterRequest, context: AuthRequestContext & { requestId: string }): Promise<AuthResponse> {
+    const loginNormalized = (() => {
+      try { return normalizeLogin(input.login); }
+      catch { throw new ApiError(400, "invalid_login", "Login name is invalid"); }
+    })();
+    const displayName = input.displayName.normalize("NFKC").trim();
+    if (displayName.length < 1 || displayName.length > 80 || /[\u0000-\u001f\u007f]/u.test(displayName)) {
+      throw new ApiError(400, "invalid_display_name", "Display name is invalid");
+    }
+    if (input.role !== "student" && input.role !== "teacher") {
+      throw new ApiError(400, "invalid_role", "Public registration supports student or teacher accounts only");
+    }
+    validateReplacementPassword(input.password);
+    await this.enforceRateLimit("register", loginNormalized, context.ip, 3);
+    const userId = randomUUID();
+    const passwordHash = await hashPassword(input.password);
+    const now = this.now();
+    try {
+      await withTransaction(this.options.pool, async (tx) => {
+        await tx.query(
+          `insert into users(id, role, display_name, status, must_change_password, created_at, updated_at)
+           values ($1, $2, $3, 'active', false, $4, $4)`,
+          [userId, input.role, displayName, now],
+        );
+        await tx.query(
+          `insert into password_credentials(user_id, login_normalized, password_hash, changed_at)
+           values ($1, $2, $3, $4)`,
+          [userId, loginNormalized, passwordHash, now],
+        );
+        await appendAudit(tx, {
+          actorId: userId,
+          actorRole: input.role,
+          action: "auth.register",
+          resourceType: "user",
+          resourceId: userId,
+          classId: null,
+          result: "succeeded",
+          beforeState: null,
+          afterState: { role: input.role, status: "active" },
+          reason: null,
+          requestId: context.requestId,
+          ipHash: hashAuditIp(this.options.auditIpKey, context.ip),
+        });
+      });
+    } catch (error) {
+      if (typeof error === "object" && error !== null && "code" in error && error.code === "23505") {
+        throw new ApiError(409, "login_already_exists", "Login name is already registered");
+      }
+      throw error;
+    }
+    return this.login({
+      login: loginNormalized,
+      password: input.password,
+      deviceId: input.deviceId,
+      deviceName: input.deviceName,
+    }, context);
   }
 
   async login(input: LoginRequest, context: LoginContext): Promise<AuthResponse> {

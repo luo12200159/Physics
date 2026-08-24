@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#0f6045">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https:; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>费曼物理学生端</title>
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="activation.css">
+  <link rel="stylesheet" href="dual-app.css">
+</head>
+<body class="activation-pending" data-edition="student">
+  <div class="role-shell">
+    <header class="role-header">
+      <div class="role-brand" aria-hidden="true">φ</div>
+      <div class="role-title"><strong>费曼物理学生端</strong><small>任务 · 查漏补缺 · 复测</small></div>
+      <button class="connection-pill" id="studentConnection" type="button">本机学习可用</button>
+    </header>
+    <main class="role-main">
+      <section class="role-page active" data-page="home" id="studentHome"></section>
+      <section class="role-page" data-page="tasks" id="studentTasks"></section>
+      <section class="role-page" data-page="gaps" id="studentGaps"></section>
+      <section class="role-page" data-page="wrong" id="studentWrong"></section>
+      <section class="role-page" data-page="analysis" id="studentAnalysis"></section>
+      <section class="role-page" data-page="question" id="studentQuestion"></section>
+      <section class="role-page" data-page="variants" id="studentVariants"></section>
+    </main>
+    <nav class="role-nav" aria-label="学生端主导航">
+      <button class="active" data-nav="home" data-icon="⌂" type="button">首页</button>
+      <button data-nav="tasks" data-icon="▣" type="button">任务</button>
+      <button data-nav="gaps" data-icon="⌕" type="button">查漏补缺</button>
+      <button data-nav="wrong" data-icon="!" type="button">错题</button>
+      <button data-nav="analysis" data-icon="↗" type="button">我的学情</button>
+    </nav>
+  </div>
+  <script src="activation-public-key.js"></script>
+  <script src="storage-repository.js"></script>
+  <script src="activation.js"></script>
+  <script src="curriculum-taxonomy.js"></script>
+  <script src="curriculum-bank.js"></script>
+  <script src="mock-exam-bank.js"></script>
+  <script src="original-practice-bank.js"></script>
+  <script src="targeted-practice-bank.js"></script>
+  <script src="vendor/fflate.js"></script>
+  <script src="vendor/jsQR.js"></script>
+  <script src="security.js"></script>
+  <script src="backup-validator.js"></script>
+  <script src="backup.js"></script>
+  <script src="classroom-config.js"></script>
+  <script src="classroom-client.js"></script>
+  <script src="ai-tutor.js"></script>
+  <script src="question-answer-service.js"></script>
+  <script src="learning-engine.js"></script>
+  <script src="physics-visuals.js"></script>
+  <script src="variant-generator.js"></script>
+  <script src="dual-app-data.js"></script>
+  <script src="dual-app-common.js"></script>
+  <script src="student-app.js"></script>
+</body>
+</html>

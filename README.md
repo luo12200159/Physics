@@ -1,9 +1,26 @@
 # 费曼物理
-当前发布版本：v3.3.0。Windows 与 Android 版共享同一套专项变式训练、学习证据和班级同步逻辑，并继续内置可持久化的局域网班级服务。
+当前发布版本：v3.4.0。Android 已拆分为可独立安装的“费曼物理学生端”和“费曼物理教师端”；两端复用同一题库、学习引擎、备份格式、变式生成器和 HTTPS 班级服务协议。
 
-一个可安装、离线优先且支持真实联机班级的初高中物理学习应用。v3.3.0 延续“费曼物理”名称，并保留 `com.physicsstudio.studyroom`、`physicsstudio://`、既有存储目录、备份格式、内部程序名和题目 ID，以保证旧安装和学习档案连续升级。班级创建、加入、成员列表、作业下发、邀请码轮换和删除均以班级服务确认结果为准，不用本机假状态冒充联网成功。
+一个可安装、离线优先且支持真实联机班级的初高中物理学习应用。v3.4.0 不改变既有题目 ID、学习 state v9 或 `.pslab` 备份格式。旧单体 Android 包 `com.physicsstudio.studyroom` 不会被新包覆盖；旧数据须先从旧应用导出 `.pslab`，再按身份导入学生端或教师端。班级创建、加入、成员列表、作业下发、邀请码轮换和删除均以班级服务确认结果为准，不用本机假状态冒充联网成功。
 
-项目同时提供 Windows 版和独立 Android 版；两个版本并列保留，互不覆盖。
+项目继续保留 Windows 版；Android 两个独立包分别使用 `com.physicsstudio.student` 和 `com.physicsstudio.teacher`，可安装在同一设备上。
+
+## 3.4.0 学生端 / 教师端拆分
+
+- 学生 APK 只打包“首页、任务、查漏补缺、错题、我的学情”和学生作答逻辑，不包含教师入口、教师管理脚本、教师 PIN 或普通角色切换。服务端同时拒绝学生创建班级、发布任务、读取完整花名册或审核作答。
+- 教师 APK 只打包“班级、任务、学情、题库、我的”和教师管理逻辑，不提供代替学生写入学习结果的接口。教师账号由 HTTPS 服务端 RBAC 授权；本机锁只能作为已登录教师的二次保护。
+- 正式联机以仓库 `server/` 的 HTTPS 服务为主。构建时用 `-ClassroomServerUrl https://your-domain.example` 注入真实部署地址；未提供公共域名时安装包不会预置虚构地址，用户可在应用内配置。局域网课堂保留为明确启用的降级模式。
+- 学生端支持账号注册/登录，也保留“备注名 + 邀请码/二维码”的匿名入班流程。长期刷新凭据与 owner capability 在 Android Keystore AES-GCM 保护的私有存储中保存；WebView 仅持有当前会话需要的短期访问令牌。
+- 教师任务支持全班、小组和单个学生；学生只读取自己的目标任务。提交使用稳定 `clientEntityId` 幂等补传，重复同步不产生重复 submission。教师学情展示样本量、待人工复核和原始证据边界。
+- 交互模型继续由共享 `physics-visuals.js` 驱动。匀变速 x-t/v-t/a-t 曲线、机械波、受力/运动、机械能、电路和碰撞会随滑块实时重算；新增渐变、阴影、实时点和立体层次，但模型操作本身不形成掌握证据。
+
+双包构建：
+
+```powershell
+.\android\tools\build_dual_android.ps1 -ClassroomServerUrl https://your-domain.example
+```
+
+若尚未部署 HTTPS 服务，可省略地址以构建离线开发包；这类包的跨网络班级功能必须在应用内配置真实服务地址后才可用。
 
 ## 3.3.0 专项变式训练
 
@@ -69,11 +86,11 @@
 
 ## Android 版
 
-1. Android 安装文件位于 `发布\Android\费曼物理-Android-v3.3.0.apk`。
+1. Android 安装文件分别位于 `发布\Android\费曼物理学生端-Android-v3.4.0.apk` 和 `发布\Android\费曼物理教师端-Android-v3.4.0.apk`。
 2. 支持 Android 6.0 及以上手机和平板，可离线打开题库并保存学习数据。
 3. Android 版可调用摄像头拍题、识别二维码、选择多张图片与文档；经设备授权后可调用麦克风和可用的运动、光照、磁场传感器。
 4. Android 与 Windows 的本地数据库相互独立；完整 `.pslab` 备份可迁移题目、学习档案、附件与视频，轻量 JSON 用于仅迁移结构化内容。
-5. Android 原生工程位于 `android`，不会替换或删除现有 Windows 安装程序。
+5. Android 壳层位于 `android`，两个 application module 分别位于 `android/app-student` 与 `android/app-teacher`；共享 Java WebView 宿主和 Web 业务模块，不会替换或删除现有 Windows 安装程序。
 6. Android 的联网题库、Edge/Bing 搜索和外部网页优先调用 Microsoft Edge；未安装 Edge 时交给手机当前的默认浏览器。
 7. Android 版与 Windows 版使用同一发布公钥，但设备申请码不同；每台设备都需要单独签发激活码。
 

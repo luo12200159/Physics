@@ -12,10 +12,14 @@ if (!buildScript.includes(".Replace('\\', '/')")) {
 if (!buildScript.includes("qa_release_zip_portability.cjs")) {
   throw new Error("build_release.ps1 must run the source ZIP portability gate after packaging");
 }
-for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js"]) {
+const requiredDualSources = [
+  "安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js",
+  "student-index.html", "student-app.js", "teacher-index.html", "teacher-app.js",
+  "dual-app-common.js", "dual-app-data.js", "dual-app.css",
+];
+for (const required of requiredDualSources) {
   if (!buildScript.includes(required)) throw new Error(`source ZIP staging list missing ${required}`);
 }
-
 function centralDirectoryNames(buffer) {
   const eocd = Buffer.from([0x50, 0x4b, 0x05, 0x06]);
   const offset = buffer.lastIndexOf(eocd);
@@ -48,7 +52,11 @@ const names = centralDirectoryNames(fs.readFileSync(zipPath));
 if (names.some((name) => name.includes("\\") || name.split("/").includes(".."))) {
   throw new Error("ZIP contains Windows separators or traversal entries");
 }
-for (const required of ["安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js"]) {
+for (const required of requiredDualSources) {
+  const exists = names.includes(required) || names.some((name) => name.startsWith(`${required}/`));
+  if (!exists) throw new Error(`ZIP missing ${required}`);
+}
+for (const required of ["android/app-student/AndroidManifest.xml", "android/app-teacher/AndroidManifest.xml"]) {
   if (!names.includes(required)) throw new Error(`ZIP missing ${required}`);
 }
 

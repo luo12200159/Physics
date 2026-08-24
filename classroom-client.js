@@ -176,6 +176,26 @@
   installAndroidLanTransport();
   installWindowsLanTransport();
 
+  function nativeSecureStore() {
+    const bridge = globalThis.PhysicsStudioAndroid || window.PhysicsStudioAndroid;
+    return bridge
+      && typeof bridge.saveSecureCredential === "function"
+      && typeof bridge.readSecureCredential === "function"
+      && typeof bridge.deleteSecureCredential === "function"
+      ? bridge
+      : null;
+  }
+
+  function appEdition() {
+    try {
+      const bridge = globalThis.PhysicsStudioAndroid || window.PhysicsStudioAndroid;
+      const value = String(bridge?.getAppEdition?.() || globalThis.PHYSICS_STUDIO_APP_EDITION || "legacy");
+      return value === "student" || value === "teacher" ? value : "legacy";
+    } catch {
+      return "legacy";
+    }
+  }
+
   class ClassroomError extends Error {
     constructor(message, details = {}) {
       super(message);
@@ -388,9 +408,48 @@
     return Object.freeze({ ...auth.user });
   }
 
+  async function register(input = {}) {
+    const role = input.role === "teacher" ? "teacher" : input.role === "student" ? "student" : "";
+    if (!role) throw inputError("注册身份无效。", "invalid_role");
+    const result = await requestJson("/v1/auth/register", {
+      method: "POST",
+      auth: false,
+      body: {
+        login: requiredText(input.login, "登录名", 120),
+        displayName: requiredText(input.displayName, "显示名称", 80),
+        role,
+        password: requiredPassword(input.password),
+        deviceId: stableDeviceId(),
+        deviceName: requiredText(input.deviceName, "设备名称", 80),
+      },
+    });
+    const auth = validateAuthResponse(result);
+    if (auth.user.role !== role) throw new ClassroomError("注册身份与服务端响应不一致。", { code: "invalid_server_response" });
+    saveSession(auth);
+    return Object.freeze({ ...auth.user });
+  }
+
+  async function reauthenticate(password) {
+    const result = await requestJson("/v1/auth/reauthenticate", {
+      method: "POST",
+      body: { password: requiredPassword(password) },
+    });
+    if (!result?.accessToken || !result?.user) {
+      throw new ClassroomError("教师身份重新验证响应无效。", { code: "invalid_server_response" });
+    }
+    saveSession({
+      accessToken: result.accessToken,
+      refreshToken: readSessionValue(REFRESH_TOKEN_KEY),
+      user: { ...(readStoredUser() || {}), ...result.user },
+    });
+    return Object.freeze({ ...result.user });
+  }
+
   function readOwnerCapabilities() {
     try {
-      const value = JSON.parse(syncStorage().getItem(OWNER_CAPABILITIES_KEY) || "{}");
+      const secure = nativeSecureStore();
+      const legacy = syncStorage().getItem(OWNER_CAPABILITIES_KEY) || "";
+      const value = JSON.parse(secure?.readSecureCredential("owner-capabilities") || legacy || "{}");
       if (!value || typeof value !== "object" || Array.isArray(value)) return {};
       const now = Date.now();
       const valid = {};
@@ -420,7 +479,20 @@
         };
       }
       if (JSON.stringify(valid) !== JSON.stringify(value)) {
-        try { syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(valid)); } catch { /* read path */ }
+        try {
+          if (secure) {
+            secure.saveSecureCredential("owner-capabilities", JSON.stringify(valid));
+            syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+          } else {
+            syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(valid));
+          }
+        } catch { /* read path */ }
+      } else if (secure && legacy) {
+        try {
+          if (secure.saveSecureCredential("owner-capabilities", JSON.stringify(valid))) {
+            syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+          }
+        } catch { /* legacy migration remains retryable */ }
       }
       return valid;
     } catch {
@@ -446,7 +518,14 @@
       source: "server"
     };
     try {
-      syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(records));
+      const encoded = JSON.stringify(records);
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("owner-capabilities", encoded)) throw new Error("secure_store_failed");
+        syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+      } else {
+        syncStorage().setItem(OWNER_CAPABILITIES_KEY, encoded);
+      }
     } catch {
       throw new ClassroomError("无法保存本机班级管理能力。", { code: "storage_unavailable" });
     }
@@ -458,7 +537,14 @@
     if (!records[id]) return;
     delete records[id];
     try {
-      syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(records));
+      const encoded = JSON.stringify(records);
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("owner-capabilities", encoded)) throw new Error("secure_store_failed");
+        syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+      } else {
+        syncStorage().setItem(OWNER_CAPABILITIES_KEY, encoded);
+      }
     } catch {
       throw new ClassroomError("无法更新本机班级管理能力。", { code: "storage_unavailable" });
     }
@@ -472,7 +558,6 @@
     const refreshToken = readSessionValue(REFRESH_TOKEN_KEY);
     const user = readStoredUser();
     const authenticated = Boolean(accessToken && refreshToken && user);
-    if (!authenticated && (accessToken || refreshToken || user)) clearSession();
     const owner = currentOwnerCapability();
     const ownerAuthenticated = Boolean(owner);
     const legacyOwnerCount = Object.values(readOwnerCapabilities())
@@ -482,6 +567,7 @@
       serviceConfigured: Boolean(serverUrl),
       hostedLocally: Boolean(hosted.serverUrl),
       authenticated,
+      restorableSession: Boolean(!accessToken && refreshToken && user),
       ownerAuthenticated,
       legacyOwnerCount,
       user: authenticated ? Object.freeze({ ...user }) : owner
@@ -645,6 +731,23 @@
     }
   }
 
+  async function restoreSession() {
+    const current = status();
+    if (current.authenticated) return current.user;
+    const refreshToken = readSessionValue(REFRESH_TOKEN_KEY);
+    const user = readStoredUser();
+    if (!refreshToken || !user) return null;
+    try {
+      const auth = await refreshSession();
+      return Object.freeze({ ...auth.user });
+    } catch (error) {
+      if (["invalid_refresh_token", "refresh_token_reused", "deletion_pending"].includes(error?.code)) {
+        clearSession();
+      }
+      throw error;
+    }
+  }
+
   async function readResponseText(response) {
     let text;
     try {
@@ -729,8 +832,17 @@
   function saveSession(auth) {
     try {
       window.sessionStorage.setItem(ACCESS_TOKEN_KEY, auth.accessToken);
-      window.sessionStorage.setItem(REFRESH_TOKEN_KEY, auth.refreshToken);
       window.sessionStorage.setItem(USER_KEY, JSON.stringify(auth.user));
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("refresh-token", auth.refreshToken)
+          || !secure.saveSecureCredential("authenticated-user", JSON.stringify(auth.user))) {
+          throw new Error("secure_store_failed");
+        }
+        window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+      } else {
+        window.sessionStorage.setItem(REFRESH_TOKEN_KEY, auth.refreshToken);
+      }
     } catch {
       clearSession();
       throw new ClassroomError("无法在当前会话中保存登录信息。", {
@@ -745,6 +857,9 @@
       window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
       window.sessionStorage.removeItem(USER_KEY);
       window.sessionStorage.removeItem(GUEST_SESSION_KEY);
+      const secure = nativeSecureStore();
+      secure?.deleteSecureCredential("refresh-token");
+      secure?.deleteSecureCredential("authenticated-user");
     } catch {
       // 会话存储不可用时没有更多可清理的数据边界。
     }
@@ -752,6 +867,10 @@
 
   function readSessionValue(key) {
     try {
+      if (key === REFRESH_TOKEN_KEY) {
+        const secureValue = nativeSecureStore()?.readSecureCredential("refresh-token");
+        if (secureValue) return String(secureValue);
+      }
       return String(window.sessionStorage.getItem(key) || "");
     } catch {
       return "";
@@ -760,7 +879,9 @@
 
   function readStoredUser() {
     try {
-      const value = JSON.parse(window.sessionStorage.getItem(USER_KEY) || "null");
+      const sessionValue = window.sessionStorage.getItem(USER_KEY) || "";
+      const secureValue = nativeSecureStore()?.readSecureCredential("authenticated-user") || "";
+      const value = JSON.parse(sessionValue || secureValue || "null");
       if (!value || !UUID_PATTERN.test(String(value.id || "")) || !ROLES.has(value.role)) return null;
       return {
         id: String(value.id).toLowerCase(),
@@ -1406,6 +1527,12 @@
   }
 
   async function createClass(input = {}) {
+    if (appEdition() === "student") {
+      throw new ClassroomError("学生端不能创建或管理班级。", {
+        code: "resource_forbidden",
+        status: 403
+      });
+    }
     const name = requiredText(input.name, "班级名称", 120);
     const payload = { name };
     if (String(input.grade || "").trim()) payload.grade = String(input.grade).trim();
@@ -1416,6 +1543,12 @@
       return requestJson("/v1/classes", { method: "POST", body: payload });
     }
     const hosted = hostedNativeServices();
+    if (appEdition() === "teacher" && !hosted.serverUrl) {
+      throw new ClassroomError("请先登录教师账号后再创建云端班级。", {
+        code: "authentication_required",
+        status: 401
+      });
+    }
     const configuredServer = loadServerUrl();
     const discoveredServers = [...hosted.services];
     const candidates = [];
@@ -1722,11 +1855,14 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "3.3.0",
+    version: "3.4.0",
     configure,
     status,
     checkHealth,
     login,
+    register,
+    reauthenticate,
+    restoreSession,
     logout,
     createClass,
     listClasses,

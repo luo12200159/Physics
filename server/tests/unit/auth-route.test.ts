@@ -38,6 +38,11 @@ function makeService(overrides: Record<string, unknown> = {}): AuthService {
       refreshToken: REFRESH_TOKEN,
       user: USER,
     })),
+    register: vi.fn(async () => ({
+      accessToken: "r".repeat(80),
+      refreshToken: REFRESH_TOKEN,
+      user: USER,
+    })),
     refresh: vi.fn(async () => ({
       accessToken: "y".repeat(80),
       refreshToken: ROTATED_REFRESH_TOKEN,
@@ -55,6 +60,39 @@ function makeService(overrides: Record<string, unknown> = {}): AuthService {
 }
 
 describe("authentication route contracts", () => {
+  it("registers only an explicit student or teacher account and returns a session", async () => {
+    const teacher = { ...USER, role: "teacher" as const, displayName: "测试教师" };
+    const register = vi.fn(async () => ({
+      accessToken: "r".repeat(80),
+      refreshToken: REFRESH_TOKEN,
+      user: teacher,
+    }));
+    const app = await buildTestApp({ authService: makeService({ register }) });
+    const payload = {
+      login: "teacher-self-register",
+      displayName: "测试教师",
+      role: "teacher",
+      password: "Unique teacher password 2026!",
+      deviceId: "D".repeat(64),
+      deviceName: "Teacher Android",
+    };
+    const response = await app.inject({ method: "POST", url: "/v1/auth/register", payload });
+    expect(response.statusCode, response.body).toBe(201);
+    expect(response.json().user.role).toBe("teacher");
+    expect(register).toHaveBeenCalledWith(payload, {
+      ip: expect.any(String),
+      requestId: expect.any(String),
+    });
+
+    const administrator = await app.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: { ...payload, role: "administrator" },
+    });
+    expect(administrator.statusCode).toBe(400);
+    expect(register).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps login idempotency-exempt, rejects unknown input, and serializes only fixed fields", async () => {
     const login = vi.fn(async () => ({
       accessToken: "x".repeat(80),

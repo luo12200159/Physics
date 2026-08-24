@@ -25,6 +25,15 @@ export const LoginRequestSchema = StrictObject({
   deviceName: Type.String({ minLength: 1, maxLength: 80 }),
 });
 
+export const RegisterRequestSchema = StrictObject({
+  login: Type.String({ minLength: 1, maxLength: 120 }),
+  displayName: Type.String({ minLength: 1, maxLength: 80 }),
+  role: Type.Union([Type.Literal("student"), Type.Literal("teacher")]),
+  password: Type.String({ minLength: 12, maxLength: 128 }),
+  deviceId: Type.String({ pattern: "^[0-9A-Fa-f]{64}$" }),
+  deviceName: Type.String({ minLength: 1, maxLength: 80 }),
+});
+
 export const AuthResponseSchema = StrictObject({
   accessToken: Type.String({ minLength: 80, maxLength: 4_096 }),
   refreshToken: Type.String({
@@ -68,6 +77,7 @@ export const UpdateDisplayNameResponseSchema = StrictObject({
 export type UserRole = Static<typeof UserRoleSchema>;
 export type AuthUser = Static<typeof AuthUserSchema>;
 export type LoginRequest = Static<typeof LoginRequestSchema>;
+export type RegisterRequest = Static<typeof RegisterRequestSchema>;
 export type AuthResponse = Static<typeof AuthResponseSchema>;
 export type RefreshRequest = Static<typeof RefreshRequestSchema>;
 export type ReauthenticateRequest = Static<typeof ReauthenticateRequestSchema>;

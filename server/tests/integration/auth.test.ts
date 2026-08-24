@@ -129,6 +129,33 @@ describe("password login and bearer authentication", () => {
     expect(stored.rows[0]?.bytes).toBe(32);
   });
 
+  it("self-registers a teacher account and immediately issues a valid session", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auth/register",
+      payload: {
+        login: "teacher-public-registration",
+        displayName: "注册教师",
+        role: "teacher",
+        password: "A distinct teacher password 2026!",
+        deviceId: "B".repeat(64),
+        deviceName: "Teacher Android",
+      },
+    });
+    expect(response.statusCode, response.body).toBe(201);
+    const body = response.json();
+    expect(body.user).toMatchObject({ role: "teacher", displayName: "注册教师" });
+    await expect(service.authenticateAccessToken(body.accessToken, "GET /v1/classes"))
+      .resolves.toMatchObject({ role: "teacher" });
+    const stored = await pool.query<{ role: string; login_normalized: string }>(
+      `select users.role, credentials.login_normalized
+         from users join password_credentials credentials on credentials.user_id = users.id
+        where users.id = $1`,
+      [body.user.id],
+    );
+    expect(stored.rows[0]).toEqual({ role: "teacher", login_normalized: "teacher-public-registration" });
+  });
+
   it("uses the same public failure for an unknown login, wrong password, and disabled account", async () => {
     const responses = await Promise.all([
       login("unknown-student"),

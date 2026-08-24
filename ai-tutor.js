@@ -7,7 +7,7 @@
   const MAX_RESPONSE_CHARS = 180000;
 
   function appVersion() {
-    return String(window.PHYSICS_LEARNING_ENGINE?.version || "3.3.0");
+    return String(window.PHYSICS_LEARNING_ENGINE?.version || globalThis.PHYSICS_STUDIO_VERSION?.appVersion || "3.4.0");
   }
 
   function storage() {

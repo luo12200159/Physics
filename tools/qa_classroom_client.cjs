@@ -120,7 +120,7 @@ async function main() {
   assert.deepEqual(
     Object.keys(api),
     [
-      "version", "configure", "status", "checkHealth", "login", "logout", "createClass",
+      "version", "configure", "status", "checkHealth", "login", "register", "reauthenticate", "restoreSession", "logout", "createClass",
       "listClasses", "getClass", "deleteClass", "createInvite", "parseInvitePayload", "discoverServices", "joinClassByInviteCode", "joinInvite", "updateDisplayName", "listRoster", "listGroups",
       "createGroup", "updateMembership", "syncStatus", "syncLearning",
       "syncExamRecords", "syncVariantSets", "listVariantSets", "flushSyncQueue", "acknowledgeSyncConflict",
@@ -128,7 +128,9 @@ async function main() {
       "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots"
     ]
   );
-  assert.equal(api.register, undefined, "client must not expose account registration");
+  assert.equal(typeof api.register, "function", "split apps require explicit student/teacher account registration");
+  assert.equal(typeof api.reauthenticate, "function", "sensitive teacher operations require recent authentication");
+  assert.equal(typeof api.restoreSession, "function", "Android secure refresh credentials must support session restoration");
   assert.equal(api.status().serverUrl, "");
   assert.equal(api.status().serviceConfigured, false);
   assert.equal(api.status().authenticated, false);

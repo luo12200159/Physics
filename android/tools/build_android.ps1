@@ -3,7 +3,9 @@
     [string]$VersionName = '',
     [int]$VersionCode = 0,
     [string]$ClassroomServerUrl = $env:PHYSICS_STUDIO_CLASSROOM_URL,
-    [switch]$AllowInsecureClassroomLan
+    [switch]$AllowInsecureClassroomLan,
+    [ValidateSet('legacy', 'student', 'teacher')]
+    [string]$Edition = 'legacy'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -62,9 +64,27 @@ function Read-SigningProperties {
     return $properties
 }
 
+function Copy-RequiredFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "缺少构建资源：$Source"
+    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $WebRoot = Split-Path -Parent $ProjectRoot
 $WorkspaceRoot = Split-Path -Parent $WebRoot
+$EditionSourceDirectory = if ($Edition -eq 'legacy') { $ProjectRoot } else { Join-Path $ProjectRoot "app-$Edition" }
+$AndroidPackage = if ($Edition -eq 'student') { 'com.physicsstudio.student' } elseif ($Edition -eq 'teacher') { 'com.physicsstudio.teacher' } else { 'com.physicsstudio.studyroom' }
+$AndroidIndexName = if ($Edition -eq 'student') { 'student-index.html' } elseif ($Edition -eq 'teacher') { 'teacher-index.html' } else { 'index.html' }
+$EditionDisplayName = if ($Edition -eq 'student') { '费曼物理学生端' } elseif ($Edition -eq 'teacher') { '费曼物理教师端' } else { '费曼物理' }
+if (-not (Test-Path -LiteralPath (Join-Path $EditionSourceDirectory 'AndroidManifest.xml'))) {
+    throw "缺少 Android $Edition application module：$EditionSourceDirectory"
+}
 $VersionSourcePath = Join-Path $WebRoot 'version.json'
 if (-not (Test-Path -LiteralPath $VersionSourcePath)) { throw "缺少统一版本源：$VersionSourcePath" }
 $VersionSource = Get-Content -LiteralPath $VersionSourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -126,8 +146,9 @@ $env:ANDROID_SDK_ROOT = $SdkRoot
 $env:Path = (Join-Path $JdkHome 'bin') + ';' + $env:Path
 
 $BuildParent = [IO.Path]::GetTempPath().TrimEnd([IO.Path]::DirectorySeparatorChar)
-$BuildDirectory = Join-Path $BuildParent 'PhysicsStudioAndroidBuild'
-Assert-SafeChildPath -Parent $BuildParent -Child $BuildDirectory -ExpectedLeaf 'PhysicsStudioAndroidBuild'
+$BuildLeaf = "PhysicsStudioAndroidBuild-$Edition"
+$BuildDirectory = Join-Path $BuildParent $BuildLeaf
+Assert-SafeChildPath -Parent $BuildParent -Child $BuildDirectory -ExpectedLeaf $BuildLeaf
 if (Test-Path -LiteralPath $BuildDirectory) {
     Remove-Item -LiteralPath $BuildDirectory -Recurse -Force
 }
@@ -155,17 +176,29 @@ if ($ClassroomServerUrl) {
 }
 $classroomUrlJson = ConvertTo-Json -InputObject $ClassroomServerUrl -Compress
 $allowInsecureLanJson = if ($AllowInsecureClassroomLan) { 'true' } else { 'false' }
-$classroomConfigSource = "globalThis.PHYSICS_STUDIO_CLASSROOM_URL = $classroomUrlJson;`nglobalThis.PHYSICS_STUDIO_ALLOW_INSECURE_LAN = $allowInsecureLanJson;`n"
+$editionJson = ConvertTo-Json -InputObject $Edition -Compress
+$classroomConfigSource = "globalThis.PHYSICS_STUDIO_CLASSROOM_URL = $classroomUrlJson;`nglobalThis.PHYSICS_STUDIO_ALLOW_INSECURE_LAN = $allowInsecureLanJson;`nglobalThis.PHYSICS_STUDIO_APP_EDITION = $editionJson;`n"
 [IO.File]::WriteAllText(
     (Join-Path $AssetsDirectory 'classroom-config.js'),
     $classroomConfigSource,
     (New-Object Text.UTF8Encoding($false))
 )
 
-Copy-Item -LiteralPath (Join-Path $ProjectRoot 'AndroidManifest.xml') -Destination $StagedProject -Force
+$versionConfigJson = ConvertTo-Json -InputObject $VersionSource -Compress
+$versionConfigSource = "globalThis.PHYSICS_STUDIO_VERSION = Object.freeze($versionConfigJson);`n"
+[IO.File]::WriteAllText(
+    (Join-Path $AssetsDirectory 'version-config.js'),
+    $versionConfigSource,
+    (New-Object Text.UTF8Encoding($false))
+)
+
+Copy-Item -LiteralPath (Join-Path $EditionSourceDirectory 'AndroidManifest.xml') -Destination $StagedProject -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'res') -Destination (Join-Path $StagedProject 'res') -Recurse -Force
+if ($Edition -ne 'legacy') {
+    Copy-RequiredFile -Source (Join-Path $EditionSourceDirectory 'res\values\strings.xml') -Destination (Join-Path $StagedProject 'res\values\strings.xml')
+}
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'src') -Destination (Join-Path $StagedProject 'src') -Recurse -Force
-$AndroidIndex = [IO.File]::ReadAllText((Join-Path $WebRoot 'index.html'), [Text.Encoding]::UTF8)
+$AndroidIndex = [IO.File]::ReadAllText((Join-Path $WebRoot $AndroidIndexName), [Text.Encoding]::UTF8)
 $AndroidIndex = $AndroidIndex.Replace('href="assets/favicon.svg"', 'href="favicon.svg"')
 $AndroidIndex = $AndroidIndex.Replace('src="vendor/jsQR.js"', 'src="jsQR.js"')
 $AndroidIndex = $AndroidIndex.Replace('src="vendor/fflate.js"', 'src="fflate.js"')
@@ -174,6 +207,7 @@ $AndroidIndex = $AndroidIndex.Replace('src="vendor/fflate.js"', 'src="fflate.js"
     $AndroidIndex,
     (New-Object Text.UTF8Encoding($false))
 )
+if ($Edition -eq 'legacy') {
 Copy-Item -LiteralPath (Join-Path $WebRoot 'styles.css') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.css') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'experience-shell.css') -Destination $AssetsDirectory -Force
@@ -206,6 +240,41 @@ Copy-Item -LiteralPath (Join-Path $WebRoot 'teacher-mode-lock.js') -Destination 
 Copy-Item -LiteralPath (Join-Path $WebRoot 'app.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.js') -Destination $AssetsDirectory -Force
 Copy-Item -LiteralPath (Join-Path $WebRoot 'experience-shell.js') -Destination $AssetsDirectory -Force
+} else {
+    $SharedWebAssets = @(
+        'activation.css',
+        'activation-public-key.js',
+        'activation.js',
+        'curriculum-taxonomy.js',
+        'curriculum-bank.js',
+        'mock-exam-bank.js',
+        'original-practice-bank.js',
+        'targeted-practice-bank.js',
+        'security.js',
+        'backup.js',
+        'backup-validator.js',
+        'ai-tutor.js',
+        'classroom-client.js',
+        'question-answer-service.js',
+        'storage-repository.js',
+        'learning-engine.js',
+        'physics-visuals.js',
+        'variant-generator.js',
+        'dual-app-data.js',
+        'dual-app-common.js',
+        'dual-app.css'
+    )
+    foreach ($asset in $SharedWebAssets) {
+        Copy-RequiredFile -Source (Join-Path $WebRoot $asset) -Destination (Join-Path $AssetsDirectory $asset)
+    }
+    Copy-RequiredFile -Source (Join-Path $WebRoot "${Edition}-app.js") -Destination (Join-Path $AssetsDirectory "${Edition}-app.js")
+    Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate.js') -Destination (Join-Path $AssetsDirectory 'fflate.js')
+    Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'fflate-LICENSE.txt')
+    if ($Edition -eq 'student') {
+        Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR.js') -Destination (Join-Path $AssetsDirectory 'jsQR.js')
+        Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'jsQR-LICENSE.txt')
+    }
+}
 Copy-Item -LiteralPath (Join-Path $WebRoot 'assets\favicon.svg') -Destination (Join-Path $AssetsDirectory 'favicon.svg') -Force
 
 $CompiledResources = Join-Path $BuildDirectory 'compiled-resources.zip'
@@ -319,7 +388,8 @@ Invoke-Checked -FilePath $ZipAlign -ArgumentList @('-c', '-p', '4', $SignedApk)
 
 $ReleaseDirectory = Join-Path $WebRoot '发布\Android'
 New-Item -ItemType Directory -Force -Path $ReleaseDirectory | Out-Null
-$ApkName = "费曼物理-Android-v$VersionName.apk"
+$ArtifactPrefix = if ($Edition -eq 'legacy') { '费曼物理' } else { $EditionDisplayName }
+$ApkName = if ($Edition -eq 'legacy') { "费曼物理-Android-v$VersionName.apk" } else { "$EditionDisplayName-Android-v$VersionName.apk" }
 $ReleaseApk = Join-Path $ReleaseDirectory $ApkName
 Copy-Item -LiteralPath $SignedApk -Destination $ReleaseApk -Force
 Copy-Item -LiteralPath (Join-Path $ProjectRoot '安装说明.txt') -Destination (Join-Path $ReleaseDirectory '安装说明.txt') -Force
@@ -330,32 +400,32 @@ $BadgingOutput = & $Aapt 'dump' 'badging' $SignedApk 2>&1
 if ($LASTEXITCODE -ne 0) { throw '无法读取发布 APK 信息。' }
 
 [IO.File]::WriteAllText(
-    (Join-Path $ReleaseDirectory '签名验证.txt'),
+    (Join-Path $ReleaseDirectory "$ArtifactPrefix-签名验证.txt"),
     (($SignatureOutput | Out-String).Trim() + "`n"),
     (New-Object Text.UTF8Encoding($false))
 )
 [IO.File]::WriteAllText(
-    (Join-Path $ReleaseDirectory 'APK信息.txt'),
+    (Join-Path $ReleaseDirectory "$ArtifactPrefix-APK信息.txt"),
     (($BadgingOutput | Out-String).Trim() + "`n"),
     (New-Object Text.UTF8Encoding($false))
 )
 
 $ApkHash = (Get-FileHash -LiteralPath $ReleaseApk -Algorithm SHA256).Hash
-$ApkHashPath = Join-Path $ReleaseDirectory 'SHA256.txt'
+$ApkHashPath = Join-Path $ReleaseDirectory "$ArtifactPrefix-SHA256.txt"
 [IO.File]::WriteAllText(
     $ApkHashPath,
     "$ApkHash *$ApkName`n",
     (New-Object Text.UTF8Encoding($false))
 )
 
-$ZipName = "费曼物理-Android-v$VersionName.zip"
+$ZipName = "$ArtifactPrefix-Android-v$VersionName.zip"
 $ReleaseZip = Join-Path $ReleaseDirectory $ZipName
 Compress-Archive -LiteralPath @(
     $ReleaseApk,
     (Join-Path $ReleaseDirectory '安装说明.txt'),
     $ApkHashPath,
-    (Join-Path $ReleaseDirectory '签名验证.txt'),
-    (Join-Path $ReleaseDirectory 'APK信息.txt')
+    (Join-Path $ReleaseDirectory "$ArtifactPrefix-签名验证.txt"),
+    (Join-Path $ReleaseDirectory "$ArtifactPrefix-APK信息.txt")
 ) -DestinationPath $ReleaseZip -CompressionLevel Optimal -Force
 $ZipHash = (Get-FileHash -LiteralPath $ReleaseZip -Algorithm SHA256).Hash
 [IO.File]::WriteAllText(
@@ -369,7 +439,8 @@ $BuildSucceeded = $true
     Apk = $ReleaseApk
     ApkSize = (Get-Item -LiteralPath $ReleaseApk).Length
     ApkSHA256 = $ApkHash
-    Package = 'com.physicsstudio.studyroom'
+    Package = $AndroidPackage
+    Edition = $Edition
     VersionName = $VersionName
     VersionCode = $VersionCode
     MinimumAndroid = '6.0 (API 23)'
@@ -379,7 +450,7 @@ $BuildSucceeded = $true
 } | Format-List
 } finally {
     if ($BuildSucceeded -and $BuildDirectory -and (Test-Path -LiteralPath $BuildDirectory)) {
-        Assert-SafeChildPath -Parent $BuildParent -Child $BuildDirectory -ExpectedLeaf 'PhysicsStudioAndroidBuild'
+        Assert-SafeChildPath -Parent $BuildParent -Child $BuildDirectory -ExpectedLeaf $BuildLeaf
         Remove-Item -LiteralPath $BuildDirectory -Recurse -Force
     }
     if ($MappedToolchainDrive) {

@@ -36,6 +36,10 @@ export function makeBootstrapDependencies(env: NodeJS.ProcessEnv): AppDependenci
     pool,
     auditIpKey: config.auditIpKey,
     ownerCapabilitySecret: config.jwtSecret,
+    // The production cloud requires an authenticated teacher account. The
+    // compatibility endpoint remains available only in test/development;
+    // Android local-classroom mode is hosted by the teacher package itself.
+    allowAnonymousClassCreation: config.nodeEnv !== "production",
     syncOutboxRetentionDays: config.syncOutboxRetentionDays,
   });
   const ownerCapabilityService = new OwnerCapabilityService({
