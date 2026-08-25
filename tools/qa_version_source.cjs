@@ -34,6 +34,7 @@ assert.doesNotMatch(android, /PhysicsStudioAndroid\/\d+\.\d+\.\d+/,
 assert.match(read("android/tools/build_android.ps1"), /version\.json/);
 assert.match(read("tools/build_release.ps1"), /version\.json/);
 assert.match(read("server/src/version.ts"), new RegExp(`APP_VERSION\\s*=\\s*["']${version.appVersion.replaceAll(".", "\\.")}["']`));
+assert.match(read("classroom-client.js"), new RegExp(`version:\\s*["']${version.classroomClientVersion.replaceAll(".", "\\.")}["']`));
 assert.doesNotMatch(read("tools/qa_browser.cjs"), /PHYSICS_LEARNING_ENGINE\?\.version\s*===\s*["']/);
 assert.doesNotMatch(read("tools/qa_targeted_teacher_ui.cjs"), /PHYSICS_LEARNING_ENGINE\?\.version\s*===\s*["']/);
 

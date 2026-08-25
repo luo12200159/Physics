@@ -1,7 +1,7 @@
 {
   "name": "physics-study-room-qa",
   "private": true,
-  "version": "3.4.0",
+  "version": "3.4.1",
   "description": "Feynman Physics front-end QA and release entry points",
   "scripts": {
     "qa:node": "node tools/qa_node.cjs",

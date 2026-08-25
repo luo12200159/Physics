@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "3.4.0",
+    appVersion: "3.4.1",
     stateVersion: 9,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.4.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.4.1");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(9, Number(VERSION_SOURCE.stateVersion) || 9);

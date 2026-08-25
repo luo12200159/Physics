@@ -1,5 +1,12 @@
 # 更新记录
 
+## v3.4.1（恢复 v3.3.0 界面等价的 Android 双端，2026-08-25）
+
+- 学生端与教师端重新使用 v3.3.0 的共享 `index.html`、`app.js`、`learning-lab.js` 和 `experience-shell.js`，移除 v3.4.0 曾引入的简化双端页面与重复业务实现。
+- 学生端固定为 v3.3.0 学生模式，保留“今日、练习、错题、我的、拍题”以及完整学习模块；教师端固定为 v3.3.0 教师模式，保留教师工具条和“今日、学生、班级、管理”工作区。
+- 两端仍使用独立包名，可同时安装；普通设置不能跨角色切换，联网管理权限继续由服务端 RBAC 验证，教师 PIN 只作为教师端本机二次锁。
+- 题目 ID、1900 道完整题、232 条考试索引、学习 state v9、变式证据和 `.pslab` 格式均未改变。
+
 ## v3.4.0（Android 学生端 / 教师端独立发布，2026-08-24）
 
 - 应用拆分：新增 `app-student`（`com.physicsstudio.student`）和 `app-teacher`（`com.physicsstudio.teacher`）两个独立 Android application module、独立入口、独立资源清单和构建产物。旧 `com.physicsstudio.studyroom` 不被覆盖。

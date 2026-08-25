@@ -1,4 +1,12 @@
-# v3.4.0 Android 双应用发布计划
+# v3.4.1 v3.3.0 界面等价双应用发布计划
+
+- [x] 对照 Git 提交 `e80a2f4` 确认 v3.3.0 原始学生模式、教师模式和共享业务入口。
+- [x] 两个 Android application module 改为加载同一份 v3.3.0 `index.html` 和完整功能模块。
+- [x] 构建时固定学生/教师角色，去除普通跨角色切换，同时保留教师 PIN 和服务端 RBAC。
+- [x] 删除与 v3.3.0 不一致的简化双端页面和重复业务脚本。
+- [x] 完整 `npm run qa`、服务端类型检查、67 项单元测试、生产构建和双 APK 构建均通过；产物 SHA-256 已写入发布目录。
+
+# v3.4.0 Android 双应用发布计划（已由 v3.4.1 界面等价实现替代）
 
 - [x] 盘点 Android WebView、共享 Web 资源、服务端 RBAC、备份和测试调用链。
 - [x] 建立 `app-student` / `app-teacher` 两个独立 application module、包名和入口。

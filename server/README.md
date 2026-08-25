@@ -5,7 +5,7 @@
 - 班级业务服务：Fastify + PostgreSQL + Redis，默认开发端口 `8788`。教师建班、邀请码、成员关系、删除班级和学习同步都以该服务的持久化结果为准。
 - 受控 AI 网关：`physics-ai-gateway.mjs`，默认开发端口 `8787`。它不承担班级功能。
 
-v3.4.0 受控网关实现 `POST /v1/physics/solve`、`POST /v1/physics/tutor-turn` 与 `POST /v1/physics/generate-variants`。变式生成与交叉验证使用独立请求；缺少网关时客户端只使用可核验本地题模或审核题族，不把泛化文字任务描述为完整变式。
+v3.4.1 受控网关实现 `POST /v1/physics/solve`、`POST /v1/physics/tutor-turn` 与 `POST /v1/physics/generate-variants`。变式生成与交叉验证使用独立请求；缺少网关时客户端只使用可核验本地题模或审核题族，不把泛化文字任务描述为完整变式。
 
 客户端不再把 `127.0.0.1:8787` 猜作班级服务。Windows/Android 安装包必须在构建时注入已部署的 HTTPS 班级服务地址，或由用户在“在线班级连接”中明确填写。
 

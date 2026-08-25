@@ -4,6 +4,10 @@
   const STORAGE_KEY = "physics-experience-v2";
   const MAX_EVENTS = 600;
   const CLASSROOM_INVITE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+  const APP_EDITION = ["student", "teacher"].includes(globalThis.PHYSICS_STUDIO_APP_EDITION)
+    ? globalThis.PHYSICS_STUDIO_APP_EDITION
+    : "legacy";
+  const FIXED_ROLE = APP_EDITION === "student" || APP_EDITION === "teacher" ? APP_EDITION : "";
   const engine = window.PHYSICS_LEARNING_ENGINE;
   const STUDENT_MODULES = Object.freeze([
     { view: "library", icon: "▤", label: "练习筛选", detail: "按年级、章节、知识点和难度进入练习" },
@@ -115,7 +119,7 @@
     return {
       version: 2,
       onboarded: false,
-      role: "student",
+      role: FIXED_ROLE || "student",
       displayName: "同学",
       grade: "高一",
       textbook: "人教版",
@@ -145,6 +149,7 @@
         activeDates: Array.isArray(value.activeDates) ? value.activeDates.slice(-60) : []
       };
       if (normalized.role === "parent") normalized.role = "student";
+      if (FIXED_ROLE) normalized.role = FIXED_ROLE;
       if (normalized.grade === "七年级") normalized.grade = "八年级";
       return normalized;
     } catch (error) {
@@ -176,7 +181,7 @@
       // until the session has been explicitly unlocked.
       ensureTeacherUnlocked().then((ok) => {
         if (!ok) {
-          experience.role = "student";
+          experience.role = FIXED_ROLE || "student";
           saveExperience();
         }
         applyRole();
@@ -201,7 +206,7 @@
       <form id="experienceOnboardingForm">
         <header>
           <span class="experience-mark" aria-hidden="true">φ</span>
-          <div><strong>费曼物理</strong><h1>先选择你的使用方式</h1><p>只需最少信息，之后可在“我的”中修改。</p></div>
+          <div><strong>费曼物理</strong><h1>${FIXED_ROLE ? `${FIXED_ROLE === "teacher" ? "教师端" : "学生端"}首次设置` : "先选择你的使用方式"}</h1><p>只需最少信息，之后可在设置中修改。</p></div>
         </header>
         <fieldset class="role-choice">
           <legend>使用身份</legend>
@@ -209,7 +214,7 @@
             ["student", "学生", "作答、错题、复习、实验和学习报告"],
             ["teacher", "教师", "内容导入、审核、组卷和班级证据"],
             ["parent", "家长", "只看学习摘要和可支持的知识模块"]
-          ].filter(([value]) => value !== "parent").map(([value, label, detail]) => `
+          ].filter(([value]) => value !== "parent" && (!FIXED_ROLE || value === FIXED_ROLE)).map(([value, label, detail]) => `
             <label>
               <input type="radio" name="experienceRole" value="${value}">
               <span><strong>${label}</strong><small>${detail}</small></span>
@@ -418,7 +423,8 @@
 
   function showOnboarding(editing) {
     onboarding.dataset.editing = editing ? "true" : "false";
-    onboarding.querySelector(`input[name="experienceRole"][value="${experience.role}"]`).checked = true;
+    const roleInput = onboarding.querySelector(`input[name="experienceRole"][value="${FIXED_ROLE || experience.role}"]`);
+    if (roleInput) roleInput.checked = true;
     onboarding.querySelector("#experienceName").value = experience.displayName;
     onboarding.querySelector("#experienceGrade").value = experience.grade;
     onboarding.querySelector("#experienceTextbook").value = experience.textbook;
@@ -429,7 +435,7 @@
   }
 
   function updateOnboardingVisibility() {
-    const role = onboarding.querySelector('input[name="experienceRole"]:checked')?.value || "student";
+    const role = FIXED_ROLE || onboarding.querySelector('input[name="experienceRole"]:checked')?.value || "student";
     const studentFields = onboarding.querySelector(".onboarding-fields");
     studentFields.classList.toggle("role-summary", role !== "student");
     onboarding.querySelector("#experienceExamDateField").classList.toggle("hidden", role !== "student");
@@ -463,7 +469,7 @@
 
   async function saveOnboarding(event) {
     event.preventDefault();
-    const role = onboarding.querySelector('input[name="experienceRole"]:checked')?.value || "student";
+    const role = FIXED_ROLE || onboarding.querySelector('input[name="experienceRole"]:checked')?.value || "student";
     if (role === "teacher" && !(await ensureTeacherUnlocked())) return;
     experience.role = ["student", "teacher"].includes(role) ? role : "student";
     experience.displayName = onboarding.querySelector("#experienceName").value.trim().slice(0, 12) || "同学";
@@ -504,6 +510,7 @@
 
   function applyRole() {
     document.body.classList.remove("role-student", "role-teacher", "role-parent");
+    if (FIXED_ROLE) experience.role = FIXED_ROLE;
     if (experience.role === "parent") experience.role = "student";
     document.body.classList.add(`role-${experience.role}`, "experience-ready");
     applyFontScale();
@@ -1994,7 +2001,7 @@
         <button data-teacher-action="center" type="button">打开教师中心</button>
         <button data-teacher-action="classroom" type="button">打开班级</button>
         <button data-teacher-action="lock" type="button">锁定教师模式</button>
-        <button data-teacher-action="switch" type="button">切换身份</button>
+        ${FIXED_ROLE ? "" : '<button data-teacher-action="switch" type="button">切换身份</button>'}
       </div>`;
     bar.onclick = handleTeacherBarClick;
   }
@@ -2007,7 +2014,7 @@
       bar.className = "teacher-experience-bar teacher-mode-locked";
       document.querySelector(".main")?.prepend(bar);
     }
-    bar.innerHTML = `<div><span>教师模式已锁定</span><strong>本地教师管理需要 PIN 解锁；学生体验不能通过普通角色切换取得教师权限。</strong></div><div><button data-teacher-action="unlock" type="button">解锁教师管理</button><button data-teacher-action="switch" type="button">切换身份</button></div>`;
+    bar.innerHTML = `<div><span>教师模式已锁定</span><strong>本地教师管理需要 PIN 解锁；学生体验不能通过普通角色切换取得教师权限。</strong></div><div><button data-teacher-action="unlock" type="button">解锁教师管理</button>${FIXED_ROLE ? "" : '<button data-teacher-action="switch" type="button">切换身份</button>'}</div>`;
     bar.onclick = handleTeacherBarClick;
   }
 
@@ -2027,7 +2034,7 @@
       renderRoleExperience();
       document.dispatchEvent(new CustomEvent("physics-experience-role-changed", { detail: { role: experience.role, locked: true } }));
     }
-    else if (action === "switch") showOnboarding(true);
+    else if (action === "switch" && !FIXED_ROLE) showOnboarding(true);
   }
 
   function handleShellClick(event) {
@@ -4167,6 +4174,7 @@
   window.PhysicsExperience = Object.freeze({
     getState() {
       return {
+        edition: APP_EDITION,
         role: experience.role,
         grade: experience.grade,
         textbook: experience.textbook,

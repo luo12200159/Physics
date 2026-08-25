@@ -10,13 +10,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("费曼物理 Windows 单文件安装程序")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("3.4.0.0")]
-[assembly: AssemblyFileVersion("3.4.0.0")]
+[assembly: AssemblyVersion("3.4.1.0")]
+[assembly: AssemblyFileVersion("3.4.1.0")]
 
 internal static class InstallerProgram
 {
     private const string AppName = "费曼物理";
-    private const string AppVersion = "3.4.0";
+    private const string AppVersion = "3.4.1";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PhysicsStudio";
 
     private static readonly PayloadFile[] Payload =

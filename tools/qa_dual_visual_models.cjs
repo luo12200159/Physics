@@ -40,8 +40,7 @@ assert.ok(energyBottom.kineticEnergy > energyTop.kineticEnergy);
 assert.notEqual(energyTop.svg, energyBottom.svg, "energy bars must update with height");
 assert.match(energyBottom.svg, /feynman-energy-shadow/);
 
-const studentSource = fs.readFileSync(path.join(root, "student-app.js"), "utf8");
-assert.match(studentSource, /\["opposingForce",\s*"摩擦力 N"/, "student slider must use the model's opposingForce parameter");
-assert.doesNotMatch(studentSource, /\["friction",\s*"摩擦力 N"/, "obsolete inert friction parameter must not remain");
+const learningLabSource = fs.readFileSync(path.join(root, "learning-lab.js"), "utf8");
+assert.match(learningLabSource, /physics-visual|PHYSICS_VISUALS|renderVisual/i, "v3.3 learning laboratory must retain the shared visual-model entry");
 
 console.log("Dynamic, parameter-driven physics visual checks passed");
