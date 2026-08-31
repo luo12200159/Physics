@@ -80,7 +80,7 @@ $WebRoot = Split-Path -Parent $ProjectRoot
 $WorkspaceRoot = Split-Path -Parent $WebRoot
 $EditionSourceDirectory = if ($Edition -eq 'legacy') { $ProjectRoot } else { Join-Path $ProjectRoot "app-$Edition" }
 $AndroidPackage = if ($Edition -eq 'student') { 'com.physicsstudio.student' } elseif ($Edition -eq 'teacher') { 'com.physicsstudio.teacher' } else { 'com.physicsstudio.studyroom' }
-$AndroidIndexName = if ($Edition -eq 'student') { 'student-index.html' } elseif ($Edition -eq 'teacher') { 'teacher-index.html' } else { 'index.html' }
+$AndroidIndexName = 'index.html'
 $EditionDisplayName = if ($Edition -eq 'student') { '费曼物理学生端' } elseif ($Edition -eq 'teacher') { '费曼物理教师端' } else { '费曼物理' }
 if (-not (Test-Path -LiteralPath (Join-Path $EditionSourceDirectory 'AndroidManifest.xml'))) {
     throw "缺少 Android $Edition application module：$EditionSourceDirectory"
@@ -202,79 +202,64 @@ $AndroidIndex = [IO.File]::ReadAllText((Join-Path $WebRoot $AndroidIndexName), [
 $AndroidIndex = $AndroidIndex.Replace('href="assets/favicon.svg"', 'href="favicon.svg"')
 $AndroidIndex = $AndroidIndex.Replace('src="vendor/jsQR.js"', 'src="jsQR.js"')
 $AndroidIndex = $AndroidIndex.Replace('src="vendor/fflate.js"', 'src="fflate.js"')
+if ($Edition -ne 'legacy') {
+    $AndroidIndex = [Text.RegularExpressions.Regex]::Replace(
+        $AndroidIndex,
+        '<title>.*?</title>',
+        "<title>$EditionDisplayName</title>",
+        [Text.RegularExpressions.RegexOptions]::Singleline
+    )
+    $AndroidIndex = $AndroidIndex.Replace(
+        '<body class="activation-pending">',
+        "<body class=`"activation-pending`" data-edition=`"$Edition`">"
+    )
+}
+if ($Edition -eq 'student') {
+    $AndroidIndex = $AndroidIndex.Replace('    <script src="teacher-mode-lock.js"></script>' + "`r`n", '')
+    $AndroidIndex = $AndroidIndex.Replace('    <script src="teacher-mode-lock.js"></script>' + "`n", '')
+}
 [IO.File]::WriteAllText(
     (Join-Path $AssetsDirectory 'index.html'),
     $AndroidIndex,
     (New-Object Text.UTF8Encoding($false))
 )
-if ($Edition -eq 'legacy') {
-Copy-Item -LiteralPath (Join-Path $WebRoot 'styles.css') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.css') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'experience-shell.css') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'activation.css') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'activation-public-key.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'activation.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'curriculum-taxonomy.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'curriculum-bank.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'exam-question-index.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'mock-exam-bank.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'original-practice-bank.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'targeted-practice-bank.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'vendor\jsQR.js') -Destination (Join-Path $AssetsDirectory 'jsQR.js') -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'vendor\jsQR-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'jsQR-LICENSE.txt') -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'vendor\fflate.js') -Destination (Join-Path $AssetsDirectory 'fflate.js') -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'vendor\fflate-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'fflate-LICENSE.txt') -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'security.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'backup.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'backup-validator.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'ai-tutor.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'document-import.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'content-catalog.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'classroom-client.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'question-answer-service.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'storage-repository.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-engine.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'physics-visuals.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'variant-generator.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'teacher-mode-lock.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'app.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'learning-lab.js') -Destination $AssetsDirectory -Force
-Copy-Item -LiteralPath (Join-Path $WebRoot 'experience-shell.js') -Destination $AssetsDirectory -Force
-} else {
-    $SharedWebAssets = @(
-        'activation.css',
-        'activation-public-key.js',
-        'activation.js',
-        'curriculum-taxonomy.js',
-        'curriculum-bank.js',
-        'mock-exam-bank.js',
-        'original-practice-bank.js',
-        'targeted-practice-bank.js',
-        'security.js',
-        'backup.js',
-        'backup-validator.js',
-        'ai-tutor.js',
-        'classroom-client.js',
-        'question-answer-service.js',
-        'storage-repository.js',
-        'learning-engine.js',
-        'physics-visuals.js',
-        'variant-generator.js',
-        'dual-app-data.js',
-        'dual-app-common.js',
-        'dual-app.css'
-    )
-    foreach ($asset in $SharedWebAssets) {
-        Copy-RequiredFile -Source (Join-Path $WebRoot $asset) -Destination (Join-Path $AssetsDirectory $asset)
-    }
-    Copy-RequiredFile -Source (Join-Path $WebRoot "${Edition}-app.js") -Destination (Join-Path $AssetsDirectory "${Edition}-app.js")
-    Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate.js') -Destination (Join-Path $AssetsDirectory 'fflate.js')
-    Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'fflate-LICENSE.txt')
-    if ($Edition -eq 'student') {
-        Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR.js') -Destination (Join-Path $AssetsDirectory 'jsQR.js')
-        Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'jsQR-LICENSE.txt')
-    }
+$SharedWebAssets = @(
+    'styles.css',
+    'learning-lab.css',
+    'experience-shell.css',
+    'activation.css',
+    'activation-public-key.js',
+    'activation.js',
+    'curriculum-taxonomy.js',
+    'curriculum-bank.js',
+    'exam-question-index.js',
+    'mock-exam-bank.js',
+    'original-practice-bank.js',
+    'targeted-practice-bank.js',
+    'security.js',
+    'backup.js',
+    'backup-validator.js',
+    'ai-tutor.js',
+    'document-import.js',
+    'content-catalog.js',
+    'classroom-client.js',
+    'question-answer-service.js',
+    'storage-repository.js',
+    'learning-engine.js',
+    'physics-visuals.js',
+    'variant-generator.js',
+    'app.js',
+    'learning-lab.js',
+    'experience-shell.js'
+)
+if ($Edition -ne 'student') { $SharedWebAssets += 'teacher-mode-lock.js' }
+foreach ($asset in $SharedWebAssets) {
+    Copy-RequiredFile -Source (Join-Path $WebRoot $asset) -Destination (Join-Path $AssetsDirectory $asset)
 }
+Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate.js') -Destination (Join-Path $AssetsDirectory 'fflate.js')
+Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\fflate-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'fflate-LICENSE.txt')
+Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR.js') -Destination (Join-Path $AssetsDirectory 'jsQR.js')
+Copy-RequiredFile -Source (Join-Path $WebRoot 'vendor\jsQR-LICENSE.txt') -Destination (Join-Path $AssetsDirectory 'jsQR-LICENSE.txt')
 Copy-Item -LiteralPath (Join-Path $WebRoot 'assets\favicon.svg') -Destination (Join-Path $AssetsDirectory 'favicon.svg') -Force
 
 $CompiledResources = Join-Path $BuildDirectory 'compiled-resources.zip'

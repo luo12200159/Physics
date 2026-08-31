@@ -10,7 +10,7 @@ const serverPackage = JSON.parse(fs.readFileSync(path.join(root, "server", "pack
 assert.match(version.appVersion, /^\d+\.\d+\.\d+$/);
 assert.equal(packageJson.version, version.appVersion, "package.json must follow version.json");
 assert.equal(serverPackage.version, version.appVersion, "server/package.json must follow version.json");
-assert.equal(version.stateVersion, 9);
+assert.equal(version.stateVersion, 10);
 assert.equal(version.reportFormatVersion, 4);
 
 const engine = read("learning-engine.js");
@@ -34,6 +34,7 @@ assert.doesNotMatch(android, /PhysicsStudioAndroid\/\d+\.\d+\.\d+/,
 assert.match(read("android/tools/build_android.ps1"), /version\.json/);
 assert.match(read("tools/build_release.ps1"), /version\.json/);
 assert.match(read("server/src/version.ts"), new RegExp(`APP_VERSION\\s*=\\s*["']${version.appVersion.replaceAll(".", "\\.")}["']`));
+assert.match(read("classroom-client.js"), new RegExp(`version:\\s*["']${version.classroomClientVersion.replaceAll(".", "\\.")}["']`));
 assert.doesNotMatch(read("tools/qa_browser.cjs"), /PHYSICS_LEARNING_ENGINE\?\.version\s*===\s*["']/);
 assert.doesNotMatch(read("tools/qa_targeted_teacher_ui.cjs"), /PHYSICS_LEARNING_ENGINE\?\.version\s*===\s*["']/);
 

@@ -18,6 +18,9 @@ export const ReviewCaseParamsSchema = StrictObject({ reviewId: UuidSchema });
 
 const VariantRoleSchema = Type.Union([
   Type.Literal("near"),
+  Type.Literal("far"),
+  Type.Literal("counter"),
+  // Accepted for v3.4.1 clients; new clients normalize these to far.
   Type.Literal("reverse"),
   Type.Literal("context"),
 ]);
@@ -97,6 +100,14 @@ export const SyncLearningRequestSchema = StrictObject({
 export const VariantQuestionSyncSchema = StrictObject({
   id: ClientEntityIdSchema,
   variantRole: VariantRoleSchema,
+  variantTechnique: Type.Optional(Type.Union([
+    Type.Literal("parameter"),
+    Type.Literal("condition"),
+    Type.Literal("reverse"),
+    Type.Literal("representation"),
+    Type.Literal("context"),
+    Type.Literal("counterexample"),
+  ])),
   title: Type.String({ minLength: 1, maxLength: 240 }),
   content: Type.String({ minLength: 12, maxLength: 60_000 }),
   options: Type.Array(JsonObjectSchema, { maxItems: 12 }),

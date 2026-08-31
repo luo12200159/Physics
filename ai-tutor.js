@@ -7,7 +7,7 @@
   const MAX_RESPONSE_CHARS = 180000;
 
   function appVersion() {
-    return String(window.PHYSICS_LEARNING_ENGINE?.version || globalThis.PHYSICS_STUDIO_VERSION?.appVersion || "3.4.0");
+    return String(window.PHYSICS_LEARNING_ENGINE?.version || globalThis.PHYSICS_STUDIO_VERSION?.appVersion || "4.0.0");
   }
 
   function storage() {
@@ -384,11 +384,14 @@
       variantGenerationSchema.variantRequired.forEach((field) => {
         if (!(field in variant)) throw new Error(`第 ${index + 1} 道变式缺少字段：${field}。`);
       });
-      const role = ["near", "reverse", "context"].includes(variant.variantRole)
-        ? variant.variantRole
-        : "";
-      if (!role || roles.has(role)) throw new Error("变式角色缺失或重复。 ");
-      roles.add(role);
+      const rawRole = String(variant.variantRole || "");
+      const role = ["near", "far", "counter"].includes(rawRole)
+        ? rawRole
+        : ["reverse", "context"].includes(rawRole) ? "far" : "";
+      const technique = String(variant.variantTechnique || (rawRole === "reverse" ? "reverse" : rawRole === "context" ? "context" : role === "counter" ? "counterexample" : role === "near" ? "condition" : "context"));
+      const roleKey = `${role}:${technique}`;
+      if (!role || roles.has(roleKey)) throw new Error("变式角色或生成手法缺失、重复。 ");
+      roles.add(roleKey);
       if (variant.stage !== parentQuestion.stage || variant.grade !== parentQuestion.grade) {
         throw new Error("AI 变式超出母题学段或年级。 ");
       }
@@ -425,6 +428,7 @@
       return {
         id: String(variant.id).slice(0, 220),
         variantRole: role,
+        variantTechnique: technique.slice(0, 80),
         title: String(variant.title || `专项变式 ${index + 1}`).slice(0, 240),
         content: content.slice(0, 60000),
         options: Array.isArray(variant.options) ? variant.options.slice(0, 12) : [],

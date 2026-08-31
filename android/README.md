@@ -1,7 +1,9 @@
 # 费曼物理 Android 版
-当前发布版本：v3.4.0。Android 现在提供学生端与教师端两个独立安装包；学生可通过账号同步，或只用备注名和邀请码/二维码加入班级。
+当前发布版本：v4.0.0。Android 继续提供学生端与教师端两个独立安装包；本次以 v3.4.1 为基线升级学生端的学习闭环，教师端仍使用共享业务层和独立固定身份。
 
-学生端包名为 `com.physicsstudio.student`，教师端包名为 `com.physicsstudio.teacher`。两个包通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口运行共享学习模块，但只打包各自的页面和业务脚本。旧单体包 `com.physicsstudio.studyroom` 不会被覆盖；数据通过完整 `.pslab` 显式迁移。
+学生端一级入口为“首页、课程、训练、学情、我的”，页面支持纵向触控滚动；首页快捷任务、教材册签和学情行动条支持横向触控滚动。按钮接入共享 Web 业务逻辑，不使用仅展示的占位页面。
+
+学生端包名为 `com.physicsstudio.student`，教师端包名为 `com.physicsstudio.teacher`。两个包通过 `appassets.androidplatform.net` 的 HTTPS 本地资源入口运行同一份 v3.3.0 Web 入口与学习模块，由构建时版本标识固定角色。旧单体包 `com.physicsstudio.studyroom` 不会被覆盖；数据通过完整 `.pslab` 显式迁移。
 
 ## 平台能力
 

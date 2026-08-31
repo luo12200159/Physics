@@ -13,8 +13,8 @@ using System.Web.Script.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("费曼物理班级服务")]
 [assembly: System.Reflection.AssemblyProduct("费曼物理")]
-[assembly: System.Reflection.AssemblyVersion("3.4.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("3.4.0.0")]
+[assembly: System.Reflection.AssemblyVersion("4.0.0.0")]
+[assembly: System.Reflection.AssemblyFileVersion("4.0.0.0")]
 
 internal static class LanClassroomProgram
 {

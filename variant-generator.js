@@ -3,12 +3,20 @@
 
   const root = globalThis;
   const SPEC_VERSION = "variant_generation_v1";
-  const GENERATOR_VERSION = "1.0.0";
-  const ROLES = Object.freeze(["near", "reverse", "context"]);
+  const GENERATOR_VERSION = "2.0.0";
+  const ROLES = Object.freeze(["near", "far", "counter"]);
   const ROLE_LABELS = Object.freeze({
     near: "近迁移",
-    reverse: "逆向/结构迁移",
-    context: "情境/表征迁移"
+    far: "远迁移",
+    counter: "反例辨析"
+  });
+  const TECHNIQUE_LABELS = Object.freeze({
+    parameter: "参数联动",
+    condition: "条件变化",
+    reverse: "逆向设问",
+    representation: "表征转换",
+    context: "情境迁移",
+    counterexample: "反例辨析"
   });
   const DIFFICULTIES = Object.freeze(["基础", "进阶", "挑战"]);
 
@@ -162,17 +170,18 @@
       score += numericChanges >= 2 ? 25 : 5;
       score += targetedRole === "near" ? 50 : 0;
       score += sameContext ? -20 : 5;
-    } else if (role === "reverse") {
+    } else if (role === "far") {
       score += sameModel ? 5 : 35;
       score += requestedKind(parent) !== requestedKind(candidate) ? 40 : -15;
-      score += ["near", "counter"].includes(targetedRole) ? 30 : 0;
+      score += targetedRole === "far" ? 70 : ["near", "counter"].includes(targetedRole) ? 20 : 0;
+      score += differentRepresentation ? 25 : 0;
+      score += sameContext ? -25 : 20;
       score += differentQuestionType ? 10 : 0;
     } else {
-      score += sameModel ? -10 : 35;
-      score += targetedRole === "far" ? 70 : 0;
-      score += differentRepresentation ? 25 : 0;
-      score += sameContext ? -40 : 25;
-      score += differentQuestionType ? 10 : 0;
+      if (targetedRole !== "counter") return -Infinity;
+      score += sameModel ? 50 : 15;
+      score += targetedRole === "counter" ? 90 : 0;
+      score += requestedKind(parent) !== requestedKind(candidate) ? 15 : 0;
     }
     return score;
   }
@@ -184,11 +193,21 @@
         ? `保持核心模型，联动改变 ${numericChanges} 项条件或数据并重新求解。`
         : "保持核心规律，改变约束、方向或设问组合。";
     }
-    if (role === "reverse") {
-      return `把母题所求“${requestedKind(parent) || "结论"}”改为新的已知—未知关系，重新组织方程。`;
+    if (role === "far") {
+      const reverse = requestedKind(parent) !== requestedKind(candidate);
+      return reverse
+        ? `把母题所求“${requestedKind(parent) || "结论"}”改为新的已知—未知关系，并在不同表面情境中重新组织方程。`
+        : `迁移到不同表面情境或${text(candidate.representationType || "文字/公式", 80)}表征，核心知识结构保持不变。`;
     }
-    const representation = text(candidate.representationType || "文字/公式", 80);
-    return `迁移到不同表面情境或${representation}表征，核心知识结构保持不变。`;
+    return "辨认表面相似但规律条件不成立的情形，说明为什么不能照搬母题结论。";
+  }
+
+  function variantTechnique(parent, candidate, role) {
+    if (role === "near") return meaningfulNumericChanges(parent, candidate) >= 2 ? "parameter" : "condition";
+    if (role === "counter") return "counterexample";
+    if (requestedKind(parent) !== requestedKind(candidate)) return "reverse";
+    if (text(parent.representationType) !== text(candidate.representationType)) return "representation";
+    return "context";
   }
 
   function structuredSolution(question, parent, role) {
@@ -245,6 +264,8 @@
       sourceContentHash: sourceContentHash(parent),
       variantRole: role,
       variantRoleLabel: ROLE_LABELS[role],
+      variantTechnique: variantTechnique(parent, candidate, role),
+      variantTechniqueLabel: TECHNIQUE_LABELS[variantTechnique(parent, candidate, role)],
       sequence,
       title: text(`${ROLE_LABELS[role]}｜${candidate.title}`, 240),
       content: text(candidate.content),
@@ -359,11 +380,31 @@
         break;
       }
     }
+    // Some reviewed banks have several meaningful same-model variants but no
+    // verified far/counter item. Keep their real role as "near" instead of
+    // falsely relabelling one as far transfer merely to reach the 2-item gate.
+    if (variants.length < 2 && variants[0]?.variantRole === "near") {
+      const additionalNear = pool
+        .map((candidate) => ({ candidate, score: candidateScore(parent, candidate, "near") }))
+        .filter((item) => Number.isFinite(item.score) && item.score >= 45 && !used.has(item.candidate.id))
+        .sort((first, second) => second.score - first.score || String(first.candidate.id).localeCompare(String(second.candidate.id)));
+      for (const item of additionalNear) {
+        const variant = createVariant(parent, item.candidate, "near", variants.length + 1);
+        variant.validation = validateVariant(parent, variant);
+        if (!variant.validation.passed) continue;
+        used.add(item.candidate.id);
+        variants.push(variant);
+        break;
+      }
+    }
     return variants[0]?.variantRole === "near" ? variants : [];
   }
 
   function normalizeAiVariant(parent, value, index) {
-    const role = ROLES.includes(value?.variantRole) ? value.variantRole : ROLES[index] || "near";
+    const rawRole = text(value?.variantRole, 30);
+    const role = ROLES.includes(rawRole) ? rawRole : ["reverse", "context"].includes(rawRole) ? "far" : ROLES[index] || "near";
+    const technique = text(value?.variantTechnique, 30)
+      || (rawRole === "reverse" ? "reverse" : rawRole === "context" ? "context" : role === "counter" ? "counterexample" : role === "near" ? "condition" : "context");
     const variant = {
       ...value,
       id: text(value?.id, 220) || `variant-ai-${stableHash(`${parent.id}|${role}|${value?.content || ""}`)}`,
@@ -371,6 +412,8 @@
       sourceContentHash: sourceContentHash(parent),
       variantRole: role,
       variantRoleLabel: ROLE_LABELS[role],
+      variantTechnique: technique,
+      variantTechniqueLabel: TECHNIQUE_LABELS[technique] || technique,
       sequence: index + 1,
       title: text(value?.title, 240),
       content: text(value?.content),
@@ -500,6 +543,7 @@
     specVersion: SPEC_VERSION,
     roles: ROLES,
     roleLabels: ROLE_LABELS,
+    techniqueLabels: TECHNIQUE_LABELS,
     stableHash,
     sourceContentHash,
     buildItemModel,

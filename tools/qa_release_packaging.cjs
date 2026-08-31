@@ -60,8 +60,8 @@ assertIncludes("tools/build_release.ps1", '"费曼物理-Windows-v$Version.zip"'
 assertIncludes("tools/build_release.ps1", '"费曼物理-源码-v$Version.zip"');
 assertIncludes("android/tools/build_android.ps1", '"费曼物理-Android-v$VersionName.apk"');
 assertIncludes("android/tools/build_android.ps1", "ValidateSet('legacy', 'student', 'teacher')");
-assertIncludes("tools/build_release.ps1", "'student-index.html'");
-assertIncludes("tools/build_release.ps1", "'teacher-index.html'");
+assertIncludes("android/tools/build_android.ps1", "$AndroidIndexName = 'index.html'");
+assertIncludes("android/tools/build_android.ps1", "'experience-shell.js'");
 assertIncludes("tools/build_release.ps1", "@('app-student', 'app-teacher', 'res', 'src', 'tools')");
 assertIncludes("Installer.cs", `private const string AppVersion = "${version}";`);
 assertIncludes(".gitignore", "物理研习室-班级服务.exe");

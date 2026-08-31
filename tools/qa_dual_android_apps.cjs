@@ -1,3 +1,5 @@
+"use strict";
+
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -9,10 +11,8 @@ const studentManifest = read("android/app-student/AndroidManifest.xml");
 const teacherManifest = read("android/app-teacher/AndroidManifest.xml");
 const activity = read("android/src/com/physicsstudio/studyroom/MainActivity.java");
 const build = read("android/tools/build_android.ps1");
-const studentHtml = read("student-index.html");
-const teacherHtml = read("teacher-index.html");
-const studentApp = read("student-app.js");
-const teacherApp = read("teacher-app.js");
+const index = read("index.html");
+const experience = read("experience-shell.js");
 const classroom = read("classroom-client.js");
 const classService = read("server/src/modules/classes/service.ts");
 
@@ -24,30 +24,40 @@ assert.match(studentManifest, /android:allowBackup="false"/);
 assert.match(teacherManifest, /android:allowBackup="false"/);
 assert.match(studentManifest, /android:scheme="physicsstudio" android:host="join"/);
 
-assert.match(studentHtml, /student-app\.js/);
-assert.doesNotMatch(studentHtml, /teacher-app\.js|teacher-mode-lock\.js|learning-lab\.js|experience-shell\.js/);
-assert.match(teacherHtml, /teacher-app\.js/);
-assert.doesNotMatch(teacherHtml, /student-app\.js|experience-shell\.js/);
-assert.doesNotMatch(studentApp, /createClass\(|createAssignment\(|listRoster\(|decideReviewCase\(/);
-assert.match(studentApp, /submitAssignment\(/);
-assert.match(studentApp, /assistanceLocked/);
-assert.match(studentApp, /variantStartTimes/);
-assert.match(studentApp, /durationSeconds:\s*Math\.max\(1, Math\.round/);
-assert.doesNotMatch(studentApp, /durationSeconds:\s*1[,\n]/);
-assert.doesNotMatch(studentApp, /name="hintLevel"/);
-assert.match(teacherApp, /createClass\(/);
-assert.match(teacherApp, /createAssignment\(/);
-assert.match(teacherApp, /listRoster\(/);
-assert.match(teacherApp, /decideReviewCase\(/);
-assert.match(teacherApp, /pending-sync-publish/);
-assert.doesNotMatch(teacherApp, /recordAttempt\(|recordVariantAttempt\(|submitAssignment\(/);
+// Both application modules render the shared role UI and business modules.
+// Student v4 may change its navigation, but compact duplicate app prototypes
+// must not become a second product implementation.
+for (const asset of [
+  "styles.css", "learning-lab.css", "experience-shell.css", "app.js",
+  "learning-lab.js", "experience-shell.js", "document-import.js",
+  "content-catalog.js", "exam-question-index.js",
+]) {
+  assert.match(index, new RegExp(asset.replaceAll(".", "\\.")));
+  assert.match(build, new RegExp(`'${asset.replaceAll(".", "\\.")}'`));
+}
+assert.match(build, /\$AndroidIndexName = 'index\.html'/);
+assert.match(build, /PHYSICS_STUDIO_APP_EDITION/);
+assert.match(build, /if \(\$Edition -eq 'student'\)[\s\S]*teacher-mode-lock\.js/);
+assert.equal(fs.existsSync(path.join(project, "student-app.js")), false);
+assert.equal(fs.existsSync(path.join(project, "teacher-app.js")), false);
+assert.equal(fs.existsSync(path.join(project, "dual-app.css")), false);
+
+assert.match(experience, /const FIXED_ROLE = APP_EDITION === "student" \|\| APP_EDITION === "teacher"/);
+assert.match(experience, /if \(FIXED_ROLE\) experience\.role = FIXED_ROLE/);
+assert.match(experience, /\["home", "⌂", "首页"\]/);
+assert.match(experience, /\["course", "目", "课程"\]/);
+assert.match(experience, /\["training", "▤", "训练"\]/);
+assert.match(experience, /\["analysis", "◎", "学情"\]/);
+assert.match(experience, /\["profile", "○", "我的"\]/);
+assert.match(experience, /打开教师中心/);
+assert.match(experience, /打开班级/);
+assert.match(experience, /FIXED_ROLE \? "" : '<button data-teacher-action="switch"/);
 
 assert.match(activity, /"teacher"\.equals\(appEdition\) \|\| "legacy"\.equals\(appEdition\)/);
 assert.match(activity, /saveSecureCredential/);
 assert.match(activity, /AndroidKeyStore/);
 assert.match(activity, /startUrlForIntent/);
 assert.match(build, /ValidateSet\('legacy', 'student', 'teacher'\)/);
-assert.match(build, /SharedWebAssets/);
 assert.match(build, /费曼物理学生端/);
 assert.match(build, /费曼物理教师端/);
 
@@ -56,4 +66,4 @@ assert.match(classroom, /学生端不能创建或管理班级/);
 assert.match(classroom, /saveSecureCredential\("refresh-token"/);
 assert.match(classService, /actor\.role !== "teacher" && actor\.role !== "administrator"/);
 
-console.log("Independent student/teacher Android package and RBAC boundary checks passed");
+console.log("Shared role interface, student v4 navigation, independent Android packages, and RBAC checks passed");
