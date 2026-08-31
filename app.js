@@ -349,6 +349,12 @@ function publishAppApi() {
       if (question) openDetail(question);
       return Boolean(question);
     },
+    openTransferPractice(questionId) {
+      const question = state.questions.find((item) => item.id === questionId);
+      if (!question) return false;
+      openTransferPractice(question);
+      return true;
+    },
     editQuestion(questionId) {
       const question = state.questions.find((item) => item.id === questionId);
       if (question) openForm(question);

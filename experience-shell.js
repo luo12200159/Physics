@@ -61,7 +61,7 @@
     [/油膜法/, ["单分子油膜模型与分子近似球形假设", "油酸体积由浓度和滴数确定", "膜面积由方格估算，分子直径 d=V/S", "实验误差来自滴定、面积边界和油膜完整性"]]
   ]);
   const ui = {
-    view: "today",
+    view: "home",
     search: "",
     practiceGrade: "全部",
     libraryGrade: "",
@@ -69,8 +69,10 @@
     libraryTopic: "全部",
     libraryQuestionType: "全部",
     libraryPage: 1,
+    analysisEvidencePage: 1,
     progressState: "全部",
     curriculumBookId: "",
+    curriculumChapterId: "",
     curriculumTarget: null,
     methodGrade: "",
     methodPlayer: null,
@@ -105,6 +107,8 @@
   let classroomDialog = null;
   let classroomSyncTimer = 0;
   let studentDataCache = null;
+  const questionSearchTextCache = new WeakMap();
+  const questionCurriculumFieldsCache = new WeakMap();
   let studentViewRenderTimer = 0;
   let classroomQrStream = null;
   let classroomQrTimer = 0;
@@ -542,7 +546,7 @@
   function studentDerivedOptions() {
     return {
       includeAnalysis: Boolean(studentDataCache?.data?.analysis)
-        && ["analysis", "advice"].includes(ui.view),
+        && ["home", "today", "analysis", "advice"].includes(ui.view),
       includeCoverage: Boolean(studentDataCache?.data?.knowledgePointEvidence)
         && ["profile", "analysis"].includes(ui.view)
     };
@@ -604,9 +608,10 @@
       </main>
       <nav class="student-bottom-nav" aria-label="学生主导航">
         ${[
-          ["today", "⌂", "今日"],
-          ["practice", "▤", "练习"],
-          ["wrong", "!", "错题"],
+          ["home", "⌂", "首页"],
+          ["course", "目", "课程"],
+          ["training", "▤", "训练"],
+          ["analysis", "◎", "学情"],
           ["profile", "○", "我的"]
         ].map(([view, icon, label]) => `<button class="${primaryView === view ? "active" : ""}" data-student-view="${view}" type="button"><span>${icon}</span><strong>${label}</strong></button>`).join("")}
       </nav>
@@ -615,8 +620,11 @@
 
   function renderStudentView(data) {
     const renderers = {
+      home: renderToday,
       today: renderToday,
-      practice: renderPractice,
+      course: renderCurriculum,
+      training: renderTraining,
+      practice: renderTraining,
       wrong: renderWrong,
       profile: renderStudentProfile,
       library: renderLibrary,
@@ -632,9 +640,11 @@
   }
 
   function primaryStudentView(view) {
-    if (["library", "videos", "curriculum", "lab"].includes(view)) return "practice";
-    if (["mastered", "progress", "analysis", "advice"].includes(view)) return "profile";
-    return ["today", "practice", "wrong", "profile"].includes(view) ? view : "today";
+    if (["today", "home"].includes(view)) return "home";
+    if (["course", "curriculum"].includes(view)) return "course";
+    if (["training", "practice", "library", "videos", "wrong", "lab", "advice"].includes(view)) return "training";
+    if (["analysis", "mastered", "progress"].includes(view)) return "analysis";
+    return view === "profile" ? "profile" : "home";
   }
 
   function isCompleteStudentQuestion(question) {
@@ -650,14 +660,14 @@
   }
 
   function scheduleStudentAnalysisWarmup() {
-    if (experience.role !== "student" || !["profile", "analysis", "advice"].includes(ui.view)) return;
+    if (experience.role !== "student" || !["home", "today", "profile", "analysis", "advice"].includes(ui.view)) return;
     if (studentDataCache?.data?.analysis) return;
     const token = `${experience.updatedAt}|${experience.grade}|${ui.view}`;
     if (studentDataWarmupToken === token) return;
     studentDataWarmupToken = token;
     const run = () => {
       if (studentDataWarmupToken !== token) return;
-      if (experience.role !== "student" || !["profile", "analysis", "advice"].includes(ui.view)) {
+      if (experience.role !== "student" || !["home", "today", "profile", "analysis", "advice"].includes(ui.view)) {
         studentDataWarmupToken = "";
         return;
       }
@@ -682,6 +692,9 @@
       if (options.includeCoverage && !data.knowledgePointEvidence && data.analysis?.evidenceCoverage) {
         data.knowledgePointEvidence = data.analysis.evidenceCoverage;
       }
+    }
+    if (options.includeAnalysis && !data.formativeReport && engine?.buildStudentFormativeReport) {
+      data.formativeReport = engine.buildStudentFormativeReport(learning, data.gradeQuestions, learning.activeProfileId);
     }
     if (options.includeCoverage && !data.knowledgePointEvidence && engine?.knowledgePointEvidenceSummary) {
       data.knowledgePointEvidence = engine.knowledgePointEvidenceSummary(learning, data.gradeQuestions);
@@ -853,7 +866,7 @@
       grade: experience.grade,
       experienceUpdatedAt: String(experience.updatedAt || "")
     };
-    return data;
+    return hydrateStudentDataDerived(data, options);
   }
 
   function getCurriculumBooks(grade = experience.grade) {
@@ -906,10 +919,10 @@
        </section>`;
   }
 
-  function renderModuleHeader(kicker, title, description, backView = "practice") {
+  function renderModuleHeader(kicker, title, description, backView = "training") {
     return `
       <section class="student-page-head module-page-head">
-        <button class="module-back-button" data-student-view="${backView}" type="button">← 返回${backView === "profile" ? "我的" : "学习中心"}</button>
+        <button class="module-back-button" data-student-view="${backView}" type="button">← 返回${backView === "profile" ? "我的" : backView === "analysis" ? "学情" : "训练"}</button>
         <span>${escapeHtml(kicker)}</span>
         <h1>${escapeHtml(title)}</h1>
         <p>${escapeHtml(description)}</p>
@@ -922,10 +935,16 @@
     const goal = Math.max(1, Number(experience.weeklyGoal) || 12);
     const completed = data.effectiveAttempts.length;
     const next = data.next?.question;
+    const report = data.formativeReport;
+    const weak = report?.needsWork?.[0] || data.analysis?.weakest?.[0] || null;
+    const profileAttempts = (data.learning?.attempts || []).filter((attempt) => attempt.profileId === data.learning?.activeProfileId);
+    const latest = profileAttempts.at(-1) || null;
+    const latestQuestion = latest ? data.gradeQuestions.find((question) => question.id === latest.questionId) : null;
+    const explainQuestion = latestQuestion || next;
     return `
       <section class="today-intro">
         <span>今天建议学习 15 分钟</span>
-        <h1>下一步，只完成一件事</h1>
+        <h1>先做下一步，再看完整分析</h1>
       </section>
       ${renderDiagnosticPrompt(data)}
       ${next ? `
@@ -941,20 +960,69 @@
           <h2>请让教师先导入或添加可用试题</h2>
           <p>只有来源链接或未核实正文的记录不会进入学生训练。</p>
         </article>`}
+      <section class="student-v4-scroll home-quick-actions" aria-label="首页快捷操作">
+        <button data-start-question="${escapeHtml(next?.id || "")}" type="button"${next ? "" : " disabled"}><span>今日任务</span><strong>${next ? escapeHtml(next.title) : "暂无可用题"}</strong><small>独立作答后再看提示</small></button>
+        <button data-shell-action="open-review" type="button"><span>快速复习</span><strong>${due} 道到期</strong><small>必须真实作答才能更新间隔</small></button>
+        <button data-student-view="training" type="button"><span>查漏补缺</span><strong>${wrong} 道待订正</strong><small>诊断—专项—变式—复测</small></button>
+        <button data-feynman-question="${escapeHtml(explainQuestion?.id || "")}" data-feynman-topic="${escapeHtml(explainQuestion?.topic || "当前物理知识")}" type="button"${explainQuestion ? "" : " disabled"}><span>我来讲一遍</span><strong>${escapeHtml(explainQuestion?.topic || "暂无目标")}</strong><small>用自己的话解释对象、规律和条件</small></button>
+      </section>
       <div class="today-counters">
-        <button data-shell-action="open-review" type="button"><strong>${due}</strong><span>待复习</span><small>到期题目</small></button>
+        <button data-student-view="analysis" type="button"><strong>${report?.overall?.scoredCount ?? data.summary.scoredCount ?? 0}</strong><span>已评分证据</span><small>${report?.sampleStatus === "sufficient" ? "可做形成性判断" : "样本仍需补充"}</small></button>
         <button data-student-view="wrong" type="button"><strong>${wrong}</strong><span>错题</span><small>继续订正</small></button>
-        <button data-student-view="practice" type="button"><strong>${Math.min(1, data.newTopics.length)}</strong><span>新知识</span><small>${data.newTopics[0] ? escapeHtml(data.newTopics[0]) : "暂无新组"}</small></button>
+        <button data-student-view="course" type="button"><strong>${Math.min(1, data.newTopics.length)}</strong><span>新知识</span><small>${data.newTopics[0] ? escapeHtml(data.newTopics[0]) : "暂无新组"}</small></button>
       </div>
+      <section class="home-evidence-grid">
+        <article>
+          <span>当前优先问题</span>
+          <h2>${weak ? escapeHtml(weak.label || weak.topic) : "暂不形成稳定薄弱结论"}</h2>
+          <p>${weak
+            ? escapeHtml(weak.reason || `已评分 ${weak.scoredCount || weak.attempts || 0} 题；正确率 ${weak.accuracy == null ? "暂无" : `${weak.accuracy}%`}。`)
+            : escapeHtml(report?.boundary || "先完成至少三条可评分作答，系统再依据真实记录给出优先级。")}</p>
+          <button data-student-view="analysis" type="button">查看证据依据 →</button>
+        </article>
+        <article>
+          <span>最近一次结果</span>
+          <h2>${latestQuestion ? escapeHtml(latestQuestion.title) : "尚无正式作答"}</h2>
+          <p>${latest
+            ? `${latest.grading?.status === "correct" ? "作答正确" : latest.grading?.status === "review-required" ? "已提交，待人工复核" : "需要订正"} · 提示等级 ${Number(latest.hintLevel) || 0} · ${Math.max(0, Number(latest.durationSeconds) || 0)} 秒`
+            : "作答结果、提示和用时会保存在本机学情档案中。"}</p>
+          ${latestQuestion ? `<button data-start-question="${escapeHtml(latestQuestion.id)}" type="button">${latest?.grading?.status === "correct" ? "再做迁移" : "继续订正"} →</button>` : `<button data-student-view="training" type="button">开始训练 →</button>`}
+        </article>
+      </section>
       ${renderAssignedPlan(data)}
-      ${renderStudentModuleDirectory(data, "题库、知识点、视频和学习证据")}
       <section class="weekly-goal-card">
         <div><span>本周目标</span><strong>已完成 ${completed}/${goal} 次有效练习</strong></div>
         <div class="weekly-track" role="progressbar" aria-valuemin="0" aria-valuemax="${goal}" aria-valuenow="${Math.min(goal, completed)}"><i style="width:${Math.min(100, completed / goal * 100)}%"></i></div>
         <p>有效练习需包含正式作答，并记录足够的学习过程；不是打开题目或查看答案次数。</p>
       </section>
-      ${renderDailyTest(data.dailyTest)}
+      <details class="home-secondary-content"><summary>展开今日课后测试与更多练习</summary>${renderDailyTest(data.dailyTest)}</details>
       ${experience.examDate ? renderExamPlan() : ""}`;
+  }
+
+  function renderTraining(data) {
+    const anchor = data.wrongQuestions[0] || data.next?.question || data.gradeQuestions[0];
+    const report = data.formativeReport;
+    const priority = report?.needsWork?.[0] || data.analysis?.weakest?.[0] || null;
+    return `
+      <section class="student-page-head"><span>DIAGNOSE · PRACTICE · TRANSFER · RETEST</span><h1>训练</h1><p>每次只安排少量、有依据的训练；不会用题量代替诊断。</p></section>
+      <section class="training-loop-grid">
+        <article><i>1</i><div><span>先确认问题</span><h2>摸底与概念诊断</h2><p>用覆盖蓝图和“答案＋理由＋信心”形成起点证据。</p></div><button data-shell-action="open-diagnostic" type="button">开始诊断</button></article>
+        <article><i>2</i><div><span>只练当前重点</span><h2>3 / 5 / 7 题专项</h2><p>${priority ? `当前候选：${escapeHtml(priority.label || priority.topic)}` : "证据不足时先用 3 题补充观察，不贴能力标签。"}</p></div><div class="training-size-buttons">${[3, 5, 7].map((count) => `<button data-targeted-plan-size="${count}" type="button">${count}题</button>`).join("")}</div></article>
+        <article><i>3</i><div><span>举一反三</span><h2>专项变式训练</h2><p>优先使用通过质量门禁的近迁移、远迁移和反例题。</p></div><button data-open-variant-parent="${escapeHtml(anchor?.id || "")}" type="button"${anchor ? "" : " disabled"}>打开变式</button></article>
+        <article><i>4</i><div><span>错误变成行动</span><h2>错题订正</h2><p>${data.wrongQuestions.length} 道待订正；记录首要错因、解释关键规律，再做迁移。</p></div><button data-student-view="wrong" type="button">进入错题集</button></article>
+        <article><i>5</i><div><span>延迟验证</span><h2>到期复习与复测</h2><p>${data.summary.dueCount || 0} 道到期；只有完成真实作答，复习日期才会更新。</p></div><button data-shell-action="open-review" type="button">开始复习</button></article>
+      </section>
+      ${renderAssignedPlan(data)}
+      <section class="student-recommend-panel">
+        <header><div><span>根据本人学习证据</span><h2>优先练习</h2></div><button data-student-view="analysis" type="button">查看依据 →</button></header>
+        <div class="student-recommend-list">${data.recommendations.slice(0, 6).map((item, index) => `<article><i>${index + 1}</i><div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(item.question.topic)} · ${escapeHtml(item.reasons.join("；") || "补充当前年级证据")}</span></div><button data-start-question="${escapeHtml(item.question.id)}" type="button">开始</button></article>`).join("") || '<div class="student-empty"><strong>尚无个性化排序证据</strong><span>先完成一题独立作答。</span></div>'}</div>
+      </section>
+      <section class="training-resource-actions">
+        <button data-student-view="library" type="button">完整题库</button>
+        <button data-student-view="lab" type="button">学习实验室</button>
+        <button data-shell-action="open-models" type="button">动态模型</button>
+        <button data-shell-action="open-tools" type="button">公式与验证</button>
+      </section>`;
   }
 
   function renderDiagnosticPrompt(data) {
@@ -1072,7 +1140,7 @@
         <div class="student-external-search">
           <span>联网检索默认开启；离开应用前仍会提示，外部结果不直接写入学情证据</span>
           <button data-shell-action="external-search" type="button">用 Edge/Bing 查解题线索 ↗</button>
-        </div>` : '<p class="student-safe-search">外部网站访问已由教师/家长关闭；站内题库和学习分析仍可离线使用。</p>'}
+        </div>` : '<p class="student-safe-search">外部网站访问已由教师或本机安全设置关闭；站内题库和学习分析仍可离线使用。</p>'}
       ${renderDailyTest(data.dailyTest)}`;
   }
 
@@ -1081,7 +1149,10 @@
   }
 
   function questionSearchText(question) {
-    return normalizeSearchText([
+    if (question && typeof question === "object" && questionSearchTextCache.has(question)) {
+      return questionSearchTextCache.get(question);
+    }
+    const value = normalizeSearchText([
       question.title,
       question.content,
       question.grade,
@@ -1092,25 +1163,40 @@
       question.curriculumSection,
       ...(Array.isArray(question.examPoints) ? question.examPoints : [])
     ].filter(Boolean).join(" "));
+    if (question && typeof question === "object") questionSearchTextCache.set(question, value);
+    return value;
+  }
+
+  function questionCurriculumFields(question) {
+    if (question && typeof question === "object" && questionCurriculumFieldsCache.has(question)) {
+      return questionCurriculumFieldsCache.get(question);
+    }
+    const value = [
+      question?.curriculumBook,
+      question?.curriculumChapter,
+      question?.curriculumSection,
+      question?.topic
+    ].map(normalizeSearchText);
+    if (question && typeof question === "object") questionCurriculumFieldsCache.set(question, value);
+    return value;
   }
 
   function questionMatchesCurriculum(question, target) {
     if (!target) return true;
     const search = questionSearchText(question);
-    const exactFields = [
-      question.curriculumBook,
-      question.curriculumChapter,
-      question.curriculumSection,
-      question.topic
-    ].map(normalizeSearchText);
-    const section = normalizeSearchText(target.sectionTitle);
-    const chapter = normalizeSearchText(target.chapterTitle);
+    const exactFields = questionCurriculumFields(question);
+    const section = target.sectionNormalized || normalizeSearchText(target.sectionTitle);
+    const chapter = target.chapterNormalized || normalizeSearchText(target.chapterTitle);
     if (exactFields.includes(section) || (section.length >= 2 && search.includes(section))) return true;
-    const guideMatch = KNOWLEDGE_GUIDES.some(([pattern]) => {
+    const matchingGuidePatterns = target.matchingGuidePatterns || KNOWLEDGE_GUIDES
+      .map(([pattern]) => pattern)
+      .filter((pattern) => {
+        pattern.lastIndex = 0;
+        return pattern.test(`${target.chapterTitle || ""} ${target.sectionTitle || ""}`);
+      });
+    const guideMatch = matchingGuidePatterns.some((pattern) => {
       pattern.lastIndex = 0;
-      const targetMatches = pattern.test(`${target.chapterTitle || ""} ${target.sectionTitle || ""}`);
-      pattern.lastIndex = 0;
-      return targetMatches && pattern.test([
+      return pattern.test([
         question.topic,
         question.title,
         question.curriculumChapter,
@@ -1288,7 +1374,7 @@
           <h2>错误原因记录</h2>
           ${errorCounts.length
             ? errorCounts.slice(0, 7).map(([label, count]) => `<article><span>${escapeHtml(label)}</span><strong>${count}</strong></article>`).join("")
-            : "<p>尚无结构化错误归因。完成一次订正后，可选择审题、概念、建模、规律条件、计算/单位或图像/实验中的主要原因。</p>"}
+            : "<p>尚无结构化错误归因。完成一次订正后，请选择最先导致答案偏离的主要原因。</p>"}
         </div>
       </section>
       <section class="correction-workflow" aria-label="错题订正流程">
@@ -1298,12 +1384,14 @@
         <header><span>ERROR MODEL</span><h2>怎样判断错误原因</h2><p>只选择最先导致答案偏离的主要原因，避免把所有错题都归为“粗心”。</p></header>
         <div>
           ${[
-            ["审题错误", "漏读条件、对象、小问或图中信息；订正时重新圈出已知量和限制。"],
-            ["概念错误", "物理意义或规律理解错误；用反例和实验现象修正前概念。"],
-            ["建模错误", "研究对象、过程划分、理想化或坐标系不合适；先重画模型。"],
-            ["规律条件错误", "规律或公式的适用条件不成立，或物理量对应错位；补写条件再列式。"],
-            ["计算/单位错误", "代数、比例、有效数字、方向、正负号或单位不一致；保留符号式并逐步核验。"],
-            ["图像/实验错误", "图像读数、坐标含义、实验步骤或器材连接判断错误；按变量关系和实验目的复核。"]
+            ["概念理解", "物理意义或因果关系理解偏差；用反例、实验现象和自己的话重新解释。"],
+            ["研究对象/建模", "研究对象、过程划分、理想化或坐标系不合适；先重画模型。"],
+            ["规律选择或适用条件", "规律或公式的适用条件不成立；补写条件再列式。"],
+            ["图像与表征", "图像读数、坐标含义或文字—图像转换错误；逐轴核对物理意义。"],
+            ["公式与代数", "公式选择、变形、联立或代入过程有误；保留符号式并逐步核验。"],
+            ["单位/方向/符号", "单位、有效数字、方向、正负号不一致；在结论处统一复核。"],
+            ["实验与数据处理", "器材、控制变量、数据拟合或结论解释不一致；按实验目的逐项检查。"],
+            ["审题或计算疏漏", "漏读条件、小问或发生一般运算疏漏；重新标出已知、未知和限制。"]
           ].map(([label, detail]) => `<article><strong>${label}</strong><p>${detail}</p></article>`).join("")}
         </div>
       </section>
@@ -1578,7 +1666,15 @@
     const target = {
       bookTitle: book.title,
       chapterTitle: chapter.title,
-      sectionTitle: section.title
+      sectionTitle: section.title,
+      chapterNormalized: normalizeSearchText(chapter.title),
+      sectionNormalized: normalizeSearchText(section.title),
+      matchingGuidePatterns: KNOWLEDGE_GUIDES
+        .map(([pattern]) => pattern)
+        .filter((pattern) => {
+          pattern.lastIndex = 0;
+          return pattern.test(`${chapter.title} ${section.title}`);
+        })
     };
     const gradeSet = new Set(book.grades || []);
     return data.questions.filter((question) => {
@@ -1642,10 +1738,16 @@
     const defaultBook = data.curriculumBooks[0] || allBooks[0];
     const selected = allBooks.find((book) => book.id === ui.curriculumBookId) || defaultBook;
     if (selected) ui.curriculumBookId = selected.id;
+    const selectedChapter = selected?.chapters?.find((chapter) => chapter.id === ui.curriculumChapterId)
+      || selected?.chapters?.[0]
+      || null;
+    if (selectedChapter) ui.curriculumChapterId = selectedChapter.id;
     const totalCounts = curriculumCounts(allBooks);
     const currentCounts = curriculumCounts(data.curriculumBooks);
     return `
-      ${renderModuleHeader("CURRICULUM MAP", "教材知识点", "按人教版八年级至高中选择性必修的册、章、节组织；每节包含核心要点、适用条件和对应练习。")}
+      ${ui.view === "course"
+        ? '<section class="student-page-head"><span>CURRICULUM · CONCEPT · MODEL</span><h1>课程</h1><p>按教材册、章、节学习；每节都可进入练习、方法讲解和“我来讲一遍”。</p></section>'
+        : renderModuleHeader("CURRICULUM MAP", "教材知识点", "按人教版八年级至高中选择性必修的册、章、节组织；每节包含核心要点、适用条件和对应练习。")}
       <section class="curriculum-overview">
         <article><strong>${totalCounts.books}</strong><span>教材册</span><small>八年级至高三完整目录</small></article>
         <article><strong>${totalCounts.chapters}</strong><span>章节</span><small>按教材结构列出</small></article>
@@ -1672,13 +1774,16 @@
             <button data-official-url="${escapeHtml(selected.officialUrl || "")}" type="button"${selected.officialUrl ? "" : " disabled"}>核对出版社目录 ↗</button>
           </header>
           <div class="curriculum-chapter-list">
-            ${selected.chapters.map((chapter, chapterIndex) => `
-              <details${chapterIndex === 0 ? " open" : ""}>
-                <summary>
+            ${selected.chapters.map((chapter) => {
+              const isActiveChapter = chapter.id === selectedChapter?.id;
+              return `
+              <details${isActiveChapter ? " open" : ""}>
+                <summary data-curriculum-chapter="${escapeHtml(chapter.id)}">
                   <span>${escapeHtml(chapter.chapterNo)}</span>
                   <strong>${escapeHtml(chapter.title)}</strong>
                   <small>${chapter.sections.length} 节</small>
                 </summary>
+                ${isActiveChapter ? `
                 <div class="curriculum-section-list">
                   ${chapter.sections.map((section) => {
                     const points = knowledgePointsFor(data, selected, chapter, section);
@@ -1690,16 +1795,41 @@
                         <div>
                           <button class="primary" data-curriculum-target="${escapeHtml(section.id)}" type="button">练本节题目</button>
                           ${related[0] ? `<button data-method-question="${escapeHtml(related[0].id)}" type="button">看一道方法讲解</button>` : '<button type="button" disabled>暂无精确关联题</button>'}
+                          <button data-feynman-question="${escapeHtml(related[0]?.id || `section:${section.id}`)}" data-feynman-topic="${escapeHtml(section.title)}" type="button">我来讲一遍</button>
                         </div>
                       </article>`;
                   }).join("")}
-                </div>
-              </details>`).join("")}
+                </div>` : '<p class="curriculum-chapter-hint">点击章节后加载该章知识点与对应练习。</p>'}
+              </details>`;
+            }).join("")}
           </div>
         </section>` : '<div class="student-empty"><strong>教材目录未加载</strong><span>请检查 curriculum-taxonomy.js 是否随安装包完整发布。</span></div>'}
       <section class="curriculum-source-note">
         <strong>目录与内容边界</strong>
         <p>册、章、节结构依据应用内标注的教材目录；知识点说明由物理概念、公式适用条件、实验方法和题目考点组成，不复制教材课后题正文。出版社链接只用于核对目录，打开前会提示离开应用。</p>
+      </section>`;
+  }
+
+  function renderFormativeReportSummary(data) {
+    const report = data.formativeReport;
+    if (!report) return `
+      <section class="formative-report-summary loading" aria-live="polite">
+        <span>形成性学情报告</span><h2>正在读取本机学习证据</h2><p>报告只使用真实作答、提示、错因和复测记录；不会虚构掌握度。</p>
+      </section>`;
+    const trendLabels = { improving: "近期改善", declining: "近期回落", stable: "近期稳定", insufficient: "证据不足" };
+    return `
+      <section class="formative-report-summary">
+        <header><div><span>FORMATIVE EVIDENCE REPORT</span><h2>当前最需要处理的事</h2></div><strong>${report.overall.scoredCount} 条已评分证据</strong></header>
+        <p>${escapeHtml(report.boundary)}</p>
+        <div class="student-v4-scroll formative-action-strip">
+          ${report.nextActions.map((item, index) => `<article><i>${index + 1}</i><h3>${escapeHtml(item.label)}</h3><p>${escapeHtml(item.reason)}</p>${item.actionId === "review.due" ? '<button data-shell-action="open-review" type="button">开始复习</button>' : item.knowledgePointId ? `<button data-topic-key-filter="${escapeHtml(item.knowledgePointId)}" type="button">专项练习</button>` : '<button data-student-view="training" type="button">开始训练</button>'}</article>`).join("")}
+        </div>
+        <div class="formative-three-column">
+          <article><span>当前较稳定</span>${report.stable.length ? report.stable.map((item) => `<strong>${escapeHtml(item.label)}<small>${item.scoredCount} 题 · ${item.accuracy}%</small></strong>`).join("") : '<p>暂无达到样本门槛的稳定项。</p>'}</article>
+          <article><span>需要巩固</span>${report.needsWork.length ? report.needsWork.map((item) => `<strong>${escapeHtml(item.label)}<small>${item.scoredCount} 题 · ${item.accuracy}%</small></strong>`).join("") : '<p>暂无达到样本门槛的薄弱项。</p>'}</article>
+          <article><span>近期趋势</span>${report.recentTrend.length ? report.recentTrend.map((item) => `<strong>${escapeHtml(item.label)}<small>${trendLabels[item.trend] || item.trend} · ${item.recentAccuracy == null ? "暂无可评分证据" : `${item.recentAccuracy}%`}</small></strong>`).join("") : '<p>至少需要三条已评分证据。</p>'}</article>
+        </div>
+        <small>${escapeHtml(report.evidenceRule)}</small>
       </section>`;
   }
 
@@ -1712,8 +1842,14 @@
     const strongest = analysis.strongest || [];
     const knowledgePoints = analysis.knowledgePoints || [];
     const knowledgeCounts = analysis.abilityProfile?.knowledgePointCounts || {};
+    const evidencePageSize = 12;
+    const evidencePageCount = Math.max(1, Math.ceil(knowledgePoints.length / evidencePageSize));
+    ui.analysisEvidencePage = Math.min(Math.max(1, ui.analysisEvidencePage || 1), evidencePageCount);
+    const evidencePageStart = (ui.analysisEvidencePage - 1) * evidencePageSize;
+    const visibleKnowledgePoints = knowledgePoints.slice(evidencePageStart, evidencePageStart + evidencePageSize);
     return `
-      ${renderModuleHeader("PERSONAL LEARNING EVIDENCE", "本人学情分析", "结合正确率、独立完成、提示依赖、建模步骤、错因、复习和试卷记录形成可解释分析。", "profile")}
+      <section class="student-page-head"><span>PERSONAL LEARNING EVIDENCE</span><h1>学情</h1><p>先给出下一步行动，再展开原始证据、覆盖情况和分析边界。</p></section>
+      ${renderFormativeReportSummary(data)}
       <section class="analysis-evidence-note">
         <strong>${escapeHtml(analysis.conclusion || "当前尚无正式作答证据，不能形成可靠薄弱判断。")}</strong>
          <p>${escapeHtml(analysis.evidenceCoverage?.reason || "证据不足：尚未覆盖足够的可评估知识点。")}</p>
@@ -1726,7 +1862,7 @@
         </summary>
         <p>每项同时显示样本量和最近证据日期；没有证据的知识点不会被当作已掌握。</p>
         <div>
-          ${knowledgePoints.map((item) => `
+          ${visibleKnowledgePoints.map((item) => `
             <article class="evidence-${escapeHtml(item.code)}">
               <header><strong>${escapeHtml(item.topic)}</strong><span>${escapeHtml(item.status)}</span></header>
               <p>${item.sampleSize} 条证据 · 正式作答 ${item.attemptCount} 次 · 迁移成功 ${item.transferSuccessCount} 次</p>
@@ -1734,6 +1870,12 @@
               <button data-topic-filter="${escapeHtml(item.topic)}" type="button">打开对应练习</button>
             </article>`).join("") || "<p>当前年级题库尚未形成可核对的知识点目录。</p>"}
         </div>
+        ${knowledgePoints.length > evidencePageSize ? `
+          <nav class="knowledge-evidence-pager" aria-label="知识点证据分页">
+            <button data-analysis-page-direction="-1" type="button"${ui.analysisEvidencePage <= 1 ? " disabled" : ""}>上一页</button>
+            <span>第 ${ui.analysisEvidencePage}/${evidencePageCount} 页 · ${evidencePageStart + 1}—${Math.min(knowledgePoints.length, evidencePageStart + evidencePageSize)} / ${knowledgePoints.length}</span>
+            <button data-analysis-page-direction="1" type="button"${ui.analysisEvidencePage >= evidencePageCount ? " disabled" : ""}>下一页</button>
+          </nav>` : ""}
         <small>${escapeHtml(analysis.abilityProfile?.evidenceRule || "结论依据样本量、最近证据、提示依赖、跨日正确与迁移表现。")}</small>
       </details>
       <section class="analysis-metric-grid">
@@ -1957,7 +2099,7 @@
         <div><strong>题干字号</strong><span>支持浏览器双指缩放；这里调整默认字号。</span></div>
         <div><button data-font-scale="-0.1" type="button" aria-label="缩小字号">A−</button><strong>${Math.round(experience.fontScale * 100)}%</strong><button data-font-scale="0.1" type="button" aria-label="放大字号">A＋</button></div>
       </section>
-        <p class="student-safety-note">外部网站访问：${experience.studentExternalLinks ? "默认开启，离站前仍需确认" : "已由教师/家长关闭"}。外部搜索结果不直接进入学情证据；学习状态来自行为证据，不允许手动勾选“已掌握”。</p>`;
+        <p class="student-safety-note">外部网站访问：${experience.studentExternalLinks ? "默认开启，离站前仍需确认" : "已由教师或本机安全设置关闭"}。外部搜索结果不直接进入学情证据；学习状态来自行为证据，不允许手动勾选“已掌握”。</p>`;
   }
 
   function renderParent() {
@@ -2052,6 +2194,36 @@
       openLab("models", questionModel.dataset.openQuestionModel);
       return;
     }
+    const feynman = event.target.closest("[data-feynman-question]");
+    if (feynman) {
+      showFeynmanExplanation(feynman.dataset.feynmanQuestion, feynman.dataset.feynmanTopic);
+      return;
+    }
+    const targetedPlan = event.target.closest("[data-targeted-plan-size]");
+    if (targetedPlan) {
+      createStudentTargetedPlan(Number(targetedPlan.dataset.targetedPlanSize));
+      return;
+    }
+    const variantParent = event.target.closest("[data-open-variant-parent]");
+    if (variantParent) {
+      const questionId = variantParent.dataset.openVariantParent;
+      if (!questionId || !app?.openTransferPractice?.(questionId)) {
+        window.alert("当前没有可验证的完整变式题，请先完成一题或让教师补充审核题族。");
+      }
+      return;
+    }
+    const topicKeyFilter = event.target.closest("[data-topic-key-filter]");
+    if (topicKeyFilter) {
+      const data = getStudentData();
+      const matched = data.gradeQuestions.find((question) => engine?.topicKeyForQuestion?.(question) === topicKeyFilter.dataset.topicKeyFilter);
+      ui.libraryGrade = experience.grade;
+      ui.libraryTopic = matched?.topic || "全部";
+      ui.libraryPage = 1;
+      ui.view = "library";
+      renderStudentViewOnly();
+      window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
     const detail = event.target.closest("[data-question-detail]");
     if (detail) {
       app?.openQuestion?.(detail.dataset.questionDetail);
@@ -2068,6 +2240,13 @@
       ui.libraryPage = Math.max(1, ui.libraryPage + Number(page.dataset.pageDirection || 0));
       renderStudentViewOnly();
       window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    const analysisPage = event.target.closest("[data-analysis-page-direction]");
+    if (analysisPage) {
+      ui.analysisEvidencePage = Math.max(1, ui.analysisEvidencePage + Number(analysisPage.dataset.analysisPageDirection || 0));
+      renderStudentViewOnly();
+      document.querySelector(".knowledge-evidence-matrix")?.scrollIntoView({ block: "start", behavior: "auto" });
       return;
     }
     const topicFilter = event.target.closest("[data-topic-filter], [data-similar-topic]");
@@ -2091,8 +2270,20 @@
     const curriculumBook = event.target.closest("[data-curriculum-book]");
     if (curriculumBook) {
       ui.curriculumBookId = curriculumBook.dataset.curriculumBook;
+      ui.curriculumChapterId = "";
       renderStudentViewOnly();
       window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    const curriculumChapter = event.target.closest("[data-curriculum-chapter]");
+    if (curriculumChapter) {
+      event.preventDefault();
+      ui.curriculumChapterId = curriculumChapter.dataset.curriculumChapter;
+      renderStudentViewOnly();
+      requestAnimationFrame(() => {
+        shell?.querySelector(`[data-curriculum-chapter="${CSS.escape(ui.curriculumChapterId)}"]`)
+          ?.scrollIntoView({ block: "start", behavior: "auto" });
+      });
       return;
     }
     const curriculumTarget = event.target.closest("[data-curriculum-target]");
@@ -2171,17 +2362,67 @@
   }
 
   function openFeedbackEmail() {
-    const subject = `费曼物理 v${engine?.version || "3.2.0"} 用户反馈`;
+    const subject = `费曼物理 v${engine?.version || "4.0.0"} 用户反馈`;
     const body = [
       "请描述遇到的问题或建议：",
       "",
       `使用身份：${experience.role}`,
       `年级：${experience.grade}`,
-      `应用版本：${engine?.version || "3.2.0"}`,
+      `应用版本：${engine?.version || "4.0.0"}`,
       "设备与系统："
     ].join("\r\n");
     recordEvent("feedback-email-opened", { role: experience.role });
     window.location.href = `mailto:luo865265@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  function createStudentTargetedPlan(count) {
+    if (!engine?.buildTargetedLearningPlan || !engine?.saveSelfDirectedLearningPlan) {
+      window.alert("专项训练模块未完整加载，请重新启动应用。");
+      return;
+    }
+    const data = getStudentData({ includeAnalysis: true });
+    if (!data.learning) return;
+    const report = data.formativeReport || engine.buildStudentFormativeReport?.(data.learning, data.gradeQuestions, data.learning.activeProfileId);
+    const focus = report?.needsWork?.[0] || data.analysis?.weakest?.[0] || null;
+    try {
+      const plan = engine.buildTargetedLearningPlan(data.learning, data.gradeQuestions, {
+        profileId: data.learning.activeProfileId,
+        count,
+        focusTopicKey: focus?.knowledgePointId || focus?.topicKey || "",
+        focusTopic: focus?.label || focus?.topic || "",
+        teacherNote: "学生依据本人形成性学情自主发起；不是教师评价或标准化测评分数。"
+      });
+      engine.saveSelfDirectedLearningPlan(data.learning, plan);
+      engine.saveState(data.learning);
+      studentDataCache = null;
+      recordEvent("student-targeted-plan-created", { type: `${count}-question` });
+      ui.view = "training";
+      renderRoleExperience();
+      window.alert(`已建立 ${plan.questionCount} 题专项方案：${plan.title}。请先完成当前学习时段。`);
+    } catch (error) {
+      window.alert(error?.message || "专项方案建立失败，未写入学习档案。");
+    }
+  }
+
+  function showFeynmanExplanation(questionId, topic) {
+    if (!questionId) return;
+    const data = getStudentData();
+    const question = data.gradeQuestions.find((item) => item.id === questionId);
+    metricsDialog.dataset.feynmanQuestionId = questionId;
+    metricsDialog.dataset.feynmanTopic = topic || question?.topic || "当前物理知识";
+    metricsDialog.querySelector("article").innerHTML = `
+      <header><div><span>FEYNMAN SELF-EXPLANATION</span><h2>我来讲一遍</h2></div><button data-metrics-action="close" type="button" aria-label="关闭">×</button></header>
+      <section class="feynman-explanation-form">
+        <p><strong>${escapeHtml(question?.title || topic || "当前知识点")}</strong></p>
+        <label><span>不用原题语言，讲清研究对象、发生过程、关键规律和适用条件</span><textarea id="feynmanExplanation" rows="6" maxlength="12000" placeholder="例如：我先研究滑块，把斜面和地球作为环境……"></textarea></label>
+        <label><span>举一个生活或实验中的类比（可选）</span><textarea id="feynmanAnalogy" rows="3" maxlength="6000"></textarea></label>
+        <label><span>如果改变一个条件，结果会怎样（可选）</span><textarea id="feynmanPrediction" rows="3" maxlength="6000"></textarea></label>
+        <label><span>还有哪里讲不清（可选）</span><textarea id="feynmanUnclear" rows="2" maxlength="6000"></textarea></label>
+        <p class="metrics-boundary">这条记录用于反思和后续建议，不会仅因写了说明就自动判定掌握。</p>
+        <button class="primary" data-metrics-action="save-feynman" type="button">保存我的讲解</button>
+      </section>`;
+    if (!metricsDialog.open) metricsDialog.showModal();
+    requestAnimationFrame(() => metricsDialog.querySelector("#feynmanExplanation")?.focus());
   }
 
   function handleShellInput(event) {
@@ -2222,6 +2463,7 @@
       renderStudentViewOnly();
     } else if (event.target.id === "studentCurriculumBook") {
       ui.curriculumBookId = event.target.value;
+      ui.curriculumChapterId = "";
       renderStudentViewOnly();
     }
   }
@@ -3976,6 +4218,34 @@
     if (action === "close") metricsDialog.close();
     else if (action === "complete-broad") completeBroadCoverageCheck();
     else if (action === "complete-placement") completePlacementAssessment();
+    else if (action === "save-feynman") {
+      const learning = engine?.loadState?.();
+      if (!learning || !engine?.recordFeynmanExplanation) {
+        window.alert("讲解记录模块未加载，内容尚未保存。");
+        return;
+      }
+      const questionId = metricsDialog.dataset.feynmanQuestionId || "";
+      const question = (app?.getQuestions?.() || []).find((item) => item.id === questionId);
+      try {
+        engine.recordFeynmanExplanation(learning, {
+          questionId,
+          knowledgePointId: question ? engine.topicKeyForQuestion?.(question) : "",
+          topic: metricsDialog.dataset.feynmanTopic || question?.topic || "当前物理知识",
+          explanation: metricsDialog.querySelector("#feynmanExplanation")?.value,
+          analogy: metricsDialog.querySelector("#feynmanAnalogy")?.value,
+          prediction: metricsDialog.querySelector("#feynmanPrediction")?.value,
+          unclearPoint: metricsDialog.querySelector("#feynmanUnclear")?.value
+        });
+        engine.saveState(learning);
+        studentDataCache = null;
+        metricsDialog.close();
+        recordEvent("feynman-explanation-saved", { questionId });
+        renderStudentViewOnly({ preserveScroll: true });
+        window.alert("讲解已保存到本人学习档案。它是反思记录，不会自动制造掌握证据。");
+      } catch (error) {
+        window.alert(error?.message || "讲解未保存，请检查内容后重试。");
+      }
+    }
   }
 
   function completePlacementAssessment() {

@@ -24,9 +24,9 @@ assert.match(studentManifest, /android:allowBackup="false"/);
 assert.match(teacherManifest, /android:allowBackup="false"/);
 assert.match(studentManifest, /android:scheme="physicsstudio" android:host="join"/);
 
-// Both application modules render the established v3.3.0 role UI from the
-// same entry and business modules. The discarded compact prototypes must not
-// become a second product implementation.
+// Both application modules render the shared role UI and business modules.
+// Student v4 may change its navigation, but compact duplicate app prototypes
+// must not become a second product implementation.
 for (const asset of [
   "styles.css", "learning-lab.css", "experience-shell.css", "app.js",
   "learning-lab.js", "experience-shell.js", "document-import.js",
@@ -44,9 +44,10 @@ assert.equal(fs.existsSync(path.join(project, "dual-app.css")), false);
 
 assert.match(experience, /const FIXED_ROLE = APP_EDITION === "student" \|\| APP_EDITION === "teacher"/);
 assert.match(experience, /if \(FIXED_ROLE\) experience\.role = FIXED_ROLE/);
-assert.match(experience, /\["today", "⌂", "今日"\]/);
-assert.match(experience, /\["practice", "▤", "练习"\]/);
-assert.match(experience, /\["wrong", "!", "错题"\]/);
+assert.match(experience, /\["home", "⌂", "首页"\]/);
+assert.match(experience, /\["course", "目", "课程"\]/);
+assert.match(experience, /\["training", "▤", "训练"\]/);
+assert.match(experience, /\["analysis", "◎", "学情"\]/);
 assert.match(experience, /\["profile", "○", "我的"\]/);
 assert.match(experience, /打开教师中心/);
 assert.match(experience, /打开班级/);
@@ -65,4 +66,4 @@ assert.match(classroom, /学生端不能创建或管理班级/);
 assert.match(classroom, /saveSecureCredential\("refresh-token"/);
 assert.match(classService, /actor\.role !== "teacher" && actor\.role !== "administrator"/);
 
-console.log("v3.3 role-interface parity, independent Android packages, and RBAC checks passed");
+console.log("Shared role interface, student v4 navigation, independent Android packages, and RBAC checks passed");

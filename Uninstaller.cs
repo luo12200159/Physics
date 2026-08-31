@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("费曼物理卸载程序")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("3.4.1.0")]
-[assembly: AssemblyFileVersion("3.4.1.0")]
+[assembly: AssemblyVersion("4.0.0.0")]
+[assembly: AssemblyFileVersion("4.0.0.0")]
 
 internal static class UninstallerProgram
 {

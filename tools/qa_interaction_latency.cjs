@@ -68,18 +68,19 @@ const project = path.resolve(__dirname, "..");
         : null;
       observer?.observe({ type: "longtask", buffered: false });
       const clickDurations = [];
-      for (const view of ["practice", "wrong", "profile", "today", "practice", "today"]) {
-        const button = document.querySelector(`[data-student-view="${view}"]`);
+      for (const view of ["course", "training", "analysis", "profile", "home", "training", "home"]) {
+        const button = document.querySelector(`.student-bottom-nav [data-student-view="${view}"]`);
         const startedAt = performance.now();
         button?.click();
-        clickDurations.push(performance.now() - startedAt);
+        clickDurations.push({ view, duration: performance.now() - startedAt });
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       }
       observer?.disconnect();
       return {
         headerPreserved: originalHeader === document.querySelector("#experienceShell .student-header"),
         navigationPreserved: originalNavigation === document.querySelector("#experienceShell .student-bottom-nav"),
-        maxClickHandlerMs: Math.max(...clickDurations),
+        clickDurations,
+        maxClickHandlerMs: Math.max(...clickDurations.map((item) => item.duration)),
         maxLongTaskMs: tasks.length ? Math.max(...tasks) : 0,
         activeView: document.querySelector(".student-bottom-nav button.active")?.dataset.studentView || ""
       };
@@ -92,7 +93,7 @@ const project = path.resolve(__dirname, "..");
       `student navigation click handler is too slow: ${JSON.stringify(navigationResult)}`);
     assert.ok(navigationResult.maxLongTaskMs <= 120,
       `student navigation produced a blocking task: ${JSON.stringify(navigationResult)}`);
-    assert.equal(navigationResult.activeView, "today", JSON.stringify(navigationResult));
+    assert.equal(navigationResult.activeView, "home", JSON.stringify(navigationResult));
 
     const analysisResult = await page.evaluate(async () => {
       document.querySelector('[data-student-view="profile"]')?.click();

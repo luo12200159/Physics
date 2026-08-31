@@ -170,7 +170,7 @@ const generatedVariantSchema = {
   type: "object",
   additionalProperties: false,
   required: [
-    "id", "variantRole", "title", "content", "options", "stage", "grade",
+    "id", "variantRole", "variantTechnique", "title", "content", "options", "stage", "grade",
     "topic", "knowledgePointId", "knowledgePoints", "examPoints", "questionType",
     "difficulty", "modelDefinitionId", "transferGroupId", "independenceGroupId",
     "changeSummary", "relationToParent", "answer", "correctAnswer", "correctAnswers",
@@ -178,7 +178,8 @@ const generatedVariantSchema = {
   ],
   properties: {
     id: boundedString(220),
-    variantRole: { type: "string", enum: ["near", "reverse", "context"] },
+    variantRole: { type: "string", enum: ["near", "far", "counter"] },
+    variantTechnique: { type: "string", enum: ["parameter", "condition", "reverse", "representation", "context", "counterexample"] },
     title: boundedString(240),
     content: boundedString(60000),
     options: {
@@ -439,7 +440,7 @@ async function generateVariants(input, requestId) {
         role: "system",
         content: [
           "你是初高中物理试题设计员。生成完整、可独立作答、可核验的原创变式题。",
-          "默认依次生成近迁移、逆向/结构迁移、情境/表征迁移；若第三题无法可靠完成可只返回两题。",
+          "默认依次生成近迁移、远迁移、反例辨析；用 variantTechnique 区分条件变化、逆向、表征、情境或反例。若第三题无法可靠完成可只返回两题。",
           "近迁移必须改变至少两项有教学意义的条件、方向、约束或设问组合，不能只换一个数字。",
           "不得虚构真实考试、学校或题源；source 由应用统一标记为应用内 AI 生成变式。",
           "没有实际图形数据时不得生成缺图题。每道题必须给出研究对象、规律条件、逐步推导和结果检验。",
@@ -463,7 +464,7 @@ async function generateVariants(input, requestId) {
             content
           },
           itemModel,
-          requiredRoles: ["near", "reverse", "context"].slice(0, requestedCount),
+          requiredRoles: ["near", "far", "counter"].slice(0, requestedCount),
           verificationBoundary: "这是出题阶段；生成后还会由独立调用和客户端确定性质量门禁复核。"
         })
       }

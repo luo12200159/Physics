@@ -65,9 +65,9 @@ async function checkEdition(browser, edition, viewport) {
 
   if (edition === "student") {
     const nav = await page.locator(".student-bottom-nav button").allTextContents();
-    assert.deepEqual(nav.map((item) => item.replace(/\s+/g, "")), ["⌂今日", "▤练习", "!错题", "○我的"]);
+    assert.deepEqual(nav.map((item) => item.replace(/\s+/g, "")), ["⌂首页", "目课程", "▤训练", "◎学情", "○我的"]);
     assert.equal(await page.locator("#teacherExperienceBar").count(), 0);
-    for (const target of ["practice", "wrong", "profile", "today"]) {
+    for (const target of ["course", "training", "analysis", "profile", "home"]) {
       await page.locator(`.student-bottom-nav [data-student-view="${target}"]`).click();
       await page.waitForFunction((name) => (
         document.querySelector(".student-main")?.dataset.currentStudentView === name
