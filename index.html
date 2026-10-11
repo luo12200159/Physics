@@ -84,9 +84,11 @@
       </div>
 
       <div class="sidebar-actions">
-        <button class="text-button" id="fullBackupButton" type="button">完整备份（含附件）</button>
+        <label for="fullBackupPassword">完整备份密码（至少 12 字符；不保存在应用中）</label>
+        <input id="fullBackupPassword" type="password" minlength="12" autocomplete="new-password" aria-label="完整备份加密或恢复密码" />
+        <button class="text-button" id="fullBackupButton" type="button">加密完整备份（含附件）</button>
         <label class="text-button file-label" for="fullRestoreInput">恢复完整备份</label>
-        <input id="fullRestoreInput" class="visually-hidden" type="file" accept=".pslab,application/zip" />
+        <input id="fullRestoreInput" class="visually-hidden" type="file" accept=".pslab,application/octet-stream,application/zip" />
         <button class="text-button" id="exportButton" type="button">轻量导出 JSON</button>
         <label class="text-button file-label" for="importInput">导入轻量 JSON</label>
         <input id="importInput" class="visually-hidden" type="file" accept="application/json,.json" />
@@ -564,10 +566,12 @@
 
     <dialog class="modal sync-modal" id="syncModal" aria-label="长沙互联网物理题源"></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="version-config.js"></script>
     <script src="activation-public-key.js"></script>
     <script src="storage-repository.js"></script>
     <script src="activation.js"></script>
     <script src="curriculum-taxonomy.js"></script>
+    <script src="solution-format.js"></script>
     <script src="curriculum-bank.js"></script>
     <script src="exam-question-index.js"></script>
     <script src="mock-exam-bank.js"></script>
@@ -585,6 +589,7 @@
     <script src="classroom-client.js"></script>
   <script src="learning-engine.js"></script>
   <script src="physics-visuals.js"></script>
+  <script src="motion-representation-drafts.js"></script>
   <script src="variant-generator.js"></script>
     <script src="teacher-mode-lock.js"></script>
     <script src="vendor/jsQR.js"></script>

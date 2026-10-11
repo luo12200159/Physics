@@ -12,6 +12,11 @@ assert.equal(packageJson.version, version.appVersion, "package.json must follow 
 assert.equal(serverPackage.version, version.appVersion, "server/package.json must follow version.json");
 assert.equal(version.stateVersion, 10);
 assert.equal(version.reportFormatVersion, 4);
+const runtimeVersionContext = { globalThis: {} };
+require("node:vm").runInNewContext(read("version-config.js"), runtimeVersionContext);
+assert.deepEqual(JSON.parse(JSON.stringify(runtimeVersionContext.globalThis.PHYSICS_STUDIO_VERSION)), version,
+  "version-config.js must be generated from version.json without drift");
+assert.match(read("index.html"), /<script src="version-config\.js"><\/script>/);
 
 const engine = read("learning-engine.js");
 assert.match(engine, /version:\s*APP_VERSION/);

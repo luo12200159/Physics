@@ -14,6 +14,35 @@
   ]);
   const cache = new Map();
   let writeQueue = Promise.resolve();
+  let revisionSequence = 0;
+  let learningFault = null;
+
+  function storageFault() {
+    return learningFault
+      ? { readOnly: true, reason: learningFault.message }
+      : { readOnly: false, reason: "" };
+  }
+
+  function enterReadOnlyFault(error, operation = "read") {
+    if (!learningFault) {
+      learningFault = new Error(`学习档案存储不可读取，已停止学习写入：${String(error?.message || error || "未知错误").slice(0, 200)}`);
+      learningFault.name = "LearningStorageReadOnlyError";
+    }
+    emitStorageFailure(error, operation);
+    return learningFault;
+  }
+
+  function nextRevision() {
+    return `${Date.now()}-${++revisionSequence}-${root.crypto?.randomUUID?.() || Math.random().toString(36).slice(2)}`;
+  }
+
+  function clearPendingRevision(key, revision) {
+    const raw = rawGetItem(key);
+    if (!raw) return;
+    let marker;
+    try { marker = JSON.parse(raw); } catch (_error) { return; /* retain legacy recovery data */ }
+    if (marker.revision === revision) rawRemoveItem(key);
+  }
 
   function backend() {
     return root.localStorage || null;
@@ -48,6 +77,7 @@
 
   function getItem(key) {
     const normalizedKey = String(key);
+    if (normalizedKey === DEFAULT_LEARNING_KEY && learningFault) throw learningFault;
     if (cache.has(normalizedKey)) return JSON.stringify(cache.get(normalizedKey));
     return rawGetItem(normalizedKey);
   }
@@ -57,13 +87,13 @@
     if (normalizedKey === DEFAULT_LEARNING_KEY) {
       let state;
       try { state = JSON.parse(String(value)); } catch (error) { throw new Error(`Invalid learning state: ${error.message}`); }
-      stageLearningState(normalizedKey, state);
-      return;
+      return stageLearningState(normalizedKey, state);
     }
     rawSetItem(normalizedKey, value);
   }
 
   function removeItem(key) {
+    if (String(key) === DEFAULT_LEARNING_KEY && learningFault) throw learningFault;
     cache.delete(String(key));
     rawRemoveItem(key);
   }
@@ -75,7 +105,7 @@
   }
 
   function setJson(key, value) {
-    setItem(key, JSON.stringify(value));
+    return setItem(key, JSON.stringify(value));
   }
 
   function migrateJson(key, migrate) {
@@ -148,25 +178,36 @@
     };
   }
 
-  function putStateEntities(state) {
+  function putStateEntities(state, revision = nextRevision()) {
     return openIndexedDb().then((db) => new Promise((resolve, reject) => {
       const transaction = db.transaction(["meta", ...ENTITY_STORES], "readwrite");
+      transaction.oncomplete = () => { db.close(); resolve({ saved: true, revision, version: STORAGE_SCHEMA_VERSION }); };
+      transaction.onerror = () => { const error = transaction.error || new Error("IndexedDB transaction failed"); db.close(); reject(error); };
+      transaction.onabort = () => { const error = transaction.error || new Error("IndexedDB transaction aborted"); db.close(); reject(error); };
       const meta = transaction.objectStore("meta");
       const now = new Date().toISOString();
       meta.put({ key: "storageVersion", value: STORAGE_SCHEMA_VERSION, updatedAt: now });
       meta.put({ key: "stateShell", value: stateShell(state), updatedAt: now });
+      meta.put({ key: "storageRevision", value: revision, updatedAt: now });
       ENTITY_STORES.forEach((name) => {
         const store = transaction.objectStore(name);
-        store.clear();
-        (Array.isArray(state[name]) ? state[name] : []).forEach((record, index) => {
+        // An absent collection is not an instruction to destroy existing history.
+        if (!Array.isArray(state[name])) return;
+        const records = new Map();
+        state[name].forEach((record, index) => {
           if (!record || typeof record !== "object") return;
-          const id = String(record.id || `${name}-${index}-${Date.now()}`);
-          store.put({ ...record, id });
+          const id = String(record.id || `${name}-legacy-${index}`);
+          records.set(id, { ...record, id });
         });
+        const existing = store.getAll();
+        existing.onsuccess = () => {
+          const previous = new Map(existing.result.map(record => [String(record.id), record]));
+          previous.forEach((_record, id) => { if (!records.has(id)) store.delete(id); });
+          records.forEach((record, id) => {
+            if (JSON.stringify(previous.get(id)) !== JSON.stringify(record)) store.put(record);
+          });
+        };
       });
-      transaction.oncomplete = () => { db.close(); resolve({ version: STORAGE_SCHEMA_VERSION }); };
-      transaction.onerror = () => { const error = transaction.error || new Error("IndexedDB transaction failed"); db.close(); reject(error); };
-      transaction.onabort = () => { const error = transaction.error || new Error("IndexedDB transaction aborted"); db.close(); reject(error); };
     }));
   }
 
@@ -174,82 +215,100 @@
     const db = await openIndexedDb();
     try {
       const transaction = db.transaction(["meta", ...ENTITY_STORES], "readonly");
-      const shellRecord = await requestResult(transaction.objectStore("meta").get("stateShell"));
-      if (!shellRecord?.value) throw new Error("IndexedDB state shell is missing");
-      const entityEntries = await Promise.all(ENTITY_STORES.map(async (name) => [
+      const completed = new Promise((resolve, reject) => {
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error || new Error("IndexedDB read transaction failed"));
+        transaction.onabort = () => reject(transaction.error || new Error("IndexedDB read transaction aborted"));
+      });
+      const shellRequest = requestResult(transaction.objectStore("meta").get("stateShell"));
+      const revisionRequest = requestResult(transaction.objectStore("meta").get("storageRevision"));
+      const entriesRequest = Promise.all(ENTITY_STORES.map(async (name) => [
         name,
         await requestResult(transaction.objectStore(name).getAll())
       ]));
-      return { ...shellRecord.value, ...Object.fromEntries(entityEntries) };
+      const [shellRecord, revisionRecord, entityEntries] = await Promise.all([shellRequest, revisionRequest, entriesRequest, completed]);
+      if (!shellRecord?.value) return null;
+      return { state: { ...shellRecord.value, ...Object.fromEntries(entityEntries) }, revision: revisionRecord?.value };
     } finally {
       db.close();
     }
   }
 
   async function prepareLearningState(key = DEFAULT_LEARNING_KEY) {
+    if (learningFault) throw learningFault;
     const normalizedKey = String(key);
+    let operation = "read";
+    try {
     const pendingKey = `${normalizedKey}::idb-write-pending`;
     const pending = rawGetItem(pendingKey);
-    const raw = pending || rawGetItem(normalizedKey);
+    let marker = null;
+    try { marker = pending ? JSON.parse(pending) : null; } catch (_error) { /* validated below */ }
+    const revisionMarker = marker?.pending === true && typeof marker.revision === "string";
+    const raw = revisionMarker ? rawGetItem(normalizedKey) : pending || rawGetItem(normalizedKey);
     let parsed = null;
-    try { parsed = raw ? JSON.parse(raw) : null; } catch (error) {
-      emitStorageFailure(error, "read");
-      throw error;
-    }
-    if (parsed?.indexedDbPrimary && !pending) {
-      try {
+    parsed = raw ? JSON.parse(raw) : null;
+    const backupKey = `${normalizedKey}::idb-migration-backup`;
+    if (parsed?.indexedDbPrimary || (!parsed && (indexedDbAvailable() || rawGetItem(backupKey) != null))) {
         const hydrated = await readStateEntities();
-        cache.set(normalizedKey, hydrated);
-        return hydrated;
-      } catch (error) {
-        const backup = rawGetItem(`${normalizedKey}::idb-migration-backup`);
-        if (backup) {
-          const restored = JSON.parse(backup);
-          cache.set(normalizedKey, restored);
-          emitStorageFailure(error, "read-recovered-from-backup");
-          return restored;
+        if (!hydrated && (parsed?.indexedDbPrimary || revisionMarker || rawGetItem(backupKey) != null)) {
+          throw new Error("IndexedDB learning state is missing; historical backup remains untouched");
         }
-        emitStorageFailure(error, "read");
-        throw error;
-      }
+        if (revisionMarker) {
+          if (hydrated?.revision !== marker.revision) emitStorageFailure(new Error("上次保存被中断；已恢复最后完成的事务，未提交内容无法恢复"), "interrupted-write");
+          clearPendingRevision(pendingKey, marker.revision);
+        }
+        if (hydrated) cache.set(normalizedKey, hydrated.state);
+        else cache.delete(normalizedKey);
+        return hydrated?.state || null;
     }
-    if (!parsed) return null;
+    if (!parsed) { cache.delete(normalizedKey); return null; }
     cache.set(normalizedKey, parsed);
     if (!indexedDbAvailable()) return parsed;
-    const backupKey = `${normalizedKey}::idb-migration-backup`;
-    try {
+    operation = "migration";
       if (rawGetItem(backupKey) == null) rawSetItem(backupKey, raw);
       await putStateEntities(parsed);
       rawSetItem(normalizedKey, JSON.stringify(lightweightState(parsed)));
       rawSetItem("physics-storage-version-v1", String(STORAGE_SCHEMA_VERSION));
-      rawRemoveItem(pendingKey);
+      if (rawGetItem(pendingKey) === pending) rawRemoveItem(pendingKey);
       return parsed;
     } catch (error) {
-      emitStorageFailure(error, "migration");
-      throw error;
+      throw enterReadOnlyFault(error, operation);
     }
   }
 
   function stageLearningState(key, state) {
     const normalizedKey = String(key || DEFAULT_LEARNING_KEY);
+    if (learningFault) return Promise.reject(learningFault);
     const snapshot = JSON.parse(JSON.stringify(state));
-    cache.set(normalizedKey, snapshot);
+    const revision = nextRevision();
     if (!indexedDbAvailable()) {
+      let existing;
+      try {
+        const raw = rawGetItem(normalizedKey);
+        existing = raw ? JSON.parse(raw) : null;
+        if (existing?.indexedDbPrimary || (!raw && rawGetItem(`${normalizedKey}::idb-migration-backup`) != null)) {
+          throw new Error("IndexedDB-backed learning history is unavailable; localStorage fallback is disabled");
+        }
+      } catch (error) {
+        return Promise.reject(enterReadOnlyFault(error, "read"));
+      }
       try { rawSetItem(normalizedKey, JSON.stringify(snapshot)); } catch (error) { emitStorageFailure(error); throw error; }
-      return Promise.resolve({ fallback: "localStorage" });
+      cache.set(normalizedKey, snapshot);
+      return Promise.resolve({ saved: true, revision, fallback: "localStorage" });
     }
     const pendingKey = `${normalizedKey}::idb-write-pending`;
-    try { rawSetItem(pendingKey, JSON.stringify(snapshot)); } catch (error) {
+    try { rawSetItem(pendingKey, JSON.stringify({ pending: true, revision })); } catch (error) {
       emitStorageFailure(error, "stage");
       return Promise.reject(error);
     }
     writeQueue = writeQueue.catch(() => {}).then(async () => {
       try {
-        await putStateEntities(snapshot);
+        const committed = await putStateEntities(snapshot, revision);
+        cache.set(normalizedKey, snapshot);
         rawSetItem(normalizedKey, JSON.stringify(lightweightState(snapshot)));
         rawSetItem("physics-storage-version-v1", String(STORAGE_SCHEMA_VERSION));
-        rawRemoveItem(pendingKey);
-        return { saved: true, version: STORAGE_SCHEMA_VERSION };
+        clearPendingRevision(pendingKey, revision);
+        return committed;
       } catch (error) {
         emitStorageFailure(error, "write");
         throw error;
@@ -262,9 +321,10 @@
     return writeQueue;
   }
 
-  function migrateStateToIndexedDB(state, legacyKey = DEFAULT_LEARNING_KEY) {
-    cache.set(String(legacyKey), state);
-    return prepareLearningState(legacyKey);
+  async function migrateStateToIndexedDB(state, legacyKey = DEFAULT_LEARNING_KEY) {
+    const commit = stageLearningState(legacyKey, state);
+    await commit;
+    return cache.get(String(legacyKey || DEFAULT_LEARNING_KEY));
   }
 
   function mirrorStateToIndexedDB(state) {
@@ -279,6 +339,8 @@
     setJson,
     migrateJson,
     storageSchemaVersion: STORAGE_SCHEMA_VERSION,
+    storageFault,
+    enterReadOnlyFault,
     indexedDbAvailable,
     prepareLearningState,
     stageLearningState,

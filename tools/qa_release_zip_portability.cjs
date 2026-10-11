@@ -14,7 +14,7 @@ if (!buildScript.includes("qa_release_zip_portability.cjs")) {
 }
 const requiredSplitSources = [
   "安装应用.ps1", "安装应用.cmd", "teacher-mode-lock.js", "physics-visuals.js", "variant-generator.js",
-  "index.html", "app.js", "learning-lab.js", "experience-shell.js",
+  "index.html", "version-config.js", "app.js", "learning-lab.js", "experience-shell.js",
 ];
 for (const required of requiredSplitSources) {
   if (!buildScript.includes(required)) throw new Error(`source ZIP staging list missing ${required}`);

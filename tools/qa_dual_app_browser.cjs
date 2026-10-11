@@ -64,8 +64,10 @@ async function checkEdition(browser, edition, viewport) {
   assert.equal(scripts.includes("teacher-app.js"), false);
 
   if (edition === "student") {
-    const nav = await page.locator(".student-bottom-nav button").allTextContents();
+    const nav = await page.locator(".student-bottom-nav [data-student-view]").allTextContents();
     assert.deepEqual(nav.map((item) => item.replace(/\s+/g, "")), ["⌂首页", "目课程", "▤训练", "◎学情", "○我的"]);
+    assert.equal(await page.locator('.student-bottom-nav .student-scan-fab[data-shell-action="capture"][aria-label="拍题录入"]').count(), 1,
+      "学生端拍题是导航内独立操作，不应替代五个页面入口");
     assert.equal(await page.locator("#teacherExperienceBar").count(), 0);
     for (const target of ["course", "training", "analysis", "profile", "home"]) {
       await page.locator(`.student-bottom-nav [data-student-view="${target}"]`).click();

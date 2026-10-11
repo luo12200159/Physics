@@ -15,6 +15,7 @@ function load(file) {
   vm.runInContext(fs.readFileSync(path.join(project, file), "utf8"), context, { filename: file });
 }
 
+load("solution-format.js");
 load("curriculum-bank.js");
 load("mock-exam-bank.js");
 load("original-practice-bank.js");

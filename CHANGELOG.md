@@ -1,4 +1,24 @@
-# 更新记录
+# 变更记录
+
+## 4.0.2（开发候选，2026-10-11）
+
+| 原问题与根因 | 修改位置 | 数据兼容与回归 |
+| --- | --- | --- |
+| 解析格式化把句首小数当步骤编号 | `solution-format.js`、`curriculum-bank.js`、`mock-exam-bank.js`、`app.js` | 仅精确匹配旧内置文本并修复；用户编辑保留；`qa_solution_integrity.cjs`、学生浏览器迁移测试 |
+| 数值匹配把错误单位、方向、否定结论判对；符号含义固定 | `learning-engine.js` | 旧作答不删除；无法由新规则确认的旧自动正确标待复核；`qa_grading_physics_audit.cjs`、`qa_student_v4_browser.cjs` |
+| 并联图额外短接线、零电压被默认值覆盖、时间和波图不一致 | `physics-visuals.js` | 不改历史记录；`qa_physics_visuals_audit.cjs` |
+| 本地保存先报告成功、全量清空重写、pending 快照过大 | `storage-repository.js`、`learning-engine.js`、`experience-shell.js`、`app.js` | state v10 不变，旧 JSON/IndexedDB 可迁移；`qa_storage_transactions.cjs`、`qa_save_commit_v402.cjs`、浏览器回归 |
+| 安卓备份在用户取消或写入失败时仍可能提示成功；备份容量检查过晚 | `MainActivity.java`、`backup.js`、`security.js`、`app.js` | 原生桥保留旧接口，新回执只在输出流关闭后返回；旧加密/未加密 `.pslab` 仍可读；`qa_backup_export_capacity_v402.cjs`、`qa_android_export_ack_v402.cjs` |
+| 未生成摸底时显示 0/0、无证据仍推荐挑战题 | `experience-shell.js` | 旧档案保留；学生浏览器移动视口回归 |
+| 跨午夜数分钟被计为延迟掌握 | `learning-engine.js`、`experience-shell.js` | 保留原时间证据，新增至少 24 小时的产品规则；`qa_mastery_interval_v402.cjs` |
+| 配置 AI 地址即被称为可用 | `ai-tutor.js`、`learning-lab.js` | 授权未核验时只使用本机提示；`qa_ai_capability_status_v402.cjs` |
+| 主存储读取故障可能回写陈旧迁移备份，写入失败仍显示未落盘缓存 | `storage-repository.js`、`learning-engine.js`、`app.js` | 故障时只读并提示，禁止自动回写；`qa_storage_transactions.cjs`、`qa_save_commit_v402.cjs` |
+| 完整备份遗漏题源记录，恢复时可能清除这些记录 | `app.js`、`backup.js` | 导出全部题目与题源，恢复分类型校验；旧格式仍可导入；`qa_backup_source_records_v402.cjs` |
+| AI 变式接口未与其它内容接口一样核验服务端授权 | `server/physics-ai-gateway.mjs` | 未接入持久授权验证器前拒绝学生内容请求；`qa_ai_capability_status_v402.cjs` |
+
+本版没有宣称全部 1900 题已经人工物理审校，也没有实现大媒体的流式或分卷备份。Android 单文件导出仍有 100 MiB 上限；正式发布还需真机、正式签名及教师复核。任何不同难度或知识点的正确率差异不称为能力提升。
+
+验证：根 `npm run qa` 通过，服务端 TypeScript 类型检查、67 项单元测试与生产构建通过；5 个 Testcontainers 集成套件因当前主机无容器运行时，在业务断言前失败，15 项断言未执行。Android APK 与 Windows 安装器均为开发候选，Windows 安装器未签名。
 
 ## v4.0.0（学生端学习闭环升级，2026-08-30）
 

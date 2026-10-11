@@ -499,6 +499,10 @@
 
   const knowledgePointAliases = Object.freeze([
     Object.freeze({
+      id: "kp:欧姆定律",
+      labels: Object.freeze(["欧姆定律", "kp:ohms-law", "ohms-law"])
+    }),
+    Object.freeze({
       id: "kp:带电粒子-磁场运动",
       labels: Object.freeze([
         "带电粒子在磁场中运动",

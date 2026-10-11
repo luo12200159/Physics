@@ -26,6 +26,12 @@ const RATE_WINDOW_MS = 60000;
 const RATE_LIMIT = boundedInteger(process.env.PHYSICS_RATE_LIMIT, 20, 1, 1000);
 const rateBuckets = new Map();
 
+function assertStudentConsentVerifierAvailable() {
+  // This standalone gateway has no persisted student/guardian consent store.
+  // Keep personal-content endpoints closed until a server-side verifier exists.
+  throw httpError(403, "student_consent_verification_unavailable");
+}
+
 const solutionSchema = {
   type: "object",
   additionalProperties: false,
@@ -253,6 +259,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/physics/solve") {
       if (!OPENAI_API_KEY) throw httpError(503, "openai_not_configured");
+      assertStudentConsentVerifierAvailable();
       const input = await readJson(request, MAX_JSON_BYTES);
       const result = await solveQuestion(input, requestId);
       return sendJson(response, 200, result);
@@ -260,6 +267,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/physics/tutor-turn") {
       if (!OPENAI_API_KEY) throw httpError(503, "openai_not_configured");
+      assertStudentConsentVerifierAvailable();
       const input = await readJson(request, MAX_JSON_BYTES);
       const result = await tutorTurn(input, requestId);
       return sendJson(response, 200, result);
@@ -267,6 +275,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/physics/generate-variants") {
       if (!OPENAI_API_KEY) throw httpError(503, "openai_not_configured");
+      assertStudentConsentVerifierAvailable();
       const input = await readJson(request, MAX_JSON_BYTES);
       const result = await generateVariants(input, requestId);
       return sendJson(response, 200, result);
@@ -274,6 +283,7 @@ const server = http.createServer(async (request, response) => {
 
     if (request.method === "POST" && request.url === "/v1/physics/document-analysis") {
       if (!OPENAI_API_KEY) throw httpError(503, "openai_not_configured");
+      assertStudentConsentVerifierAvailable();
       const input = await readMultipart(request, MAX_DOCUMENT_BYTES + MAX_JSON_BYTES);
       const result = await analyzeDocument(input, requestId);
       return sendJson(response, 200, result);

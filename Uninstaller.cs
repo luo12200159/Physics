@@ -11,8 +11,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("费曼物理卸载程序")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("4.0.0.0")]
-[assembly: AssemblyFileVersion("4.0.0.0")]
+[assembly: AssemblyVersion("4.0.2.0")]
+[assembly: AssemblyFileVersion("4.0.2.0")]
 
 internal static class UninstallerProgram
 {
@@ -144,11 +144,13 @@ internal static class UninstallerProgram
             && File.Exists(Path.Combine(directory, "learning-lab.css"))
             && File.Exists(Path.Combine(directory, "experience-shell.css"))
             && File.Exists(Path.Combine(directory, "activation.css"))
+            && File.Exists(Path.Combine(directory, "version-config.js"))
             && File.Exists(Path.Combine(directory, "activation-public-key.js"))
             && File.Exists(Path.Combine(directory, "activation.js"))
             && File.Exists(Path.Combine(directory, "storage-repository.js"))
             && File.Exists(Path.Combine(directory, "curriculum-taxonomy.js"))
             && File.Exists(Path.Combine(directory, "curriculum-bank.js"))
+            && File.Exists(Path.Combine(directory, "solution-format.js"))
             && File.Exists(Path.Combine(directory, "exam-question-index.js"))
             && File.Exists(Path.Combine(directory, "mock-exam-bank.js"))
             && File.Exists(Path.Combine(directory, "original-practice-bank.js"))
@@ -163,6 +165,7 @@ internal static class UninstallerProgram
             && File.Exists(Path.Combine(directory, "content-catalog.js"))
             && File.Exists(Path.Combine(directory, "learning-engine.js"))
             && File.Exists(Path.Combine(directory, "physics-visuals.js"))
+            && File.Exists(Path.Combine(directory, "motion-representation-drafts.js"))
             && File.Exists(Path.Combine(directory, "variant-generator.js"))
             && File.Exists(Path.Combine(directory, "teacher-mode-lock.js"))
             && File.Exists(Path.Combine(directory, "app.js"))

@@ -157,11 +157,15 @@ if (!appPath || !outputDirectory) {
     });
     const coverageAfterReview = app.getContentCoverage();
 
-    const completeBackup = await window.PhysicsStudioBackup.create(app, engine);
-    const backupFile = new File([completeBackup.blob], "qa.pslab", {
-      type: "application/vnd.physics-studio.backup+zip"
+    const completeBackup = await window.PhysicsStudioBackup.create(app, engine, {
+      password: "qa-feature-upgrade-backup-password"
     });
-    const restored = await window.PhysicsStudioBackup.restore(backupFile, app, engine);
+    const backupFile = new File([completeBackup.blob], "qa.pslab", {
+      type: "application/octet-stream"
+    });
+    const restored = await window.PhysicsStudioBackup.restore(backupFile, app, engine, {
+      password: "qa-feature-upgrade-backup-password"
+    });
 
     let unsafeEndpointRejected = false;
     try {

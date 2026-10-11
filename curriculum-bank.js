@@ -32,28 +32,7 @@
     }
   };
 
-  function formatDetailedSolution(definition) {
-    const existing = String(definition.solution || "").trim();
-    if (/^【考察点】/.test(existing)) return existing;
-    const points = definition.examPoints?.length ? definition.examPoints : [definition.topic];
-    const fragments = existing
-      .split(/\r?\n/)
-      .flatMap((line) => line.split(/(?<=[。；])\s*/))
-      .map((line) => line.replace(/^(?:第\s*)?\d+(?:\s*步)?[.、：:]\s*/, "").trim())
-      .filter(Boolean);
-    const reasoning = [
-      `先明确题目条件、所求结论和研究对象，本题主要考察${points.join("、")}。`,
-      ...fragments,
-      `整理上述推理，按题目要求写出结论：${definition.answer}`
-    ];
-    return [
-      `【考察点】${points.join("、")}`,
-      "【分步解析】",
-      ...reasoning.map((line, index) => `${index + 1}. ${line}`),
-      `【最终结论】${definition.answer}`,
-      "【结果复核】核对题目设问、物理规律适用条件、单位、方向和数量级；选择题同时核对其余选项为何不成立。"
-    ].join("\n");
-  }
+  const formatDetailedSolution = (definition) => window.PHYSICS_SOLUTION_FORMAT.formatDetailedSolution(definition, "curriculum");
 
   function inferQuestionType(definition = {}) {
     const explicit = String(definition.questionType || "").trim();
@@ -559,6 +538,7 @@
       ...definition,
       questionType: inferQuestionType(definition),
       solution: formatDetailedSolution(definition),
+      ...window.PHYSICS_SOLUTION_FORMAT.contentMetadata(definition, "curriculum"),
       examPoints: definition.examPoints?.length ? [...definition.examPoints] : [definition.topic],
       stage: metadata.stage,
       source: metadata.source,
@@ -602,7 +582,7 @@
 
   window.PHYSICS_CURRICULUM_BANK = Object.freeze({
     version: 3,
-    contentVersion: "2026.07.29-detailed-solutions-r2",
+    contentVersion: window.PHYSICS_SOLUTION_FORMAT.CONTENT_VERSION,
     verifiedAt: "2026-07-29",
     officialBasisUrl: OFFICIAL_BASIS_URL,
     title: "长沙八年级至高三物理原创同步题库",

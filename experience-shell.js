@@ -284,9 +284,9 @@
           <section class="capture-confirmation">
             <div class="capture-recognition">
               <div><strong>题目文字</strong><span id="studentRecognitionBadge">等待图片</span></div>
-              <button data-capture-action="recognize" type="button">尝试本机文字识别</button>
+              <button data-capture-action="recognize" type="button">尝试设备文字识别</button>
             </div>
-            <p class="capture-boundary" id="studentRecognitionStatus">依次尝试 Android 原生离线 OCR、设备 TextDetector，再回退到人工输入。公式、上下标、矢量符号和图示语义必须人工确认，不会自动补全。</p>
+            <p class="capture-boundary" id="studentRecognitionStatus">拍题录入不依赖 OCR：本应用未内置离线识别模型；仅在设备提供文字识别能力时生成待核对草稿。公式、图示和不确定字符请手工确认。</p>
             <label><span>确认后的题干 <i>*</i></span><textarea id="studentCaptureText" rows="8" placeholder="请粘贴、输入或核对题干；不确定字符用“□”标记。"></textarea></label>
             <div class="capture-mini-grid">
               <label><span>年级</span><select id="studentCaptureGrade">${["八年级", "九年级", "高一", "高二", "高三"].map((grade) => `<option>${grade}</option>`).join("")}</select></label>
@@ -614,8 +614,8 @@
           ["analysis", "◎", "学情"],
           ["profile", "○", "我的"]
         ].map(([view, icon, label]) => `<button class="${primaryView === view ? "active" : ""}" data-student-view="${view}" type="button"><span>${icon}</span><strong>${label}</strong></button>`).join("")}
-      </nav>
-      <button class="student-scan-fab" data-shell-action="capture" type="button"><span>▣</span><strong>拍题</strong></button>`;
+        <button class="student-scan-fab" data-shell-action="capture" type="button" aria-label="拍题录入"><span aria-hidden="true">▣</span><strong>拍题</strong></button>
+      </nav>`;
   }
 
   function renderStudentView(data) {
@@ -775,13 +775,27 @@
       .map((attempt) => attempt.topic));
     const newTopics = [...new Set(gradeQuestions.map((question) => question.topic).filter(Boolean))]
       .filter((topic) => !attemptedTopics.has(topic));
-    const latestAttemptByQuestion = new Map();
+    const attemptsByQuestion = new Map();
     (learning?.attempts || [])
       .filter((attempt) => attempt.profileId === learning?.activeProfileId)
-      .forEach((attempt) => latestAttemptByQuestion.set(attempt.questionId, attempt));
+      .forEach((attempt) => {
+        const records = attemptsByQuestion.get(attempt.questionId) || [];
+        records.push(attempt);
+        attemptsByQuestion.set(attempt.questionId, records);
+      });
+    const correctionStates = new Map(gradeQuestions.map((question) => [
+      question.id,
+      engine.questionCorrectionState(
+        attemptsByQuestion.get(question.id) || [],
+        learning?.activeProfileId,
+        question.id
+      )
+    ]));
     const wrongQuestions = gradeQuestions.filter((question) => {
-      const attempt = latestAttemptByQuestion.get(question.id);
-      return attempt && attempt.grading?.status !== "correct";
+      return correctionStates.get(question.id)?.needsCorrection;
+    });
+    const pendingReviewQuestions = gradeQuestions.filter((question) => {
+      return correctionStates.get(question.id)?.pendingReviewCount > 0;
     });
     const dailyTest = learning ? engine.dailyTest(learning, questions, {
       count: 5,
@@ -798,9 +812,9 @@
         summaryOnly: true,
         title: `${experience.grade}学期初物理摸底诊断`,
         questionCount: "20–30",
-        misconceptionQuestionCount: 0,
-        blueprintCoverage: { coveredCount: 0, targetCount: 0 },
-        capabilityCoverage: { coveredCount: 0, targetCount: 8 },
+        misconceptionQuestionCount: null,
+        blueprintCoverage: null,
+        capabilityCoverage: null,
         coverage: { coveredTopics: [], availableTopics: [] }
       } : null;
     const placementState = learning && engine?.placementStatus
@@ -844,6 +858,8 @@
       effectiveAttempts,
       newTopics,
       wrongQuestions,
+      pendingReviewQuestions,
+      correctionStates,
       dailyTest,
       analysis,
       placement,
@@ -904,7 +920,7 @@
     return `
       <section class="student-module-section">
         <header>
-          <div><span>STUDENT LEARNING HUB</span><h2>${escapeHtml(title)}</h2></div>
+          <div><span>学生学习中心</span><h2>${escapeHtml(title)}</h2></div>
           <p>每个入口都是可独立浏览、筛选和继续学习的模块。</p>
         </header>
         <div class="student-module-grid">
@@ -934,7 +950,9 @@
     const wrong = data.wrongQuestions.length;
     const goal = Math.max(1, Number(experience.weeklyGoal) || 12);
     const completed = data.effectiveAttempts.length;
-    const next = data.next?.question;
+    const newStudentNeedsPlacement = data.placementState?.status === "not-started"
+      && Number(data.summary.scoredCount || 0) === 0;
+    const next = newStudentNeedsPlacement ? null : data.next?.question;
     const report = data.formativeReport;
     const weak = report?.needsWork?.[0] || data.analysis?.weakest?.[0] || null;
     const profileAttempts = (data.learning?.attempts || []).filter((attempt) => attempt.profileId === data.learning?.activeProfileId);
@@ -943,7 +961,7 @@
     const explainQuestion = latestQuestion || next;
     return `
       <section class="today-intro">
-        <span>今天建议学习 15 分钟</span>
+        <span>今天从一项真实学习任务开始</span>
         <h1>先做下一步，再看完整分析</h1>
       </section>
       ${renderDiagnosticPrompt(data)}
@@ -951,14 +969,14 @@
         <button class="continue-card" data-start-question="${escapeHtml(next.id)}" type="button">
           <span class="continue-label">继续学习</span>
           <h2>${escapeHtml(next.title)}</h2>
-          <p>${escapeHtml(next.topic)} · ${escapeHtml(next.difficulty)} · 约 15 分钟</p>
+          <p>${escapeHtml(next.topic)} · ${escapeHtml(next.difficulty)} · 进度按实际作答记录</p>
           <small>${escapeHtml(data.next.reasons?.[0] || "根据当前学习记录推荐")}</small>
           <strong>开始作答 <i>→</i></strong>
         </button>` : `
         <article class="continue-card empty">
           <span class="continue-label">暂无可训练正文</span>
-          <h2>请让教师先导入或添加可用试题</h2>
-          <p>只有来源链接或未核实正文的记录不会进入学生训练。</p>
+          <h2>${newStudentNeedsPlacement ? "先完成摸底，再安排下一题" : "请让教师先导入或添加可用试题"}</h2>
+          <p>${newStudentNeedsPlacement ? "当前没有已评分学习证据，不会直接按挑战题建立能力结论。" : "只有来源链接或未核实正文的记录不会进入学生训练。"}</p>
         </article>`}
       <section class="student-v4-scroll home-quick-actions" aria-label="首页快捷操作">
         <button data-start-question="${escapeHtml(next?.id || "")}" type="button"${next ? "" : " disabled"}><span>今日任务</span><strong>${next ? escapeHtml(next.title) : "暂无可用题"}</strong><small>独立作答后再看提示</small></button>
@@ -969,6 +987,7 @@
       <div class="today-counters">
         <button data-student-view="analysis" type="button"><strong>${report?.overall?.scoredCount ?? data.summary.scoredCount ?? 0}</strong><span>已评分证据</span><small>${report?.sampleStatus === "sufficient" ? "可做形成性判断" : "样本仍需补充"}</small></button>
         <button data-student-view="wrong" type="button"><strong>${wrong}</strong><span>错题</span><small>继续订正</small></button>
+        <button data-student-view="wrong" type="button"><strong>${data.pendingReviewQuestions.length}</strong><span>待人工复核</span><small>不计入错题</small></button>
         <button data-student-view="course" type="button"><strong>${Math.min(1, data.newTopics.length)}</strong><span>新知识</span><small>${data.newTopics[0] ? escapeHtml(data.newTopics[0]) : "暂无新组"}</small></button>
       </div>
       <section class="home-evidence-grid">
@@ -1004,7 +1023,7 @@
     const report = data.formativeReport;
     const priority = report?.needsWork?.[0] || data.analysis?.weakest?.[0] || null;
     return `
-      <section class="student-page-head"><span>DIAGNOSE · PRACTICE · TRANSFER · RETEST</span><h1>训练</h1><p>每次只安排少量、有依据的训练；不会用题量代替诊断。</p></section>
+      <section class="student-page-head"><span>诊断 · 练习 · 迁移 · 复测</span><h1>训练</h1><p>每次只安排少量、有依据的训练；不会用题量代替诊断。</p></section>
       <section class="training-loop-grid">
         <article><i>1</i><div><span>先确认问题</span><h2>摸底与概念诊断</h2><p>用覆盖蓝图和“答案＋理由＋信心”形成起点证据。</p></div><button data-shell-action="open-diagnostic" type="button">开始诊断</button></article>
         <article><i>2</i><div><span>只练当前重点</span><h2>3 / 5 / 7 题专项</h2><p>${priority ? `当前候选：${escapeHtml(priority.label || priority.topic)}` : "证据不足时先用 3 题补充观察，不贴能力标签。"}</p></div><div class="training-size-buttons">${[3, 5, 7].map((count) => `<button data-targeted-plan-size="${count}" type="button">${count}题</button>`).join("")}</div></article>
@@ -1038,7 +1057,9 @@
           <article class="diagnostic-prompt-card primary">
             <span>${placementStatus === "in-progress" ? "继续摸底" : placementStatus === "legacy-unknown" ? "历史档案需补做摸底" : "新学生起步"}</span>
             <h2>${escapeHtml(data.placement.title)}</h2>
-            <p>${data.placement.questionCount} 题 · ${data.placement.misconceptionQuestionCount} 道前概念辨析 · 本次蓝图覆盖 ${data.placement.blueprintCoverage?.coveredCount ?? data.placement.coverage.coveredTopics.length}/${data.placement.blueprintCoverage?.targetCount ?? data.placement.coverage.availableTopics.length} 个目标知识点、${data.placement.capabilityCoverage?.coveredCount ?? 0}/${data.placement.capabilityCoverage?.targetCount ?? 8} 个认知维度。</p>
+            ${data.placement.summaryOnly
+              ? "<p>开始后按当前年级生成摸底题包，可分段完成；题包生成后再显示实际知识点与认知维度覆盖。</p>"
+              : `<p>${data.placement.questionCount} 题 · ${data.placement.misconceptionQuestionCount} 道前概念辨析 · 本次蓝图覆盖 ${data.placement.blueprintCoverage?.coveredCount ?? data.placement.coverage.coveredTopics.length}/${data.placement.blueprintCoverage?.targetCount ?? data.placement.coverage.availableTopics.length} 个目标知识点、${data.placement.capabilityCoverage?.coveredCount ?? 0}/${data.placement.capabilityCoverage?.targetCount ?? 8} 个认知维度。</p>`}
             <button data-shell-action="open-placement" type="button">${placementStatus === "in-progress" ? "继续摸底" : placementStatus === "legacy-unknown" ? "补全摸底" : "开始摸底"}</button>
           </article>` : ""}
         ${broad?.due && broad.paper ? `
@@ -1340,7 +1361,7 @@
         ${targetLabel ? `<div class="curriculum-filter-chip"><span>教材定位：${escapeHtml(targetLabel)}</span><button data-library-action="clear-curriculum" type="button">移除</button></div>` : ""}
       </section>
       <section class="library-result-head">
-        <div><span>SEARCH RESULT</span><h2>${filtered.length ? `找到 ${filtered.length} 道题` : "没有符合条件的题目"}</h2></div>
+        <div><span>搜索结果</span><h2>${filtered.length ? `找到 ${filtered.length} 道题` : "没有符合条件的题目"}</h2></div>
         <button data-student-view="curriculum" type="button">按教材目录浏览 →</button>
       </section>
       <div class="student-question-list library-question-list">
@@ -1356,18 +1377,24 @@
   }
 
   function renderWrong(data) {
-    const weak = data.evidence.filter((item) => item.evidence.code === "weak").map((item) => item.question);
-    const wrongQuestions = [...new Map([...data.wrongQuestions, ...weak].map((question) => [question.id, question])).values()];
+    const wrongQuestions = data.wrongQuestions;
+    const pendingReviewHtml = data.pendingReviewQuestions.map((question) => {
+      const state = data.correctionStates.get(question.id);
+      return '<article><strong>' + escapeHtml(question.title) + '</strong><span>待复核 '
+        + state.pendingReviewCount + ' 次' + (state.needsCorrection ? ' · 此前错误仍待订正' : '')
+        + '</span><button data-start-question="' + escapeHtml(question.id)
+        + '" type="button">查看题目</button></article>';
+    }).join("");
     const errorCounts = learningErrorCounts(data.learning);
     const recentCorrections = data.evidence
       .filter((item) => item.evidence.latest)
       .sort((a, b) => new Date(b.evidence.latest.createdAt || 0) - new Date(a.evidence.latest.createdAt || 0))
       .slice(0, 5);
     return `
-      <section class="student-page-head"><span>ERROR TO ACTION</span><h1>错题集</h1><p>错误会按原因、知识点和订正状态组织；看过答案不等于完成订正。</p></section>
+      <section class="student-page-head"><span>订正与复核</span><h1>错题集</h1><p>只有已评分错误才进入错题数；待人工复核单列，看过答案不等于完成订正。</p></section>
       <section class="wrong-overview">
         <div class="wrong-summary">
-          <strong>${wrongQuestions.length}</strong><span>道待订正或薄弱题</span>
+          <strong>${wrongQuestions.length}</strong><span>道待订正题</span>
           <p>订正闭环：重新独立作答 → 定位错误 → 用一句话解释规律 → 完成迁移题 → 安排复习。</p>
         </div>
         <div class="wrong-error-types">
@@ -1377,11 +1404,16 @@
             : "<p>尚无结构化错误归因。完成一次订正后，请选择最先导致答案偏离的主要原因。</p>"}
         </div>
       </section>
+      <section class="wrong-pending-review" aria-label="待人工复核作答">
+        <h2>待人工复核 · ${data.pendingReviewQuestions.length} 道</h2>
+        <p>提交尚未评分，不进入错题数或知识点正确率；此前尚未完成的订正仍保留。</p>
+        ${pendingReviewHtml || "<p>目前没有待复核提交。</p>"}
+      </section>
       <section class="correction-workflow" aria-label="错题订正流程">
         ${["不看答案重做", "标记错误位置", "选择错误原因", "写关键规律", "完成一道变式"].map((label, index) => `<article><i>${index + 1}</i><strong>${label}</strong></article>`).join("")}
       </section>
       <section class="wrong-cause-guide">
-        <header><span>ERROR MODEL</span><h2>怎样判断错误原因</h2><p>只选择最先导致答案偏离的主要原因，避免把所有错题都归为“粗心”。</p></header>
+        <header><span>错误原因</span><h2>怎样判断错误原因</h2><p>只选择最先导致答案偏离的主要原因，避免把所有错题都归为“粗心”。</p></header>
         <div>
           ${[
             ["概念理解", "物理意义或因果关系理解偏差；用反例、实验现象和自己的话重新解释。"],
@@ -1415,10 +1447,10 @@
                 <button data-similar-topic="${escapeHtml(question.topic)}" type="button">同类迁移</button>
               </div>
             </article>`;
-        }).join("") : '<div class="student-empty"><strong>当前没有待订正或薄弱题</strong><span>正式作答中的错误或高提示依赖会进入这里；需要检查的建模记录只作为复核线索，不单独判定知识点薄弱。你也可以用右下角“拍题”收录纸面错题。</span></div>'}
+        }).join("") : '<div class="student-empty"><strong>当前没有已评分待订正题</strong><span>待人工复核提交不会被判错；高提示依赖只作为学习线索。你也可以用右下角“拍题录入”收录纸面错题。</span></div>'}
       </div>
       <section class="wrong-history">
-        <header><div><span>RECENT EVIDENCE</span><h2>近期订正证据</h2></div><button data-student-view="progress" type="button">查看掌握进度 →</button></header>
+        <header><div><span>近期证据</span><h2>近期订正证据</h2></div><button data-student-view="progress" type="button">查看掌握进度 →</button></header>
         ${recentCorrections.length ? recentCorrections.map((item) => `
           <article>
              <div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(engine?.masteryDisplayLabel?.(item.evidence) || item.evidence.status)} · ${escapeHtml(item.evidence.reasons.slice(0, 2).join("；"))}</span></div>
@@ -1468,7 +1500,7 @@
       </section>
       ${actual.length ? `
         <section class="actual-video-section">
-          <header><div><span>ATTACHED VIDEO</span><h2>已关联方法视频</h2></div><strong>${actual.length} 个</strong></header>
+          <header><div><span>关联视频</span><h2>已关联方法视频</h2></div><strong>${actual.length} 个</strong></header>
           <div class="method-card-grid">
             ${actual.slice(0, 12).map((question) => `
               <article>
@@ -1482,7 +1514,7 @@
           <p>系统不会用无关网络视频填充。教师可在题目编辑页关联已获授权的视频；下方  ${questions.length} 道题仍可使用逐步动态讲解。</p>
         </section>`}
       <section class="dynamic-method-section">
-        <header><div><span>STEP-BY-STEP</span><h2>逐步动态方法讲解</h2></div><strong>${walkthroughs.length} / ${questions.length}</strong></header>
+        <header><div><span>分步讲解</span><h2>逐步动态方法讲解</h2></div><strong>${walkthroughs.length} / ${questions.length}</strong></header>
         <div class="method-card-grid">
           ${walkthroughs.map((question) => `
             <article>
@@ -1508,7 +1540,7 @@
       <section class="mastery-rule-panel">
         <header><div><span>判定规则</span><h2>用学习行为证明“真的会”</h2></div><button data-shell-action="mastery-help" type="button">完整规则</button></header>
         <div>
-          <article><strong>${rules.masteredIndependentDates ?? 2}</strong><span>个不同日期低提示独立正确</span></article>
+          <article><strong>${rules.masteredIndependentDates ?? 2}</strong><span>个跨日期、至少间隔 ${rules.minimumRetentionIntervalHours ?? 24} 小时的低提示正确证据</span></article>
           <article><strong>${rules.masteredTransferEvidence ?? 1}</strong><span>道经核验迁移作答</span></article>
           <article><strong>≤ ${rules.independentHintMaximum ?? 1}</strong><span>独立正确的提示等级</span></article>
         </div>
@@ -1519,7 +1551,7 @@
          <article><strong>${data.knowledgePointEvidence?.coverageLabel || "0/0"}</strong><span>知识点已有证据（已有证据/可评估）</span></article>
       </section>
       <section class="mastery-evidence-guide">
-        <header><span>MASTERY PATH</span><h2>从“做过”到“掌握”的证据路径</h2></header>
+        <header><span>掌握路径</span><h2>从“做过”到“掌握”的证据路径</h2></header>
         <div>
           ${[
             ["1", "首次独立尝试", "先作答再看提示；即使答错，也能形成真实起点证据。"],
@@ -1552,7 +1584,7 @@
           </div>`}
       </div>
       <section class="near-mastery">
-        <header><div><span>NEXT MILESTONE</span><h2>接近掌握</h2></div><button data-student-view="progress" type="button">查看全部状态 →</button></header>
+        <header><div><span>下一阶段</span><h2>接近掌握</h2></div><button data-student-view="progress" type="button">查看全部状态 →</button></header>
         ${near.length ? near.map((item) => `
           <article><div><strong>${escapeHtml(item.question.title)}</strong><span>${escapeHtml(engine?.masteryDisplayLabel?.(item.evidence) || item.evidence.status)} · ${escapeHtml(item.evidence.reasons.join("；"))}</span></div><button data-start-question="${escapeHtml(item.question.id)}" type="button">继续取证</button></article>`).join("")
           : "<p>先完成正式作答，系统才会计算接近掌握的证据。</p>"}
@@ -1591,7 +1623,7 @@
         <p>分母为当前 ${escapeHtml(experience.grade)} 的 ${data.knowledgePointEvidence?.totalKnowledgePoints || 0} 个可评估知识点；重复练习同一知识点不会单独提高覆盖结论。</p>
       </section>
       <section class="chapter-progress-section">
-        <header><div><span>CHAPTER COVERAGE</span><h2>章节学习覆盖</h2></div><button data-student-view="curriculum" type="button">打开教材目录 →</button></header>
+        <header><div><span>章节覆盖</span><h2>章节学习覆盖</h2></div><button data-student-view="curriculum" type="button">打开教材目录 →</button></header>
         <div class="chapter-progress-list">
           ${chapters.map((chapter) => `
             <article>
@@ -1602,7 +1634,7 @@
         </div>
       </section>
       <section class="progress-question-section">
-        <header><div><span>STATUS LIST</span><h2>${escapeHtml(ui.progressState)}题目</h2></div><button data-progress-state="全部" type="button">显示全部</button></header>
+        <header><div><span>状态列表</span><h2>${escapeHtml(ui.progressState)}题目</h2></div><button data-progress-state="全部" type="button">显示全部</button></header>
         <div class="student-question-list">
           ${selected.slice(0, 30).map((item) => studentQuestionCard(item.question, data, { compact: true })).join("")
             || '<div class="student-empty"><strong>此状态暂无题目</strong><span>完成正式作答后，状态会按证据自动更新。</span></div>'}
@@ -1746,7 +1778,7 @@
     const currentCounts = curriculumCounts(data.curriculumBooks);
     return `
       ${ui.view === "course"
-        ? '<section class="student-page-head"><span>CURRICULUM · CONCEPT · MODEL</span><h1>课程</h1><p>按教材册、章、节学习；每节都可进入练习、方法讲解和“我来讲一遍”。</p></section>'
+        ? '<section class="student-page-head"><span>教材 · 概念 · 模型</span><h1>课程</h1><p>按教材册、章、节学习；每节都可进入练习、方法讲解和“我来讲一遍”。</p></section>'
         : renderModuleHeader("CURRICULUM MAP", "教材知识点", "按人教版八年级至高中选择性必修的册、章、节组织；每节包含核心要点、适用条件和对应练习。")}
       <section class="curriculum-overview">
         <article><strong>${totalCounts.books}</strong><span>教材册</span><small>八年级至高三完整目录</small></article>
@@ -1816,10 +1848,10 @@
       <section class="formative-report-summary loading" aria-live="polite">
         <span>形成性学情报告</span><h2>正在读取本机学习证据</h2><p>报告只使用真实作答、提示、错因和复测记录；不会虚构掌握度。</p>
       </section>`;
-    const trendLabels = { improving: "近期改善", declining: "近期回落", stable: "近期稳定", insufficient: "证据不足" };
+    const trendLabels = { improving: "可比题近期正确增加", declining: "可比题近期正确减少", stable: "可比题近期相同", unmatched: "题目未配平", insufficient: "证据不足" };
     return `
       <section class="formative-report-summary">
-        <header><div><span>FORMATIVE EVIDENCE REPORT</span><h2>当前最需要处理的事</h2></div><strong>${report.overall.scoredCount} 条已评分证据</strong></header>
+        <header><div><span>形成性学情证据</span><h2>当前最需要处理的事</h2></div><strong>${report.overall.scoredCount} 条已评分证据</strong></header>
         <p>${escapeHtml(report.boundary)}</p>
         <div class="student-v4-scroll formative-action-strip">
           ${report.nextActions.map((item, index) => `<article><i>${index + 1}</i><h3>${escapeHtml(item.label)}</h3><p>${escapeHtml(item.reason)}</p>${item.actionId === "review.due" ? '<button data-shell-action="open-review" type="button">开始复习</button>' : item.knowledgePointId ? `<button data-topic-key-filter="${escapeHtml(item.knowledgePointId)}" type="button">专项练习</button>` : '<button data-student-view="training" type="button">开始训练</button>'}</article>`).join("")}
@@ -1827,7 +1859,7 @@
         <div class="formative-three-column">
           <article><span>当前较稳定</span>${report.stable.length ? report.stable.map((item) => `<strong>${escapeHtml(item.label)}<small>${item.scoredCount} 题 · ${item.accuracy}%</small></strong>`).join("") : '<p>暂无达到样本门槛的稳定项。</p>'}</article>
           <article><span>需要巩固</span>${report.needsWork.length ? report.needsWork.map((item) => `<strong>${escapeHtml(item.label)}<small>${item.scoredCount} 题 · ${item.accuracy}%</small></strong>`).join("") : '<p>暂无达到样本门槛的薄弱项。</p>'}</article>
-          <article><span>近期趋势</span>${report.recentTrend.length ? report.recentTrend.map((item) => `<strong>${escapeHtml(item.label)}<small>${trendLabels[item.trend] || item.trend} · ${item.recentAccuracy == null ? "暂无可评分证据" : `${item.recentAccuracy}%`}</small></strong>`).join("") : '<p>至少需要三条已评分证据。</p>'}</article>
+          <article><span>近期可比作答</span>${report.recentTrend.length ? report.recentTrend.map((item) => `<strong>${escapeHtml(item.label)}<small>${trendLabels[item.trend] || item.trend} · ${item.trend === "unmatched" ? "只显示描述性记录" : `配平 ${item.matchedPairCount} 组`}</small></strong>`).join("") : '<p>至少需要三条已评分证据。</p>'}</article>
         </div>
         <small>${escapeHtml(report.evidenceRule)}</small>
       </section>`;
@@ -1848,7 +1880,7 @@
     const evidencePageStart = (ui.analysisEvidencePage - 1) * evidencePageSize;
     const visibleKnowledgePoints = knowledgePoints.slice(evidencePageStart, evidencePageStart + evidencePageSize);
     return `
-      <section class="student-page-head"><span>PERSONAL LEARNING EVIDENCE</span><h1>学情</h1><p>先给出下一步行动，再展开原始证据、覆盖情况和分析边界。</p></section>
+      <section class="student-page-head"><span>个人学习证据</span><h1>学情</h1><p>先给出下一步行动，再展开原始证据、覆盖情况和分析边界。</p></section>
       ${renderFormativeReportSummary(data)}
       <section class="analysis-evidence-note">
         <strong>${escapeHtml(analysis.conclusion || "当前尚无正式作答证据，不能形成可靠薄弱判断。")}</strong>
@@ -1857,7 +1889,7 @@
       </section>
       <details class="knowledge-evidence-matrix" open>
         <summary>
-          <div><span>CURRICULUM COVERAGE MATRIX</span><h2>课标知识点证据矩阵</h2></div>
+          <div><span>知识点证据矩阵</span><h2>课标知识点证据矩阵</h2></div>
           <div>${["证据不足", "需巩固", "基本掌握", "可迁移"].map((status) => `<strong><b>${knowledgeCounts[status] || 0}</b>${status}</strong>`).join("")}</div>
         </summary>
         <p>每项同时显示样本量和最近证据日期；没有证据的知识点不会被当作已掌握。</p>
@@ -1879,7 +1911,7 @@
         <small>${escapeHtml(analysis.abilityProfile?.evidenceRule || "结论依据样本量、最近证据、提示依赖、跨日正确与迁移表现。")}</small>
       </details>
       <section class="analysis-metric-grid">
-        <article><strong>${data.summary.accuracy == null ? "暂无" : `${data.summary.accuracy}%`}</strong><span>作答正确率</span><small>${data.summary.correct || 0}/${data.summary.completed || 0} 次 · 待复核 ${data.summary.pendingReviewCount || 0}</small></article>
+        <article><strong>${data.summary.accuracy == null ? "暂无" : `${data.summary.accuracy}%`}</strong><span>已评分正确率</span><small>${data.summary.correctCount || 0}/${data.summary.scoredCount || 0} 次已评分 · 待复核 ${data.summary.pendingReviewCount || 0}</small></article>
         <article><strong>${data.summary.independenceRate == null ? "暂无" : `${data.summary.independenceRate}%`}</strong><span>独立完成率</span><small>正确且提示等级≤1</small></article>
         <article><strong>${data.summary.averageHint || 0}</strong><span>平均提示等级</span><small>越低表示依赖越少</small></article>
         <article><strong>${data.summary.learningMinutes || 0}</strong><span>累计学习分钟</span><small>来自正式作答计时</small></article>
@@ -1892,7 +1924,7 @@
       </section>
       <div class="analysis-two-column">
         <section class="analysis-topic-card">
-          <header><span>WEAK EVIDENCE</span><h2>需要优先巩固</h2></header>
+          <header><span>需巩固的证据</span><h2>需要优先巩固</h2></header>
           ${weakest.length ? weakest.map((topic) => `
             <article>
               <div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts
@@ -1903,14 +1935,14 @@
             </article>`).join("") : "<p>暂无足够证据。至少完成一组独立作答后再判断薄弱点。</p>"}
         </section>
         <section class="analysis-topic-card strong">
-          <header><span>RELATIVE STRENGTH</span><h2>当前相对稳定</h2></header>
+          <header><span>相对稳定的证据</span><h2>当前相对稳定</h2></header>
           ${strongest.length ? strongest.map((topic) => `
             <article><div><strong>${escapeHtml(topic.topic)}</strong><span>${topic.attempts} 次记录 · 平均得分 ${topic.averageScore == null ? "暂无可评分证据" : `${topic.averageScore}%`}</span></div><i><b style="width:${topic.averageScore == null ? 0 : topic.averageScore}%"></b></i></article>`).join("")
             : "<p>记录不足，暂不标记优势模块。</p>"}
         </section>
       </div>
       <section class="modeling-analysis-card">
-         <header><div><span>MODELING RECORD</span><h2>建模记录完整度（规则值）</h2></div><button data-student-view="lab" type="button">进入建模训练 →</button></header>
+         <header><div><span>建模记录</span><h2>建模记录完整度（规则值）</h2></div><button data-student-view="lab" type="button">进入建模训练 →</button></header>
         <div class="modeling-axis-list">
           ${radar.map((axis) => `<article><span>${escapeHtml(axis.label)}</span><i><b style="width:${axis.value}%"></b></i><strong>${axis.value}%</strong></article>`).join("")
             || "<p>尚无建模步骤评分，不能绘制雷达证据。</p>"}
@@ -1918,19 +1950,19 @@
       </section>
       <div class="analysis-two-column">
         <section class="error-analysis-card">
-          <header><span>ERROR CAUSES</span><h2>错误原因分布</h2></header>
+          <header><span>错误原因</span><h2>错误原因分布</h2></header>
           ${errors.length ? errors.map(([label, count]) => `<article><span>${escapeHtml(label)}</span><strong>${count}</strong></article>`).join("")
             : "<p>尚未记录结构化错误原因。错题订正时请选择最主要原因。</p>"}
         </section>
         <section class="misconception-analysis-card">
-          <header><span>MISCONCEPTION</span><h2>前概念诊断</h2></header>
+          <header><span>前概念</span><h2>前概念诊断</h2></header>
           ${misconceptions.length ? misconceptions.map((item) => `<article><div><strong>${escapeHtml(item.title || item.label || item.code)}</strong><span>${escapeHtml(item.status)}</span></div><small>${item.evidenceCount} 次诊断证据 · 单次结果不会自动升级为稳定误概念</small></article>`).join("")
             : '<p>还没有“答案＋理由＋置信度”诊断记录。可在学习实验室完成前概念诊断。</p>'}
           <button data-shell-action="open-diagnostic" type="button">开始概念诊断</button>
         </section>
       </div>
       <section class="analysis-growth-card">
-        <header><div><span>GROWTH RECORD</span><h2>成长时间线与试卷趋势</h2></div><strong>${(analysis.growthTimeline || []).length} 条记录</strong></header>
+        <header><div><span>成长记录</span><h2>成长时间线与试卷趋势</h2></div><strong>${(analysis.growthTimeline || []).length} 条记录</strong></header>
         ${analysis.examTrend?.length ? `<div class="exam-trend-row">${analysis.examTrend.map((item) => `<article><time>${escapeHtml(new Date(item.date).toLocaleDateString("zh-CN"))}</time><strong>${item.percentage}%</strong><span>${escapeHtml(item.title)}</span></article>`).join("")}</div>` : "<p>尚未导入试卷成绩，暂不计算考试趋势。</p>"}
         <div class="growth-timeline">
           ${(analysis.growthTimeline || []).slice(0, 12).map((item) => `<article><time>${escapeHtml(new Date(item.date).toLocaleDateString("zh-CN"))}</time><div><strong>${escapeHtml(item.title)}</strong><span>${escapeHtml(item.detail)}</span><small>${escapeHtml(item.evidence || "")}</small></div></article>`).join("")
@@ -2012,12 +2044,12 @@
       ${renderModuleHeader("ACTIONABLE ADVICE", "学习建议", "建议只依据本机作答、提示、错因、建模、复习与考试记录；证据不足时明确说明。", "profile")}
       ${renderAssignedPlan(data)}
       <section class="advice-priority-card">
-        <header><div><span>NEXT BEST ACTION</span><h2>当前优先级</h2></div><strong>${priorities.length} 项</strong></header>
+        <header><div><span>下一步建议</span><h2>当前优先级</h2></div><strong>${priorities.length} 项</strong></header>
         <ol>${priorities.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ol>
         <div><button class="primary" data-start-question="${escapeHtml(data.next?.question?.id || "")}" type="button"${data.next?.question ? "" : " disabled"}>开始第一项</button><button data-student-view="analysis" type="button">查看分析依据</button></div>
       </section>
       <section class="recommended-question-section">
-        <header><div><span>WHY THIS QUESTION</span><h2>为你推荐的题目</h2></div><button data-student-view="library" type="button">打开完整题库 →</button></header>
+        <header><div><span>推荐依据</span><h2>为你推荐的题目</h2></div><button data-student-view="library" type="button">打开完整题库 →</button></header>
         <div class="student-recommend-list">
           ${data.recommendations.slice(0, 10).map((item, index) => `
             <article>
@@ -2039,7 +2071,7 @@
         </div>
       </section>
       <section class="learning-method-advice">
-        <header><span>LEARNING METHOD</span><h2>每道题怎样学得更扎实</h2></header>
+        <header><span>学习方法</span><h2>每道题怎样学得更扎实</h2></header>
         <div>
           <article><strong>先主动提取</strong><p>在看解析前至少写出研究对象、已知未知量和一个可能适用的规律。</p></article>
           <article><strong>控制提示依赖</strong><p>只在卡住时逐级打开提示；完成后记录最终使用的提示等级。</p></article>
@@ -2068,7 +2100,7 @@
        <button data-shell-action="open-review" type="button">查看完整学习报告 →</button>
       </section>
       <section class="my-learning-subareas">
-        <header><span>MY LEARNING</span><h2>我的学习</h2><p>掌握证据、学习进度、本人学情和学习建议集中在这里。</p></header>
+        <header><span>我的学习</span><h2>我的学习</h2><p>掌握证据、学习进度、本人学情和学习建议集中在这里。</p></header>
         <div><button data-student-view="mastered" type="button">已有掌握证据</button><button data-student-view="progress" type="button">学习进度</button><button data-student-view="analysis" type="button">本人学情分析</button><button data-student-view="advice" type="button">学习建议</button></div>
       </section>
       <section class="mastery-status-card">
@@ -2375,7 +2407,7 @@
     window.location.href = `mailto:luo865265@gmail.com?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
 
-  function createStudentTargetedPlan(count) {
+  async function createStudentTargetedPlan(count) {
     if (!engine?.buildTargetedLearningPlan || !engine?.saveSelfDirectedLearningPlan) {
       window.alert("专项训练模块未完整加载，请重新启动应用。");
       return;
@@ -2394,6 +2426,7 @@
       });
       engine.saveSelfDirectedLearningPlan(data.learning, plan);
       engine.saveState(data.learning);
+      await engine.awaitLastSave?.();
       studentDataCache = null;
       recordEvent("student-targeted-plan-created", { type: `${count}-question` });
       ui.view = "training";
@@ -2411,12 +2444,15 @@
     metricsDialog.dataset.feynmanQuestionId = questionId;
     metricsDialog.dataset.feynmanTopic = topic || question?.topic || "当前物理知识";
     metricsDialog.querySelector("article").innerHTML = `
-      <header><div><span>FEYNMAN SELF-EXPLANATION</span><h2>我来讲一遍</h2></div><button data-metrics-action="close" type="button" aria-label="关闭">×</button></header>
+      <header><div><span>讲解与自检</span><h2>我来讲一遍</h2></div><button data-metrics-action="close" type="button" aria-label="关闭">×</button></header>
       <section class="feynman-explanation-form">
         <p><strong>${escapeHtml(question?.title || topic || "当前知识点")}</strong></p>
         <label><span>不用原题语言，讲清研究对象、发生过程、关键规律和适用条件</span><textarea id="feynmanExplanation" rows="6" maxlength="12000" placeholder="例如：我先研究滑块，把斜面和地球作为环境……"></textarea></label>
+        <label><span>研究对象与系统边界</span><textarea id="feynmanObject" rows="2" maxlength="2000" placeholder="明确研究谁、哪些物体属于环境"></textarea></label>
+        <label><span>规律与适用条件</span><textarea id="feynmanConditions" rows="2" maxlength="4000" placeholder="写出规律成立条件，再核对本题是否满足"></textarea></label>
         <label><span>举一个生活或实验中的类比（可选）</span><textarea id="feynmanAnalogy" rows="3" maxlength="6000"></textarea></label>
         <label><span>如果改变一个条件，结果会怎样（可选）</span><textarea id="feynmanPrediction" rows="3" maxlength="6000"></textarea></label>
+        <label><span>预测依据</span><textarea id="feynmanPredictionReason" rows="2" maxlength="6000" placeholder="用关系式、图像或过程说明为什么"></textarea></label>
         <label><span>还有哪里讲不清（可选）</span><textarea id="feynmanUnclear" rows="2" maxlength="6000"></textarea></label>
         <p class="metrics-boundary">这条记录用于反思和后续建议，不会仅因写了说明就自动判定掌握。</p>
         <button class="primary" data-metrics-action="save-feynman" type="button">保存我的讲解</button>
@@ -2981,11 +3017,15 @@
     const client = window.PhysicsStudioClassroom;
     if (!client) {
       content.innerHTML = `
-        <header class="classroom-head"><div><span>CLASSROOM SERVICE</span><h2>班级与邀请码</h2></div><button data-classroom-action="close" type="button">×</button></header>
+        <header class="classroom-head"><div><span>班级连接</span><h2>班级与邀请码</h2></div><button data-classroom-action="close" type="button">×</button></header>
         <p class="classroom-boundary error">班级客户端模块未随应用加载。离线学习仍可使用，但不能显示在线班级。</p>`;
       return;
     }
     const status = client.status();
+    const connectionMode = !status.serviceConfigured ? "本机离线（仅学习）"
+      : status.hostedLocally ? "同网局域网服务（本机主机）"
+      : /^https:\/\//i.test(status.serverUrl) ? "已配置 HTTPS 班级服务"
+      : "同网局域网服务";
     const learningSync = client.syncStatus?.() || { label: "本机已保存", detail: "当前只写入本机学习记录。" };
     const selected = ui.classroom.classes.find((item) => item.id === ui.classroom.selectedClassId) || null;
     const disabled = ui.classroom.busy ? " disabled" : "";
@@ -3001,7 +3041,7 @@
     const showAuthenticatedClassroom = Boolean((status.authenticated || status.ownerAuthenticated) && roleMatchesSession);
     content.innerHTML = `
       <header class="classroom-head">
-         <div><span>ACCOUNT · CLASS · PERMISSION AUDIT</span><h2>班级与邀请码</h2><p>${status.authenticated ? `${escapeHtml(status.user.displayName)} · 服务端身份：${escapeHtml(classroomRoleLabel(status.user.role))}` : experience.role === "teacher" ? "联网优先；教师可直接创建班级，网络不可用时保留本机数据" : "联网优先；加入班级需验证学生账号，网络不可用时保留本机数据"}</p><p class="classroom-sync-status" data-sync-state="${escapeHtml(learningSync.state)}">学习数据：${escapeHtml(learningSync.label)} · ${escapeHtml(learningSync.detail)}</p></div>
+         <div><span>班级连接与权限</span><h2>班级与邀请码</h2><p>当前模式：${escapeHtml(connectionMode)}。${status.authenticated ? `${escapeHtml(status.user.displayName)} · 服务端身份：${escapeHtml(classroomRoleLabel(status.user.role))}` : experience.role === "teacher" ? "班级创建以服务端确认为准；离线时仅保留本机学习数据" : "通过邀请码或二维码加入；离线时不会伪造加入状态"}</p><p class="classroom-sync-status" data-sync-state="${escapeHtml(learningSync.state)}">学习数据：${escapeHtml(learningSync.label)} · ${escapeHtml(learningSync.detail)}</p></div>
         <button data-classroom-action="close" type="button" aria-label="关闭">×</button>
       </header>
       ${ui.classroom.message ? `<p class="classroom-message ${ui.classroom.error ? "error" : ""}" role="status">${escapeHtml(ui.classroom.message)}</p>` : ""}
@@ -3114,7 +3154,7 @@
           <button type="submit"${disabled}>保存备注名</button>
         </form>
         <form id="classroomJoinForm" class="classroom-compact-form">
-          <span>JOIN WITH INVITE</span><h3>通过老师的邀请码加入班级</h3>
+          <span>邀请码加入</span><h3>通过老师的邀请码加入班级</h3>
           <label><span>22 位邀请码</span><input name="code" data-classroom-join-code required minlength="22" maxlength="22" autocomplete="off" placeholder="输入老师提供的邀请码"></label>
           <label class="classroom-qr-scan"><span>扫描老师的二维码</span><input id="classroomInviteQrInput" type="file" accept="image/*" capture="environment"><small class="classroom-qr-status">可拍照或选择二维码图片，识别结果只用于填写邀请码。</small></label>
           <button type="submit"${disabled}>申请加入</button>
@@ -3126,7 +3166,7 @@
           ${ui.classroom.classes.map((item) => `<article><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.grade)} · ${escapeHtml(item.subject)} · ${escapeHtml(item.status)}</span></article>`).join("") || '<p>当前账号还没有已激活班级。</p>'}
         </div>
         <section class="student-assignment-list">
-          <header><div><span>TEACHER PLANS</span><h3>教师专项方案</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
+          <header><div><span>教师方案</span><h3>教师专项方案</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
           ${ui.classroom.assignments.map((assignment) => {
             const submitted = Boolean(ui.classroom.assignmentSubmissions[assignment.id]);
             return `<article>
@@ -3682,7 +3722,7 @@
       <div class="mastery-help-list">
         <article><strong>学习中</strong><p>完成过练习，但尚未出现低提示独立正确。</p></article>
         <article><strong>已有独立正确证据</strong><p>至少一次正确，最高提示等级不超过 ${rules?.independentHintMaximum ?? 1}；这不是跨日期掌握结论。</p></article>
-        <article><strong>已掌握</strong><p>不同日期低提示独立正确至少 ${rules?.masteredIndependentDates ?? 2} 次，并完成至少 ${rules?.masteredTransferEvidence ?? 1} 道经核验迁移作答。</p></article>
+        <article><strong>已掌握</strong><p>跨日期且至少相隔 ${rules?.minimumRetentionIntervalHours ?? 24} 小时的低提示独立正确至少 ${rules?.masteredIndependentDates ?? 2} 次，并完成至少 ${rules?.masteredTransferEvidence ?? 1} 道经核验迁移作答。</p></article>
         <article><strong>待复习</strong><p>达到掌握标准，但已到间隔复习时间。</p></article>
         <article><strong>需巩固</strong><p>近期存在错误或提示依赖证据；建模记录不完整只作为检查线索，不能单独判定知识点薄弱。</p></article>
       </div>
@@ -3736,7 +3776,7 @@
     captureDialog.querySelector("#studentCaptureTopic").removeAttribute("data-user-edited");
     captureDialog.querySelector("#studentCaptureContrast").value = "115";
     captureDialog.querySelector("#studentCaptureContrastValue").textContent = "115%";
-    setRecognitionStatus("依次尝试 Android 原生离线 OCR、设备 TextDetector，再回退到人工输入。公式、上下标、矢量符号和图示语义必须人工确认，不会自动补全。", "等待图片");
+    setRecognitionStatus("拍题录入不依赖 OCR：本应用未内置离线识别模型；仅在设备提供文字识别能力时生成待核对草稿。公式、图示和不确定字符请手工确认。", "等待图片");
     captureDialog.querySelector("#studentCaptureImageStatus").textContent = "图片处理仅用于提升可读性；自动裁边是图像估算，保存前必须检查。";
     renderCaptureCanvas();
   }
@@ -4201,7 +4241,7 @@
     metricsDialog.showModal();
   }
 
-  function handleMetricsClick(event) {
+  async function handleMetricsClick(event) {
     const question = event.target.closest("[data-diagnostic-question]");
     if (question) {
       metricsDialog.close();
@@ -4218,6 +4258,11 @@
     if (action === "close") metricsDialog.close();
     else if (action === "complete-broad") completeBroadCoverageCheck();
     else if (action === "complete-placement") completePlacementAssessment();
+    else if (action === "feynman-retest") {
+      const retestQuestionId = metricsDialog.dataset.feynmanRetestId || "";
+      metricsDialog.close();
+      if (retestQuestionId) startQuestion(retestQuestionId, "feynman-new-context-retest");
+    }
     else if (action === "save-feynman") {
       const learning = engine?.loadState?.();
       if (!learning || !engine?.recordFeynmanExplanation) {
@@ -4227,28 +4272,42 @@
       const questionId = metricsDialog.dataset.feynmanQuestionId || "";
       const question = (app?.getQuestions?.() || []).find((item) => item.id === questionId);
       try {
+        const researchObject = metricsDialog.querySelector("#feynmanObject")?.value || "";
+        const lawConditions = metricsDialog.querySelector("#feynmanConditions")?.value || "";
+        const prediction = metricsDialog.querySelector("#feynmanPrediction")?.value || "";
+        const predictionReason = metricsDialog.querySelector("#feynmanPredictionReason")?.value || "";
+        const retest = engine.selectFeynmanRetestQuestion?.(
+          app?.getQuestions?.() || [], questionId, question ? engine.topicKeyForQuestion(question) : "",
+          experience.grade, (learning.attempts || []).filter((item) => item.profileId === learning.activeProfileId)
+        );
+        const selfCheck = engine.feynmanSelfCheck({ researchObject, lawConditions, prediction, predictionReason });
         engine.recordFeynmanExplanation(learning, {
           questionId,
           knowledgePointId: question ? engine.topicKeyForQuestion?.(question) : "",
           topic: metricsDialog.dataset.feynmanTopic || question?.topic || "当前物理知识",
           explanation: metricsDialog.querySelector("#feynmanExplanation")?.value,
+          researchObject,
+          lawConditions,
           analogy: metricsDialog.querySelector("#feynmanAnalogy")?.value,
-          prediction: metricsDialog.querySelector("#feynmanPrediction")?.value,
+          prediction,
+          predictionReason,
+          retestQuestionId: retest?.id || "",
           unclearPoint: metricsDialog.querySelector("#feynmanUnclear")?.value
         });
         engine.saveState(learning);
+        await engine.awaitLastSave?.();
         studentDataCache = null;
-        metricsDialog.close();
+        metricsDialog.dataset.feynmanRetestId = retest?.id || "";
+        metricsDialog.querySelector("article").innerHTML = `<header><div><span>讲解自检</span><h2>核对三个关键点</h2></div><button data-metrics-action="close" type="button" aria-label="关闭">×</button></header><section class="feynman-self-check">${selfCheck.items.map((item) => `<article><strong>${escapeHtml(item.label)}：${escapeHtml(item.status)}</strong><p>${escapeHtml(item.prompt)}</p></article>`).join("")}<p>${escapeHtml(selfCheck.boundary)}</p>${retest ? `<button class="primary" data-metrics-action="feynman-retest" type="button">开始新情境复测：${escapeHtml(retest.title)}</button>` : "<p>当前没有可用的已审核同知识点新题，暂不安排复测。</p>"}</section>`;
         recordEvent("feynman-explanation-saved", { questionId });
         renderStudentViewOnly({ preserveScroll: true });
-        window.alert("讲解已保存到本人学习档案。它是反思记录，不会自动制造掌握证据。");
       } catch (error) {
         window.alert(error?.message || "讲解未保存，请检查内容后重试。");
       }
     }
   }
 
-  function completePlacementAssessment() {
+  async function completePlacementAssessment() {
     const data = getStudentData({ includePlacement: true });
     const session = data.placementState?.session
       || engine?.placementSessionForProfile?.(data.learning, data.learning?.activeProfileId);
@@ -4262,6 +4321,7 @@
     try {
       engine.completePlacementAssessment(data.learning, session.id);
       engine.saveState(data.learning);
+      await engine.awaitLastSave?.();
       ui.diagnosticPackage = null;
       metricsDialog.close();
       recordEvent("placement-completed", { sessionId: session.id, submittedCount: session.questionIds.length });
@@ -4271,7 +4331,7 @@
     }
   }
 
-  function completeBroadCoverageCheck() {
+  async function completeBroadCoverageCheck() {
     const data = getStudentData({ includeBroadCoverage: true });
     const paper = data.broadCoverage?.paper;
     if (!paper || !data.learning || !engine?.recordBroadCoverageCheck) return;
@@ -4280,18 +4340,23 @@
       window.alert("请先完成本次阶段检测中的全部题目，再记录完成状态。");
       return;
     }
-    engine.recordBroadCoverageCheck(data.learning, {
-      profileId: data.learning.activeProfileId,
-      questionIds: paper.items.filter((item) => item.kind === "bank-question").map((item) => item.id),
-      coveredTopics: paper.coverage.coveredTopics,
-      coverageComplete: paper.coverage.complete,
-      title: paper.title
-    });
-    engine.saveState(data.learning);
-    ui.diagnosticPackage = null;
-    metricsDialog.close();
-    recordEvent("broad-coverage-completed", { source: "student" });
-    renderRoleExperience();
+    try {
+      engine.recordBroadCoverageCheck(data.learning, {
+        profileId: data.learning.activeProfileId,
+        questionIds: paper.items.filter((item) => item.kind === "bank-question").map((item) => item.id),
+        coveredTopics: paper.coverage.coveredTopics,
+        coverageComplete: paper.coverage.complete,
+        title: paper.title
+      });
+      engine.saveState(data.learning);
+      await engine.awaitLastSave?.();
+      ui.diagnosticPackage = null;
+      metricsDialog.close();
+      recordEvent("broad-coverage-completed", { source: "student" });
+      renderRoleExperience();
+    } catch (error) {
+      window.alert(error?.message || "阶段检测未保存，请重试。");
+    }
   }
 
   function validationMetric(label, value, detail) {

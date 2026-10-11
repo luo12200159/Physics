@@ -1500,6 +1500,7 @@
         count: Math.max(2, Math.min(3, Number(options.count) || 3)),
         allowAi: options.allowAi === true && isTeacherRole(),
         minorUnder14: profile?.minorAgeBand === "under14",
+        minorAgeBand: profile?.minorAgeBand || "unknown",
         guardianConsentStatus: profile?.guardianConsentStatus,
         personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
       });
@@ -2709,7 +2710,7 @@
     const experienceState = window.PhysicsExperience?.getState?.() || {};
     return `<section class="lab-card data-privacy-center teacher-advanced-section">
       <div class="lab-card-head"><div><span>DATA & PRIVACY</span><h3>数据与隐私</h3></div><strong>${cloudMode ? "云班级模式" : "本机模式"}</strong></div>
-      <ul><li><strong>仅本机：</strong>学习作答、诊断、试卷、复核与方案默认保存在本机 IndexedDB；本机模式不表示已经云同步。</li><li><strong>完整备份：</strong>.pslab 会包含题库、学习档案及附件，文件由导出者自行保管。</li><li><strong>班级服务器：</strong>${cloudMode ? "仅在教师明确登录并同步时发送班级所需结构化记录；服务端权限仍以后端账号角色为准。" : "当前未标记为云班级模式，不会把本机档案描述为已同步。"}</li><li><strong>AI 服务：</strong>${aiStatus.ready ? "只发送教师明确提交到已配置受控网关的内容，并先对姓名、学号、班级、电话、邮箱等常见标识脱敏。" : "当前未配置可用受控网关，使用离线规则。"}</li></ul>
+      <ul><li><strong>仅本机：</strong>学习作答、诊断、试卷、复核与方案默认保存在本机 IndexedDB；本机模式不表示已经云同步。</li><li><strong>完整备份：</strong>.pslab 会包含题库、学习档案及附件，文件由导出者自行保管。</li><li><strong>班级服务器：</strong>${cloudMode ? "仅在教师明确登录并同步时发送班级所需结构化记录；服务端权限仍以后端账号角色为准。" : "当前未标记为云班级模式，不会把本机档案描述为已同步。"}</li><li><strong>AI 服务：</strong>${escapeHtml(aiStatus.boundary || "当前只使用本机提示。")}</li></ul>
       <div class="teacher-form"><label><span>年龄授权场景</span><select id="privacyMinorAgeBand"><option value="unknown"${profile?.minorAgeBand === "unknown" ? " selected" : ""}>未确认</option><option value="under14"${profile?.minorAgeBand === "under14" ? " selected" : ""}>未满14周岁</option><option value="14plus"${profile?.minorAgeBand === "14plus" ? " selected" : ""}>14周岁及以上</option></select></label><label><span>监护人授权状态</span><select id="privacyGuardianConsent"><option value="unknown"${profile?.guardianConsentStatus === "unknown" ? " selected" : ""}>未确认</option><option value="pending"${profile?.guardianConsentStatus === "pending" ? " selected" : ""}>待授权</option><option value="granted"${profile?.guardianConsentStatus === "granted" ? " selected" : ""}>已授权</option><option value="withdrawn"${profile?.guardianConsentStatus === "withdrawn" ? " selected" : ""}>已撤回</option></select></label></div>
       <div class="teacher-inline-actions"><button type="button" data-lab-action="save-privacy-consent">保存授权记录</button><button type="button" data-lab-action="withdraw-privacy-consent">撤回同意</button><button type="button" data-lab-action="export-complete-backup">导出全部数据</button><button type="button" data-lab-action="open-profile-correction">更正学生资料</button><button type="button" data-lab-action="delete-profile-learning-data">删除当前学生学习数据</button></div>
       <hr><h4>管理 / 高级入口</h4><label><input id="manageStudentExternalLinks" type="checkbox"${experienceState.studentExternalLinks ? " checked" : ""}> 允许学生从明确按钮打开外部题源（始终交给 Edge 优先或系统默认浏览器，不在含原生桥的主 WebView 内加载）</label><div class="teacher-inline-actions"><button type="button" data-lab-action="open-classroom-management">班级管理</button><button type="button" data-lab-action="open-validation-metrics">上线验证指标</button><button type="button" data-lab-action="open-user-feedback">用户反馈</button><button type="button" data-lab-action="save-external-link-setting">保存外链设置</button></div>
@@ -2819,6 +2820,7 @@
     const needsStudents = lab.teacherView === "students";
     const needsClass = lab.teacherView === "class";
     const needsManage = lab.teacherView === "manage";
+    const motionDrafts = needsManage ? (window.PhysicsStudioMotionDrafts?.questions || []) : [];
     const topics = needsManage
       ? [...new Set(questions.map((question) => question.topic).filter(Boolean))].sort((a, b) => a.localeCompare(b, "zh-CN"))
       : [];
@@ -3044,11 +3046,11 @@
             ${renderPendingDocumentImport()}
           </section>
           <section class="lab-card ai-gateway-card">
-            <div class="lab-card-head"><div><span>CONTROLLED AI GATEWAY</span><h3>ChatGPT 解题服务</h3></div><strong>${aiStatus.ready ? "已启用" : "离线"}</strong></div>
+            <div class="lab-card-head"><div><span>受控 AI 服务</span><h3>ChatGPT 解题服务</h3></div><strong>${aiStatus.ready ? "已验证可用" : aiStatus.configured ? "已配置 · 授权未核验" : "本机提示"}</strong></div>
             <label><span>服务端地址</span><input id="aiGatewayEndpoint" type="url" value="${escapeHtml(aiStatus.endpoint || "")}" placeholder="https://your-domain.example"></label>
             <label><span>模型</span><input id="aiGatewayModel" value="${escapeHtml(aiStatus.model || "gpt-5.6-sol")}"></label>
             <label><span>服务访问令牌（可选）</span><input id="aiGatewayAccessToken" type="password" autocomplete="off" placeholder="只在本次运行期间保留"></label>
-            <label><span><input id="aiGatewayEnabled" type="checkbox"${aiStatus.ready ? " checked" : ""}> 启用受控 ChatGPT 解题</span></label>
+            <label><span><input id="aiGatewayEnabled" type="checkbox"${aiStatus.enabled ? " checked" : ""}> 保存受控服务配置</span></label>
             <div class="teacher-inline-actions">
               <button class="lab-primary-button" data-lab-action="save-ai-config" type="button">保存设置</button>
               <button class="lab-secondary-button" data-lab-action="test-ai-config" type="button">测试连接</button>
@@ -3105,6 +3107,12 @@
         </div>` : ""}
 
         ${needsManage ? `
+        <section class="lab-card motion-draft-pilot">
+          <div class="lab-card-head"><div><span>原创教学草稿</span><h3>高一·匀变速直线运动多表征试点</h3></div><strong>${motionDrafts.length} 道待审核</strong></div>
+          <p>概念、图像、实验数据与跨情境题共用现有匀变速动态模型。草稿不在正式题库，也不生成学生掌握证据；教师可逐题核对后加入审核队列。</p>
+          <div class="motion-draft-list">${motionDrafts.map((draft) => `<article><span>${escapeHtml(draft.representationType)} · ${escapeHtml(draft.questionType)}</span><h4>${escapeHtml(draft.title)}</h4><p>${escapeHtml(draft.content)}</p><details><summary>核对答案、单位与条件</summary><strong>${escapeHtml(draft.answer)}</strong><p>${escapeHtml(draft.solution)}</p></details><button data-lab-action="preview-motion-draft" data-draft-id="${escapeHtml(draft.id)}" type="button">用动态模型验证</button></article>`).join("")}</div>
+          <button class="lab-secondary-button" data-lab-action="import-motion-drafts" type="button"${motionDrafts.length ? "" : " disabled"}>加入教师审核队列</button>
+        </section>
         <section class="lab-card">
           <div class="lab-card-head"><div><span>REVIEW QUEUE</span><h3>内容来源与审核队列</h3></div><strong>${reviewQueue.length} 条待核查</strong></div>
           <div class="content-review-list">
@@ -3428,6 +3436,23 @@
     else if (action === "save-ai-config") saveAiConfig();
     else if (action === "test-ai-config") testAiConfig();
     else if (action === "import-document-questions") importParsedDocumentQuestions();
+    else if (action === "preview-motion-draft") {
+      const draft = window.PhysicsStudioMotionDrafts?.questions?.find((item) => item.id === target?.dataset.draftId);
+      if (!draft) return showLabMessage("未找到该教学草稿。", true);
+      lab.modelType = "uniform";
+      lab.modelParams.uniform = { ...draft.visualSpec.params };
+      lab.tab = "models";
+      renderPanel();
+      showLabMessage("这是待教师审核草稿的模型演示，不是学生正式作答或掌握证据。", false);
+    }
+    else if (action === "import-motion-drafts") {
+      if (!isTeacherRole()) return showLabMessage("只有已解锁教师模式可导入教学草稿。", true);
+      const drafts = window.PhysicsStudioMotionDrafts?.questions || [];
+      if (!drafts.length || !lab.app?.importQuestionBatch) return showLabMessage("草稿模块不可用，未导入。", true);
+      const result = await lab.app.importQuestionBatch(drafts, { reviewStatus: "待教师审核" });
+      showLabMessage(`已加入教师审核队列 ${result.added.length} 道；跳过已存在 ${result.skipped.length} 道。审核前不计入正式题库或掌握证据。`, false);
+      renderPanel();
+    }
     else if (action === "add-student") saveStudentProfile(true);
     else if (action === "save-student") saveStudentProfile(false);
     else if (action === "preview-student-import") previewStudentImport(document.getElementById("studentRosterPaste")?.value);
@@ -4490,6 +4515,7 @@
           count: variantCount,
           allowAi: true,
           minorUnder14: profile?.minorAgeBand === "under14",
+          minorAgeBand: profile?.minorAgeBand || "unknown",
           guardianConsentStatus: profile?.guardianConsentStatus,
           personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
         });
@@ -4697,15 +4723,22 @@
         offlineHints,
         personalIdentifiers: [activeStudent?.name, activeStudent?.studentNumber, activeStudent?.className].filter(Boolean),
         minorUnder14: activeStudent?.minorAgeBand === "under14",
+        minorAgeBand: activeStudent?.minorAgeBand || "unknown",
         guardianConsentStatus: activeStudent?.guardianConsentStatus
       });
       lab.aiSessionState = lab.aiResult.sessionState || null;
       lab.session.hintLevel = Math.max(lab.session.hintLevel, Number(lab.aiResult.hintLevel) || 0);
       lab.aiStatusMessage = lab.aiResult.source === "gateway"
         ? "受控导师已返回一个思考步骤。"
-        : lab.aiResult.gatewayUnavailable
-          ? "受控导师暂不可用，已无缝切换到本机五级提示。"
-          : "当前使用本机五级提示。";
+        : lab.aiResult.fallbackReason === "age-unconfirmed"
+          ? "年龄分组未确认，未发送学生内容；当前使用本机五级提示。"
+          : lab.aiResult.fallbackReason === "guardian-consent-required"
+            ? "监护人授权未确认，未发送学生内容；当前使用本机五级提示。"
+            : lab.aiResult.fallbackReason === "server-authorization-unverified"
+              ? "服务端学生授权核验未完成，未发送学生内容；当前使用本机五级提示。"
+              : lab.aiResult.gatewayUnavailable
+                ? "受控导师暂不可用；当前使用本机五级提示。"
+                : "当前使用本机五级提示。";
     } catch (error) {
       lab.aiStatusMessage = `本次指导未启动：${error.message}`;
     }
@@ -4721,7 +4754,7 @@
         enabled: document.getElementById("aiGatewayEnabled")?.checked
       });
       lab.aiStatusMessage = config.enabled
-        ? "受控服务端设置已保存。客户端未保存 API 密钥。"
+        ? "受控服务地址已保存；连接及学生授权尚未验证，学生内容不会自动发送。"
         : "已切换为离线规则模式。";
       renderPanel();
     } catch (error) {
@@ -4732,12 +4765,16 @@
 
   async function testAiConfig() {
     saveAiConfig();
-    if (!window.PhysicsStudioAITutor.status().ready) return;
+    if (!window.PhysicsStudioAITutor.status().configured) {
+      lab.aiStatusMessage = "请先保存有效的受控服务地址。";
+      renderPanel();
+      return;
+    }
     lab.aiStatusMessage = "正在测试受控服务端……";
     renderPanel();
     try {
       const ok = await window.PhysicsStudioAITutor.testConnection();
-      lab.aiStatusMessage = ok ? "服务端连接正常。" : "服务端响应未确认可用。";
+      lab.aiStatusMessage = ok ? "服务端健康检查可达；模型权限和学生授权仍未核验。" : "服务端响应未确认可用。";
     } catch (error) {
       lab.aiStatusMessage = `连接测试失败：${error.message}`;
     }

@@ -12,7 +12,7 @@ const context = {
 context.window = context;
 context.globalThis = context;
 vm.createContext(context);
-for (const file of ["curriculum-taxonomy.js", "curriculum-bank.js", "mock-exam-bank.js", "original-practice-bank.js", "targeted-practice-bank.js"]) {
+for (const file of ["curriculum-taxonomy.js", "solution-format.js", "curriculum-bank.js", "mock-exam-bank.js", "original-practice-bank.js", "targeted-practice-bank.js"]) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context, { filename: file });
 }
 vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8"), context, { filename: "app.js" });
@@ -50,6 +50,9 @@ assert.ok(questions.some((question) => /实验/.test(question.questionType)));
 const resolver = context.window.PHYSICS_CURRICULUM_TAXONOMY.resolveKnowledgePoint;
 assert.equal(resolver("带电粒子在磁场中运动").id, resolver("带电粒子在磁场中的运动").id,
   "磁场带电粒子语义别名必须共用 knowledgePointId");
+assert.equal(resolver({ topic: "欧姆定律", knowledgePointId: "kp:ohms-law" }).id,
+  resolver({ topic: "欧姆定律", knowledgePointId: "kp:欧姆定律" }).id,
+  "旧示例题和正式欧姆定律题族必须共用一个证据桶");
 
 assert.equal(questions.length, 1900, "metadata QA must cover every complete bundled question, including the three seed questions");
 console.log(JSON.stringify({ status: "passed", total: questions.length, complete: complete.length, modelDefinitions: 75, questionTypes: { choice: true, blank: true, experiment: true } }, null, 2));

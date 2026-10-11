@@ -71,7 +71,15 @@ assert.equal(fraction.wrongCount, 2);
 assert.ok(fraction.repeatedErrorCount >= 1);
 assert.equal(fraction.lastPracticeAt, "2026-08-03T09:00:00.000Z");
 assert.equal(fraction.averageDurationSeconds, 68);
-assert.equal(fraction.trend, "improving");
+assert.equal(fraction.trend, "unmatched", "缺少模型与难度元数据时不能宣称近期改善");
+assert.equal(fraction.matchedPairCount, 0);
+const parallelQuestions = questions.map((question) => question.knowledgePointId === "kp-fraction"
+  ? { ...question, modelDefinitionId: "model-fraction", difficulty: "基础" }
+  : question);
+const matched = engine.buildStudentLearningDiagnosis(state, parallelQuestions, profileId)
+  .knowledgePoints.find((item) => item.knowledgePointId === "kp-fraction");
+assert.equal(matched.trend, "improving", "仅可比的跨日不同题目可显示改善迹象");
+assert.ok(matched.matchedEvidenceIds.length >= 2);
 assert.ok(diagnosis.priorities.some((item) => item.knowledgePointId === "kp-fraction"));
 assert.ok(diagnosis.priorities[0].evidenceIds.length >= 2);
 

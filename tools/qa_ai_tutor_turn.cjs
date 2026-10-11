@@ -105,12 +105,10 @@ const question = {
     modeling: { object: "物体", equations: "F=ma", unrelated: "drop-me" },
     sessionState: { turn: 0, previousPrompt: "从哪里开始？", privateProfile: "drop-me" }
   });
-  assert.equal(online.source, "gateway");
+  assert.equal(online.source, "offline-hint");
   assert.equal(online.hintLevel, 1);
-  assert.equal(requests.at(-1).url, "https://gateway.example.test/v1/physics/tutor-turn");
-  assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /张伟|privateProfile|drop-me/);
-  assert.equal(requests.at(-1).body.responseSchema.name, "physics_tutor_turn_v1");
-  assert.deepEqual(Object.keys(requests.at(-1).body.modeling).sort(), ["equations", "object"]);
+  assert.equal(requests.length, 0, "student work must not be sent without server-verified consent");
+  assert.doesNotMatch(tutor.redactPersonalData("姓名：张伟", ["张伟"]), /张伟/);
 
   const aiVariant = (id, role) => ({
     id,
@@ -167,15 +165,15 @@ const question = {
       });
     }
   });
-  const generated = await tutor.generateVariants({
-    question: { ...question, questionType: "计算题", difficulty: "基础" },
-    count: 3,
-    personalIdentifiers: ["张伟"]
-  });
-  assert.equal(generated.variants.length, 2);
-  assert.equal(generated.variants[0].crossVerification.passed, true);
-  assert.equal(requests.at(-1).body.responseSchema.name, "variant_generation_v1");
-  assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /张伟/);
+  await assert.rejects(
+    tutor.generateVariants({
+      question: { ...question, questionType: "计算题", difficulty: "基础" },
+      count: 3,
+      personalIdentifiers: ["张伟"]
+    }),
+    /年龄段未确认|服务端尚无持久化学生授权校验/
+  );
+  assert.equal(requests.length, 0, "variant generation must not send content without verified consent");
 
   responseFactory = async () => ({
     ok: true,
@@ -188,7 +186,7 @@ const question = {
   });
   await assert.rejects(
     tutor.generateVariants({ question: { ...question, questionType: "计算题", difficulty: "基础" }, count: 2 }),
-    /crossVerification|独立求解校验证据/
+    /年龄段未确认|服务端尚无持久化学生授权校验/
   );
 
   responseFactory = async () => ({
@@ -206,7 +204,7 @@ const question = {
   });
   await assert.rejects(
     tutor.generateVariants({ question: { ...question, questionType: "计算题", difficulty: "基础" }, count: 2 }),
-    /独立求解校验证据/
+    /年龄段未确认|服务端尚无持久化学生授权校验/
   );
 
   responseFactory = async () => ({ ok: true, status: 200, async text() { return "{}"; } });

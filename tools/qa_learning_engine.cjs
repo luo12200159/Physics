@@ -371,7 +371,7 @@ engine.recordAttempt(masteryState, {
   model,
   selfExplanation: "尚未分清竖直分运动。"
 });
-assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).status, "薄弱");
+assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).status, "待订正");
 
 const abilityState = engine.defaultState();
 const abilityQuestions = [
@@ -464,12 +464,12 @@ assert.equal(motionEvidence.sampleSize, 3);
 assert.equal(motionEvidence.latestEvidenceDate, "2026-07-03");
 assert.equal(motionEvidence.transferSuccessCount, 1);
 assert.equal(motionEvidence.questionTypes.find((item) => item.label === "计算题").count, 2);
-assert.equal(circuitEvidence.status, "需巩固");
+assert.equal(circuitEvidence.status, "证据不足");
 assert.deepEqual(
   Array.from(circuitEvidence.errorTypes, (item) => item.label).sort(),
   ["概念理解", "单位/方向/符号"].sort()
 );
-assert.equal(opticsEvidence.status, "基本掌握");
+assert.equal(opticsEvidence.status, "证据不足");
 assert.equal(opticsEvidence.sampleSize, 2);
 assert.equal(soundEvidence.status, "证据不足");
 assert.equal(soundEvidence.sampleSize, 0);

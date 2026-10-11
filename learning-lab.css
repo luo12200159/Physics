@@ -3285,3 +3285,25 @@ html.android-app .diagnostic-question label > .diagnostic-choice-text {
     display: grid;
   }
 }
+.motion-draft-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  margin: 16px 0;
+}
+
+.motion-draft-list article {
+  background: #f6faf7;
+  border: 1px solid #dbe6de;
+  border-radius: 14px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.motion-draft-list article p {
+  overflow-wrap: anywhere;
+}
+
+.motion-draft-list article button {
+  min-height: 48px;
+}

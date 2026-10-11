@@ -289,14 +289,21 @@ async function init() {
   let learningStorageError = null;
   const learningRepository = window.PhysicsStudioStorageRepository;
   const learningEngine = window.PHYSICS_LEARNING_ENGINE;
-  if (learningRepository?.prepareLearningState && learningEngine?.storageKey) {
+  if (!learningRepository?.prepareLearningState || !learningRepository?.stageLearningState || !learningEngine?.storageKey) {
+    learningStorageError = new Error("学习档案存储模块未就绪");
+  } else {
     try {
       await learningRepository.prepareLearningState(learningEngine.storageKey);
       await learningRepository.stageLearningState(learningEngine.storageKey, learningEngine.loadState());
     } catch (error) {
       learningStorageError = error;
-      console.error("学习数据存储初始化失败；旧数据仍保留，当前修改可能无法保存。", error);
     }
+  }
+  if (learningStorageError) {
+    learningRepository?.enterReadOnlyFault?.(learningStorageError, "startup");
+    console.error("学习数据存储初始化失败；为防止覆盖历史记录，已停止学习写入。", learningStorageError);
+    renderLearningStorageReadOnlyFault();
+    return;
   }
   cacheElements();
   bindEvents();
@@ -315,6 +322,12 @@ async function init() {
     const installedRealExamCount = await installRealExamQuestionIndex();
     const migratedSourceCount = await migrateManagedSourceRecords();
     await refreshQuestions();
+    try {
+      await auditLegacyAutoGrading();
+    } catch (error) {
+      learningStorageError = error;
+      console.error("旧自动评分核验标记未保存；原始作答仍保留。", error);
+    }
     initResourceCenter();
     publishAppApi();
     document.dispatchEvent(new CustomEvent("physics-learning-state-changed", { detail: { restored: true } }));
@@ -335,10 +348,32 @@ async function init() {
   }
 }
 
+function renderLearningStorageReadOnlyFault() {
+  if (document.getElementById("learningStorageReadOnlyFault")) return;
+  const notice = document.createElement("div");
+  notice.id = "learningStorageReadOnlyFault";
+  notice.setAttribute("role", "alert");
+  notice.style.cssText = "position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:24px;background:#f8f8f4;color:#173c31;font:16px/1.65 system-ui,sans-serif";
+  const message = document.createElement("div");
+  message.style.cssText = "max-width:560px;padding:24px;border:2px solid #ad4b37;border-radius:16px;background:white";
+  const title = document.createElement("h1");
+  title.textContent = "学习档案已进入只读保护";
+  const explanation = document.createElement("p");
+  explanation.textContent = "本机学习记录暂时无法安全读取。为避免覆盖原有作答，当前不能继续作答或保存；旧迁移备份未被自动写回。请勿清理应用数据，检查设备存储权限和剩余空间后重新打开应用。";
+  message.append(title, explanation);
+  notice.append(message);
+  document.body.append(notice);
+}
+
 function publishAppApi() {
   window.PhysicsStudioApp = Object.freeze({
     getQuestions() {
       return state.questions.map((question) => ({ ...question }));
+    },
+    async getBackupRecords() {
+      // Practice views intentionally hide source-only records. A complete
+      // backup reads the committed store so those records survive a restore.
+      return getAllQuestions();
     },
     getQuestion(questionId) {
       const question = state.questions.find((item) => item.id === questionId);
@@ -469,31 +504,47 @@ function publishAppApi() {
       if (!Array.isArray(records) || records.length > 5000) {
         throw new Error("完整备份题目数量不符合要求。");
       }
-      if (records.some((question) => !isValidImportedQuestion(question))) {
+      const ids = records.map((question) => question?.id);
+      if (new Set(ids).size !== ids.length || records.some((question) => {
+        if (question?.resourceOnly === true) {
+          return !(typeof question.id === "string" && question.id.trim()
+            && typeof question.title === "string" && question.title.trim()
+            && (question.sourceUrl == null || typeof question.sourceUrl === "string"));
+        }
+        return !isValidImportedQuestion(question);
+      })) {
         throw new Error("完整备份含无效字段。");
       }
+      const repository = window.PhysicsStudioStorageRepository;
+      const learningEngine = window.PHYSICS_LEARNING_ENGINE;
+      await repository?.flush?.();
       const previousQuestions = await getAllQuestions();
-      const learningKey = window.PHYSICS_LEARNING_ENGINE?.storageKey;
-      const storage = appStorage();
-      const previousLearning = learningKey ? storage.getItem(learningKey) : null;
+      const previousLearning = learningEngine?.loadState?.();
       try {
         await replaceAllQuestions(records.map((question) => ({
           ...question,
           attachments: normalizeAttachments(question.attachments),
           videoBlob: question.videoBlob instanceof Blob ? question.videoBlob : null
         })));
-        if (learningState && window.PHYSICS_LEARNING_ENGINE) {
-          window.PHYSICS_LEARNING_ENGINE.saveState(learningState);
+        if (learningState && learningEngine) {
+          learningEngine.saveState(learningState);
+          await repository?.flush?.();
         }
         await refreshQuestions();
         return { restored: records.length };
       } catch (error) {
-        await replaceAllQuestions(previousQuestions);
-        if (learningKey) {
-          if (previousLearning == null) storage.removeItem(learningKey);
-          else storage.setItem(learningKey, previousLearning);
+        const rollbackFailures = [];
+        try { await replaceAllQuestions(previousQuestions); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+        if (previousLearning && learningEngine) {
+          try {
+            learningEngine.saveState(previousLearning);
+            await repository?.flush?.();
+          } catch (rollbackError) { rollbackFailures.push(rollbackError); }
         }
-        await refreshQuestions();
+        try { await refreshQuestions(); } catch (rollbackError) { rollbackFailures.push(rollbackError); }
+        if (rollbackFailures.length) {
+          throw new Error("完整备份导入失败且回滚未全部完成；请停止操作并保留原备份文件。");
+        }
         throw error;
       }
     },
@@ -547,7 +598,7 @@ function cacheElements() {
     "difficultyFilter", "questionGrid", "emptyState", "totalCount", "videoCount",
     "masteredCount", "masteryRate", "resultCount", "listHeading", "pageTitle", "viewKicker",
     "viewDescription", "detailModal", "detailContent", "confirmDialog", "cancelDeleteButton",
-    "confirmDeleteButton", "exportButton", "importInput", "fullBackupButton", "fullRestoreInput",
+    "confirmDeleteButton", "exportButton", "importInput", "fullBackupButton", "fullBackupPassword", "fullRestoreInput",
     "toast", "menuButton", "drawerBackdrop",
     "syncCenterButton", "quickSyncButton", "quickSyncStatus", "syncDot", "syncModal", "workspace", "toolbar",
     "progressPanel", "progressSummary", "progressRate", "progressTrack", "progressBarFill",
@@ -696,9 +747,11 @@ function getAllQuestions() {
 
 function putQuestion(question) {
   return new Promise((resolve, reject) => {
-    const request = state.db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).put(question);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    const transaction = state.db.transaction(STORE_NAME, "readwrite");
+    const request = transaction.objectStore(STORE_NAME).put(question);
+    transaction.oncomplete = () => resolve(request.result);
+    transaction.onerror = () => reject(transaction.error || request.error || new Error("题目保存事务失败。"));
+    transaction.onabort = () => reject(transaction.error || new Error("题目保存事务已中止。"));
   });
 }
 
@@ -716,9 +769,11 @@ function putQuestions(questions) {
 
 function deleteQuestion(id) {
   return new Promise((resolve, reject) => {
-    const request = state.db.transaction(STORE_NAME, "readwrite").objectStore(STORE_NAME).delete(id);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    const transaction = state.db.transaction(STORE_NAME, "readwrite");
+    const request = transaction.objectStore(STORE_NAME).delete(id);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error || request.error || new Error("题目删除事务失败。"));
+    transaction.onabort = () => reject(transaction.error || new Error("题目删除事务已中止。"));
   });
 }
 
@@ -772,17 +827,19 @@ async function installCurriculumBank() {
   if (!bank || !Array.isArray(bank.questions) || bank.questions.length === 0) return 0;
 
   const markerKey = `physics-curriculum-bank-v${bank.version}`;
+  const existing = await getAllQuestions();
+  const repairPlan = window.PHYSICS_SOLUTION_FORMAT?.repairBundledSolutions(existing);
+  const repairedIds = new Set(repairPlan?.repairedIds || []);
   try {
-    if (appStorage().getItem(markerKey) === bank.contentVersion) return 0;
+    if (appStorage().getItem(markerKey) === bank.contentVersion && repairedIds.size === 0) return 0;
   } catch (error) {
     console.warn("无法读取题库安装标记，将通过试题编号安全去重。", error);
   }
 
-  const existing = await getAllQuestions();
-  const existingById = new Map(existing.map((question) => [question.id, question]));
+  const existingById = new Map((repairPlan?.questions || existing).map((question) => [question.id, question]));
   const missing = bank.questions.filter((question) => !existingById.has(question.id));
   const managedFields = [
-    "title", "stage", "grade", "topic", "difficulty", "content", "solution", "answer",
+    "title", "stage", "grade", "topic", "difficulty", "content", "answer",
     "sourceUrl", "sourceLicense", "textbookUnit", "curriculumBasis", "copyrightNote",
     "collection", "originalExercise", "curriculumBook", "curriculumChapter", "curriculumSection",
     "curriculumBookId", "curriculumChapterId", "curriculumSectionId"
@@ -796,26 +853,31 @@ async function installCurriculumBank() {
     const storedQuestion = existingById.get(bundledQuestion.id);
     if (!storedQuestion || storedQuestion.collection !== "changsha-curriculum-original") return [];
     const fieldsToApply = storedQuestion.userEdited ? identityFields : managedFields;
+    const safeBundledSolution = repairedIds.has(bundledQuestion.id)
+      || storedQuestion.solution === bundledQuestion.solution;
     const merged = {
       ...storedQuestion,
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
+      ...(safeBundledSolution ? {
+        solution: bundledQuestion.solution,
+        contentVersion: bundledQuestion.contentVersion,
+        contentHash: bundledQuestion.contentHash
+      } : {}),
       examPoints: storedQuestion.userEdited
         ? [...(Array.isArray(storedQuestion.examPoints) ? storedQuestion.examPoints : bundledQuestion.examPoints)]
         : [...bundledQuestion.examPoints],
       attachments: normalizeAttachments(storedQuestion.attachments),
       updatedAt: storedQuestion.userEdited ? storedQuestion.updatedAt : bundledQuestion.updatedAt
     };
-    const needsUpgrade = fieldsToApply.some((field) => storedQuestion[field] !== bundledQuestion[field])
+    const needsUpgrade = repairedIds.has(bundledQuestion.id)
+      || fieldsToApply.some((field) => storedQuestion[field] !== bundledQuestion[field])
+      || (safeBundledSolution && (storedQuestion.contentVersion !== bundledQuestion.contentVersion
+        || storedQuestion.contentHash !== bundledQuestion.contentHash))
       || (!storedQuestion.userEdited
         && JSON.stringify(storedQuestion.examPoints || []) !== JSON.stringify(bundledQuestion.examPoints));
     return needsUpgrade ? [merged] : [];
   });
-  if (missing.length > 0) {
-    await Promise.all(missing.map((question) => putQuestion({ ...question })));
-  }
-  if (updates.length > 0) {
-    await Promise.all(updates.map((question) => putQuestion(question)));
-  }
+  await putQuestions([...missing.map((question) => ({ ...question })), ...updates]);
 
   try {
     appStorage().setItem(markerKey, bank.contentVersion);
@@ -830,11 +892,13 @@ async function installMockExamBank() {
   if (!bank || !Array.isArray(bank.questions) || bank.questions.length === 0) return 0;
 
   const existing = await getAllQuestions();
-  const existingById = new Map(existing.map((question) => [question.id, question]));
+  const repairPlan = window.PHYSICS_SOLUTION_FORMAT?.repairBundledSolutions(existing);
+  const repairedIds = new Set(repairPlan?.repairedIds || []);
+  const existingById = new Map((repairPlan?.questions || existing).map((question) => [question.id, question]));
   const additions = [];
   const updates = [];
   const managedFields = [
-    "title", "stage", "grade", "topic", "difficulty", "content", "solution", "answer",
+    "title", "stage", "grade", "topic", "difficulty", "content", "answer",
     "source", "sourceUrl", "sourceLicense", "curriculumBasis", "copyrightNote", "collection",
     "syncOrigin", "originalExercise", "originalMock", "examLevel", "examYear", "examRegion",
     "examPaperTitle", "examQuestionNumber", "examQuestionType", "examPaperStatus",
@@ -859,9 +923,16 @@ async function installMockExamBank() {
       "examQuestionNumber", "examQuestionType", "examPaperStatus"
     ];
     const fieldsToApply = stored.userEdited ? metadataFields : managedFields;
+    const safeBundledSolution = repairedIds.has(bundledQuestion.id)
+      || stored.solution === bundledQuestion.solution;
     const merged = {
       ...stored,
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
+      ...(safeBundledSolution ? {
+        solution: bundledQuestion.solution,
+        contentVersion: bundledQuestion.contentVersion,
+        contentHash: bundledQuestion.contentHash
+      } : {}),
       examPoints: stored.userEdited
         ? [...(Array.isArray(stored.examPoints) ? stored.examPoints : bundledQuestion.examPoints)]
         : [...bundledQuestion.examPoints],
@@ -878,13 +949,16 @@ async function installMockExamBank() {
       createdAt: stored.createdAt || bundledQuestion.createdAt,
       updatedAt: stored.updatedAt || bundledQuestion.updatedAt
     };
-    const needsUpdate = fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
+    const needsUpdate = repairedIds.has(bundledQuestion.id)
+      || fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
+      || (safeBundledSolution && (stored.contentVersion !== bundledQuestion.contentVersion
+        || stored.contentHash !== bundledQuestion.contentHash))
       || (!stored.userEdited
         && JSON.stringify(stored.examPoints || []) !== JSON.stringify(bundledQuestion.examPoints));
     if (needsUpdate) updates.push(merged);
   });
 
-  await Promise.all([...additions, ...updates].map((question) => putQuestion(question)));
+  await putQuestions([...additions, ...updates]);
   try {
     appStorage().setItem(`physics-mock-exam-bank-v${bank.version}`, bank.contentVersion);
   } catch (error) {
@@ -1364,6 +1438,39 @@ async function refreshQuestions() {
   document.dispatchEvent(new CustomEvent("physics-studio-questions-changed", {
     detail: { total: state.questions.length }
   }));
+}
+
+async function auditLegacyAutoGrading() {
+  const engine = window.PHYSICS_LEARNING_ENGINE;
+  if (!engine?.markLegacyGradingForReview || !engine?.gradeFinalAnswer) return 0;
+  const learning = engine.loadState();
+  learning.settings = learning.settings || {};
+  if (learning.settings.legacyGradeAuditVersion === "4.0.2") return 0;
+  const byId = new Map(state.questions.map((question) => [question.id, question]));
+  const uncertain = [];
+  for (const attempt of learning.attempts || []) {
+    if (attempt.grading?.status !== "correct" || attempt.grading?.manualReview
+      || attempt.grading?.gradingVersion === engine.gradingVersion) continue;
+    const question = byId.get(attempt.questionId);
+    try {
+      if (!question || !String(attempt.finalAnswer || "").trim()
+        || engine.gradeFinalAnswer(question, attempt.finalAnswer).status !== "correct") {
+        uncertain.push(attempt.id);
+      }
+    } catch (_error) {
+      uncertain.push(attempt.id);
+    }
+  }
+  if (uncertain.length) engine.markLegacyGradingForReview(learning, uncertain,
+    "旧自动判题与当前题目规范不一致或无法复核；保留原结果，等待教师确认");
+  learning.settings.legacyGradeAuditVersion = "4.0.2";
+  engine.saveState(learning);
+  await engine.awaitLastSave?.();
+  if (uncertain.length) {
+    refreshMasteryEvidence();
+    render();
+  }
+  return uncertain.length;
 }
 
 function refreshMasteryEvidence() {
@@ -3228,6 +3335,7 @@ async function openTransferPractice(question) {
       count: 3,
       allowAi: document.body.classList.contains("role-teacher"),
       minorUnder14: profile?.minorAgeBand === "under14",
+      minorAgeBand: profile?.minorAgeBand || "unknown",
       guardianConsentStatus: profile?.guardianConsentStatus,
       personalIdentifiers: [profile?.name, profile?.studentNumber].filter(Boolean)
     });
@@ -3237,6 +3345,7 @@ async function openTransferPractice(question) {
     }
     engine.saveVariantSet(learningState, set);
     engine.saveState(learningState);
+    await engine.awaitLastSave?.();
   }
   if (els.detailModal.open) els.detailModal.close();
   document.dispatchEvent(new CustomEvent("physics-studio-start-learning", {
@@ -3399,13 +3508,21 @@ async function exportCompleteBackup() {
     showToast("完整备份模块未加载。", true);
     return;
   }
+  const password = els.fullBackupPassword.value;
+  if (password.length < 12) {
+    showToast("请先填写至少 12 个字符的完整备份密码；密码丢失后无法恢复加密备份。", true);
+    return;
+  }
   els.fullBackupButton.disabled = true;
   showToast("正在校验并生成完整备份，请保持应用打开。");
   try {
     await window.PhysicsStudioSecurity?.requestPersistentStorage?.();
     const result = await window.PhysicsStudioBackup.create(
       window.PhysicsStudioApp,
-      window.PHYSICS_LEARNING_ENGINE
+      window.PHYSICS_LEARNING_ENGINE,
+      { password, maxOutputBytes: window.PhysicsStudioAndroid
+        ? window.PhysicsStudioSecurity?.limits?.androidExportBytes || 100 * 1024 * 1024
+        : undefined }
     );
     await downloadBlob(`费曼物理完整备份-${formatDateForFile(new Date())}.pslab`, result.blob);
     showToast(`完整备份已生成：${result.manifest.questionCount} 道题、${result.manifest.profileCount} 份档案。`);
@@ -3413,6 +3530,7 @@ async function exportCompleteBackup() {
     console.error(error);
     showToast(`完整备份失败：${error.message}`, true);
   } finally {
+    els.fullBackupPassword.value = "";
     els.fullBackupButton.disabled = false;
   }
 }
@@ -3421,6 +3539,14 @@ async function importCompleteBackup() {
   const file = els.fullRestoreInput.files?.[0];
   els.fullRestoreInput.value = "";
   if (!file) return;
+  const prefix = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+  const encrypted = window.PhysicsStudioBackup.isEncrypted(prefix);
+  if (!encrypted && !window.confirm("这是旧版未加密 .pslab，学习档案以明文保存在 ZIP 内。仅在确认来源可信时导入。是否继续？")) return;
+  const password = encrypted ? els.fullBackupPassword.value : "";
+  if (encrypted && !password) {
+    showToast("请先在完整备份密码框输入恢复密码，再选择文件。", true);
+    return;
+  }
   const confirmed = window.confirm("恢复完整备份会替换当前题库、附件、视频和学习档案。是否继续？");
   if (!confirmed) return;
   try {
@@ -3428,7 +3554,8 @@ async function importCompleteBackup() {
     const outcome = await window.PhysicsStudioBackup.restore(
       file,
       window.PhysicsStudioApp,
-      window.PHYSICS_LEARNING_ENGINE
+      window.PHYSICS_LEARNING_ENGINE,
+      { password, allowLegacyUnencrypted: !encrypted }
     );
     document.dispatchEvent(new CustomEvent("physics-learning-state-changed", {
       detail: { restored: true }
@@ -3437,12 +3564,17 @@ async function importCompleteBackup() {
   } catch (error) {
     console.error(error);
     showToast(`完整备份未恢复：${error.message}`, true);
+  } finally {
+    els.fullBackupPassword.value = "";
   }
 }
 
 async function downloadBlob(filename, blob) {
-  if (window.PhysicsStudioAndroid && typeof window.PhysicsStudioAndroid.saveBase64File === "function") {
-    if (blob.size > 100 * 1024 * 1024) {
+  if (window.PhysicsStudioAndroid) {
+    if (typeof window.PhysicsStudioAndroid.saveBase64FileWithAck !== "function") {
+      throw new Error("当前安卓版本无法确认文件是否写入成功；请更新应用后再导出完整备份。");
+    }
+    if (blob.size > (window.PhysicsStudioSecurity?.limits?.androidExportBytes || 100 * 1024 * 1024)) {
       throw new Error("安卓端单次完整备份不能超过 100 MB；请先移除或分批保存大型本地视频。");
     }
     const dataUrl = await new Promise((resolve, reject) => {
@@ -3452,11 +3584,36 @@ async function downloadBlob(filename, blob) {
       reader.readAsDataURL(blob);
     });
     const base64 = dataUrl.split(",")[1] || "";
-    window.PhysicsStudioAndroid.saveBase64File(
-      filename,
-      blob.type || "application/vnd.physics-studio.backup+zip",
-      base64
-    );
+    const requestId = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)),
+      (byte) => byte.toString(16).padStart(2, "0")).join("");
+    await new Promise((resolve, reject) => {
+      const previous = window.PhysicsStudioAndroidExportResponse;
+      let settled = false;
+      const finish = (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        window.PhysicsStudioAndroidExportResponse = previous;
+        if (error) reject(error); else resolve();
+      };
+      const timer = window.setTimeout(() => finish(new Error("未收到安卓文件保存确认；请检查目标位置，不要把本次导出视为成功。")), 60_000);
+      window.PhysicsStudioAndroidExportResponse = (response) => {
+        if (response?.requestId !== requestId) {
+          if (typeof previous === "function") previous(response);
+          return;
+        }
+        if (response.status === "saved") finish();
+        else if (response.status === "canceled") finish(new Error("已取消文件保存；备份未导出。"));
+        else finish(new Error(`安卓文件保存失败（${String(response?.errorCode || "unknown")}）；备份未导出。`));
+      };
+      try {
+        window.PhysicsStudioAndroid.saveBase64FileWithAck(
+          requestId, filename, blob.type || "application/vnd.physics-studio.backup+zip", base64
+        );
+      } catch (error) {
+        finish(error);
+      }
+    });
     return;
   }
   const url = URL.createObjectURL(blob);

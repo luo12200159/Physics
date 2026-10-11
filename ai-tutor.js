@@ -5,6 +5,7 @@
   const SESSION_TOKEN_KEY = "physics-ai-gateway-token-v1";
   const DEFAULT_MODEL = "gpt-5.6-sol";
   const MAX_RESPONSE_CHARS = 180000;
+  let gatewayProbe = { endpoint: "", state: "untested" };
 
   function appVersion() {
     return String(window.PHYSICS_LEARNING_ENGINE?.version || globalThis.PHYSICS_STUDIO_VERSION?.appVersion || "4.0.0");
@@ -83,6 +84,7 @@
   }
 
   function saveConfig(input) {
+    const previous = loadConfig();
     const endpoint = input?.endpoint ? validateEndpoint(String(input.endpoint).trim()) : "";
     const next = {
       endpoint,
@@ -93,17 +95,34 @@
     storage().setJson(STORAGE_KEY, next);
     const accessToken = String(input?.accessToken || "").trim().slice(0, 500);
     if (accessToken) sessionStorage.setItem(SESSION_TOKEN_KEY, accessToken);
+    if (previous.endpoint !== next.endpoint || previous.enabled !== next.enabled
+      || previous.model !== next.model || accessToken) {
+      gatewayProbe = { endpoint: next.endpoint, state: "untested" };
+    }
     return Object.freeze({ ...next });
   }
 
   function status() {
     const config = loadConfig();
+    const configured = Boolean(config.enabled && config.endpoint);
+    const connectionStatus = !configured ? "unconfigured"
+      : gatewayProbe.endpoint === config.endpoint ? gatewayProbe.state : "untested";
     return Object.freeze({
       ...config,
-      ready: Boolean(config.enabled && config.endpoint),
-      mode: config.enabled && config.endpoint ? "gateway" : "offline",
-      boundary: config.enabled && config.endpoint
-        ? "请求只发送到已配置的受控服务端；客户端不保存 OpenAI API 密钥。"
+      configured,
+      connectionStatus,
+      modelVerified: false,
+      // A URL and even a successful health check cannot verify per-student authorization.
+      ready: false,
+      mode: "offline",
+      capabilities: Object.freeze({
+        localHints: "available",
+        gateway: connectionStatus,
+        networkTutor: "not-authorized",
+        documentAnalysis: "not-authorized"
+      }),
+      boundary: configured
+        ? "已配置受控服务地址，但服务端尚无持久化学生授权核验；联网辅导及学生文档发送不可用，当前使用本机提示。连接测试只验证服务可达，不证明模型权限。"
         : "当前使用离线规则引擎。配置受控服务端后才能调用 ChatGPT 深度解析。"
     });
   }
@@ -145,9 +164,7 @@
   }
 
   async function solveQuestion(input) {
-    if (input?.minorUnder14 === true && input?.guardianConsentStatus !== "granted") {
-      throw new Error("未满14周岁学生尚无有效监护人授权，不能发送内容到 AI 服务。");
-    }
+    assertAiConsent(input);
     const question = normalizeQuestionInput(input?.question);
     const redactedStudentWork = redactPersonalData(input?.studentWork, input?.personalIdentifiers);
     const payload = await requestJson("/v1/physics/solve", {
@@ -168,9 +185,15 @@
   }
 
   function assertAiConsent(input) {
-    if (input?.minorUnder14 === true && input?.guardianConsentStatus !== "granted") {
+    if (!["under14", "14plus"].includes(input?.minorAgeBand)) {
+      throw new Error("年龄段未确认，不能默认按已满14周岁发送学生内容。");
+    }
+    if (input.minorAgeBand === "under14" && input.guardianConsentStatus !== "granted") {
       throw new Error("未满14周岁学生尚无有效监护人授权，不能发送内容到 AI 服务。");
     }
+    // This standalone gateway currently has no persistent guardian verification.
+    // Do not trust a client-provided boolean as server authorization.
+    throw new Error("服务端尚无持久化学生授权校验；学生内容联网发送已关闭。");
   }
 
   function normalizedHintLevel(value) {
@@ -197,7 +220,7 @@
     };
   }
 
-  function offlineTutorTurn(input, gatewayUnavailable = false) {
+  function offlineTutorTurn(input, gatewayUnavailable = false, fallbackReason = gatewayUnavailable ? "gateway-unavailable" : "not-configured") {
     const used = normalizedHintLevel(input?.hintLevelUsed);
     const reveal = input?.revealSolutionRequested === true;
     const nextLevel = reveal ? 5 : Math.min(4, Math.max(1, used + 1));
@@ -214,9 +237,15 @@
       diagnosisType: used === 0 ? "modeling-start" : "next-scaffold",
       nextPrompt: hintText.slice(0, 6000),
       hintLevel: nextLevel,
-      feedback: gatewayUnavailable
-        ? "受控导师服务当前不可用，已切换到本机五级提示；学习过程可继续。"
-        : "当前使用本机五级提示，只推进一个主要思考步骤。",
+      feedback: fallbackReason === "age-unconfirmed"
+        ? "年龄段未确认，未发送学生内容；当前使用本机五级提示。"
+        : fallbackReason === "guardian-consent-required"
+          ? "监护人授权未确认，未发送学生内容；当前使用本机五级提示。"
+          : fallbackReason === "server-authorization-unverified"
+            ? "服务端尚无持久化学生授权核验，未发送学生内容；当前使用本机五级提示。"
+            : gatewayUnavailable
+              ? "受控导师服务当前不可用，已切换到本机五级提示；学习过程可继续。"
+              : "当前使用本机五级提示，只推进一个主要思考步骤。",
       verification: {
         checks: ["dimension", "unit", "sign_direction", "limit_case", "conservation_laws", "order_of_magnitude", "equation_graph_consistency"],
         passed: null
@@ -225,6 +254,7 @@
       reviewRequired: false,
       source: "offline-hint",
       gatewayUnavailable: Boolean(gatewayUnavailable),
+      fallbackReason,
       independentCompletionEligible: nextLevel < 5,
       sessionState: {
         turn: Math.max(0, Math.min(50, Math.trunc(Number(input?.sessionState?.turn) || 0))) + 1,
@@ -274,8 +304,15 @@
   async function tutorTurn(input) {
     const question = normalizeQuestionInput(input?.question);
     const config = loadConfig();
-    if (!config.enabled || !config.endpoint) return offlineTutorTurn(input, false);
-    assertAiConsent(input);
+    if (!config.enabled || !config.endpoint) return offlineTutorTurn(input, false, "not-configured");
+    try { assertAiConsent(input); } catch (_error) {
+      const fallbackReason = !["under14", "14plus"].includes(input?.minorAgeBand)
+        ? "age-unconfirmed"
+        : input.minorAgeBand === "under14" && input.guardianConsentStatus !== "granted"
+          ? "guardian-consent-required"
+          : "server-authorization-unverified";
+      return offlineTutorTurn(input, true, fallbackReason);
+    }
     const hintLevelUsed = normalizedHintLevel(input?.hintLevelUsed);
     const revealSolutionRequested = input?.revealSolutionRequested === true;
     try {
@@ -311,6 +348,7 @@
 
   async function analyzeDocument(file, context = {}) {
     if (!(file instanceof Blob)) throw new Error("没有可解析的文档。");
+    assertAiConsent(context);
     const security = window.PhysicsStudioSecurity;
     const inspection = await security?.inspectFile?.(file, "document");
     const config = loadConfig();
@@ -535,11 +573,23 @@
   }
 
   async function testConnection() {
-    const result = await requestJson("/v1/physics/health", {
-      protocolVersion: 1,
-      model: loadConfig().model
-    }, 15000);
-    return Boolean(result?.ok);
+    const config = loadConfig();
+    try {
+      const result = await requestJson("/v1/physics/health", {
+        protocolVersion: 1,
+        model: config.model
+      }, 15000);
+      const connected = Boolean(result?.ok);
+      if (loadConfig().endpoint === config.endpoint) {
+        gatewayProbe = { endpoint: config.endpoint, state: connected ? "reachable" : "unreachable" };
+      }
+      return connected;
+    } catch (error) {
+      if (loadConfig().endpoint === config.endpoint) {
+        gatewayProbe = { endpoint: config.endpoint, state: "unreachable" };
+      }
+      throw error;
+    }
   }
 
   function normalizeQuestionInput(question) {

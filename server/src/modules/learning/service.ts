@@ -286,6 +286,24 @@ export class LearningService {
     this.now = options.now ?? (() => new Date());
   }
 
+  private async assertPersistedStudentConsent(tx: PoolClient, studentUserId: string): Promise<void> {
+    // The client's age flag or consent boolean is not evidence of authorization.
+    // Legacy accounts have no row and therefore cannot upload personal learning data.
+    const result = await tx.query<{ age_band: string; guardian_user_id: string | null }>(
+      `select age_band, guardian_user_id
+         from student_data_consents
+        where student_user_id = $1
+          and consent_status = 'verified'
+          and withdrawn_at is null
+          and verified_at <= now()`,
+      [studentUserId],
+    );
+    const record = result.rows[0];
+    if (!record || (record.age_band === "under14" && !record.guardian_user_id)) {
+      reject("student_consent_not_verified", "Server-verified student data consent is required");
+    }
+  }
+
   private async classAccess(actorId: string, classId: string): Promise<ClassAccessRow> {
     const result = await this.options.pool.query<ClassAccessRow>(
       `select c.id, c.owner_teacher_id, c.status,
@@ -415,6 +433,7 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
+      await this.assertPersistedStudentConsent(tx, actor.userId);
       const profile = await this.ensureProfile(tx, actor, input.profile, now);
       await this.recordInboundEvent(
         tx,
@@ -504,6 +523,7 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
+      await this.assertPersistedStudentConsent(tx, actor.userId);
       const profile = await this.ensureProfile(tx, actor, input.profile, now);
       await this.recordInboundEvent(
         tx,

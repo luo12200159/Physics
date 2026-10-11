@@ -19,6 +19,14 @@ if (!fs.existsSync(path.join(project, "storage-repository.js"))) {
 }
 
 assertIncludes("index.html", '<script src="storage-repository.js"></script>');
+assertIncludes("index.html", '<script src="version-config.js"></script>');
+assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.VersionConfig", "version-config.js")');
+assertIncludes("Launcher.cs", '"version-config.js"');
+assertIncludes("Uninstaller.cs", '"version-config.js"');
+assertIncludes("安装应用.ps1", "'version-config.js'");
+assertIncludes("tools/build_release.ps1", "'version-config.js'");
+assertIncludes("tools/build_release.ps1", "PhysicsStudio.Payload.VersionConfig");
+assertIncludes("android/tools/build_android.ps1", "(Join-Path $AssetsDirectory 'version-config.js')");
 assertIncludes("index.html", '<script src="question-answer-service.js"></script>');
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.StorageRepository", "storage-repository.js")');
 assertIncludes("Installer.cs", 'new PayloadFile("PhysicsStudio.Payload.TeacherModeLock", "teacher-mode-lock.js")');

@@ -35,6 +35,7 @@ for (const file of [
   "storage-repository.js",
   "learning-engine.js",
   "curriculum-taxonomy.js",
+  "solution-format.js",
   "curriculum-bank.js",
   "mock-exam-bank.js",
   "original-practice-bank.js",

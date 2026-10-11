@@ -42,6 +42,7 @@ function load(file) {
   );
 }
 
+load("solution-format.js");
 load("curriculum-bank.js");
 load("mock-exam-bank.js");
 load("original-practice-bank.js");
