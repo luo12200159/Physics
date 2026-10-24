@@ -11,7 +11,12 @@ import {
 import { withTransaction } from "../../infrastructure/db.js";
 import { appendAudit, hashAuditIp } from "../audit/repository.js";
 import { authorize, type Actor, type AuthorizationAction } from "../authorization/policy.js";
-import { validateSubmissionAnswers, visibleQuestionItems, type AssignmentQuestionItem } from "./assignment-domain.js";
+import {
+  validatePerQuestionScores,
+  validateSubmissionAnswers,
+  visibleQuestionItems,
+  type AssignmentQuestionItem,
+} from "./assignment-domain.js";
 import type {
   AssignmentListResponse,
   AssignmentRequest,
@@ -78,6 +83,7 @@ interface SubmissionRow {
   previous_submission_id?: string | null;
   review_status?: "pending" | "approved" | "returned" | "rejudged";
   current_score?: number | string | null;
+  current_per_question_scores?: ReviewDecisionRequest["perQuestionScores"] | null;
   feedback?: string | null;
 }
 
@@ -271,7 +277,16 @@ function submissionView(row: SubmissionRow): SubmissionView {
     ...(row.submission_version ? { previousSubmissionId: row.previous_submission_id ?? null } : {}),
     ...(row.review_status ? { reviewStatus: row.review_status } : {}),
     ...(row.current_score !== undefined ? { score: row.current_score === null ? null : Number(row.current_score) } : {}),
+    ...(row.current_per_question_scores ? { perQuestionScores: row.current_per_question_scores } : {}),
     ...(row.feedback !== undefined ? { feedback: row.feedback } : {}),
+  };
+}
+
+function submissionPage(rows: SubmissionRow[]): SubmissionListResponse {
+  const pageRows = rows.slice(0, 500);
+  return {
+    items: pageRows.map(submissionView),
+    nextCursor: rows.length > 500 ? pageRows[pageRows.length - 1]?.id ?? null : null,
   };
 }
 
@@ -960,12 +975,12 @@ export class LearningService {
     return { items: result.rows.map(reviewView) };
   }
 
-  async listOwnSubmissions(actor: Actor, assignmentId: string): Promise<SubmissionListResponse> {
+  async listOwnSubmissions(actor: Actor, assignmentId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
     if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
     const result = await this.options.pool.query<SubmissionRow>(
       `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
               s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
-              rc.status as review_status, rc.current_score,
+              rc.status as review_status, rc.current_score, rc.current_per_question_scores,
               (select rd.reason from review_decisions rd where rd.review_id = rc.id
                 order by rd.revision desc limit 1) as feedback
          from submissions s
@@ -973,20 +988,27 @@ export class LearningService {
          join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
          left join review_cases rc on rc.submission_id = s.id
         where a.id = $2 and s.student_user_id = $1
-        order by s.submission_version asc limit 100`,
-      [actor.userId, assignmentId],
+          and ($3::uuid is null or (s.submission_version, s.id) > (
+            select cursor_submission.submission_version, cursor_submission.id
+              from submissions cursor_submission
+             where cursor_submission.id = $3
+               and cursor_submission.assignment_id = $2
+               and cursor_submission.student_user_id = $1
+          ))
+        order by s.submission_version asc, s.id asc limit 501`,
+      [actor.userId, assignmentId, cursor],
     );
-    return { items: result.rows.map(submissionView) };
+    return submissionPage(result.rows);
   }
 
-  async listOwnClassSubmissions(actor: Actor, classId: string): Promise<SubmissionListResponse> {
+  async listOwnClassSubmissions(actor: Actor, classId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
     if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
     const access = await this.classAccess(actor.userId, classId);
     assertAllowed(actor, "class.read", access);
     const result = await this.options.pool.query<SubmissionRow>(
       `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
               s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
-              rc.status as review_status, rc.current_score,
+              rc.status as review_status, rc.current_score, rc.current_per_question_scores,
               (select rd.reason from review_decisions rd where rd.review_id = rc.id
                 order by rd.revision desc limit 1) as feedback
          from submissions s
@@ -994,20 +1016,28 @@ export class LearningService {
          join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
          left join review_cases rc on rc.submission_id = s.id
         where a.class_id = $2 and s.student_user_id = $1
-        order by s.submitted_at desc limit 500`,
-      [actor.userId, classId],
+          and ($3::uuid is null or (s.submitted_at, s.id) < (
+            select cursor_submission.submitted_at, cursor_submission.id
+              from submissions cursor_submission
+              join assignments cursor_assignment on cursor_assignment.id = cursor_submission.assignment_id
+             where cursor_submission.id = $3
+               and cursor_submission.student_user_id = $1
+               and cursor_assignment.class_id = $2
+          ))
+        order by s.submitted_at desc, s.id desc limit 501`,
+      [actor.userId, classId, cursor],
     );
-    return { items: result.rows.map(submissionView) };
+    return submissionPage(result.rows);
   }
 
-  async listClassSubmissions(actor: Actor, classId: string): Promise<SubmissionListResponse> {
+  async listClassSubmissions(actor: Actor, classId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
     const access = await this.classAccess(actor.userId, classId);
     assertAllowed(actor, "report.read", access);
     const result = await this.options.pool.query<SubmissionRow>(
       `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
               s.answers, s.student_user_id, u.display_name as student_display_name,
               s.submission_version, s.previous_submission_id, rc.status as review_status,
-              rc.current_score,
+              rc.current_score, rc.current_per_question_scores,
               (select rd.reason from review_decisions rd where rd.review_id = rc.id
                 order by rd.revision desc limit 1) as feedback
          from submissions s
@@ -1016,10 +1046,16 @@ export class LearningService {
          join users u on u.id = s.student_user_id
          left join review_cases rc on rc.submission_id = s.id
         where a.class_id = $1
-        order by s.submitted_at desc limit 500`,
-      [classId],
+          and ($2::uuid is null or (s.submitted_at, s.id) < (
+            select cursor_submission.submitted_at, cursor_submission.id
+              from submissions cursor_submission
+              join assignments cursor_assignment on cursor_assignment.id = cursor_submission.assignment_id
+             where cursor_submission.id = $2 and cursor_assignment.class_id = $1
+          ))
+        order by s.submitted_at desc, s.id desc limit 501`,
+      [classId, cursor],
     );
-    return { items: result.rows.map(submissionView) };
+    return submissionPage(result.rows);
   }
 
   async decideReviewCase(
@@ -1037,7 +1073,7 @@ export class LearningService {
       const currentResult = await tx.query<ReviewCaseRow & { owner_teacher_id: string; class_status: ClassAccessRow["status"] }>(
         `select rc.id, rc.submission_id, s.assignment_id, rc.class_id, rc.status,
                 rc.current_score, rc.revision, s.submitted_at, rc.updated_at,
-                c.owner_teacher_id, c.status as class_status
+                s.answers, c.owner_teacher_id, c.status as class_status
            from review_cases rc
            join submissions s on s.id = rc.submission_id
            join classes c on c.id = rc.class_id
@@ -1063,6 +1099,10 @@ export class LearningService {
       if (current.status === "pending" && input.decision !== "approve" && input.decision !== "return" && input.decision !== "rejudge") {
         throw new ApiError(400, "validation_error", "Review decision is invalid");
       }
+      const scoredQuestionIds = Array.isArray(current.answers)
+        ? current.answers.map((answer) => answer.questionId)
+        : [];
+      const perQuestionScores = validatePerQuestionScores(input.perQuestionScores, scoredQuestionIds);
       const nextStatus = input.decision === "approve" ? "approved" : input.decision === "return" ? "returned" : "rejudged";
       const nextRevision = current.revision + 1;
       await tx.query(
@@ -1072,7 +1112,7 @@ export class LearningService {
          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13)`,
         [randomUUID(), reviewId, actor.userId, nextRevision, input.decision, current.status,
           nextStatus, current.current_score === null ? null : Number(current.current_score),
-          input.score, JSON.stringify(input.perQuestionScores), input.reason.trim(),
+          input.score, JSON.stringify(perQuestionScores), input.reason.trim(),
           JSON.stringify(input.annotation), now],
       );
       const updated = await tx.query<ReviewCaseRow>(
@@ -1084,7 +1124,7 @@ export class LearningService {
                   current_score, revision,
                   (select submitted_at from submissions where id = submission_id) as submitted_at,
                   updated_at`,
-        [reviewId, nextStatus, input.score, JSON.stringify(input.perQuestionScores), nextRevision, now, current.assignment_id],
+        [reviewId, nextStatus, input.score, JSON.stringify(perQuestionScores), nextRevision, now, current.assignment_id],
       );
       const row = updated.rows[0];
       if (!row) throw new Error("Review update did not return a row");

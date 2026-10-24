@@ -20,6 +20,7 @@ import {
   ReviewCaseViewSchema,
   ReviewDecisionRequestSchema,
   SubmissionRequestSchema,
+  SubmissionListQuerySchema,
   SubmissionListResponseSchema,
   SubmissionViewSchema,
   SyncExamRecordsRequestSchema,
@@ -35,6 +36,7 @@ import {
   type ReviewCaseParams,
   type ReviewDecisionRequest,
   type SubmissionRequest,
+  type SubmissionListQuery,
   type SyncExamRecordsRequest,
   type SyncLearningRequest,
   type SyncVariantSetsRequest,
@@ -170,36 +172,45 @@ export function registerLearningRoutes(app: FastifyInstance, service: LearningSe
     return reply.status(201).send(response);
   });
 
-  app.get<{ Params: AssignmentParams }>("/v1/assignments/:assignmentId/submissions/me", {
+  app.get<{ Params: AssignmentParams; Querystring: SubmissionListQuery }>("/v1/assignments/:assignmentId/submissions/me", {
     preHandler: app.authenticate,
     schema: {
       params: AssignmentParamsSchema,
+      querystring: SubmissionListQuerySchema,
       response: { 200: SubmissionListResponseSchema, ...errors() },
     },
   }, async (request, reply) => {
-    const response = await service.listOwnSubmissions(actorFrom(request.authSession!), request.params.assignmentId);
+    const response = await service.listOwnSubmissions(
+      actorFrom(request.authSession!), request.params.assignmentId, request.query.cursor ?? null,
+    );
     return reply.status(200).send(response);
   });
 
-  app.get<{ Params: ClassLearningParams }>("/v1/classes/:classId/assignment-submissions/me", {
+  app.get<{ Params: ClassLearningParams; Querystring: SubmissionListQuery }>("/v1/classes/:classId/assignment-submissions/me", {
     preHandler: app.authenticate,
     schema: {
       params: ClassLearningParamsSchema,
+      querystring: SubmissionListQuerySchema,
       response: { 200: SubmissionListResponseSchema, ...errors() },
     },
   }, async (request, reply) => {
-    const response = await service.listOwnClassSubmissions(actorFrom(request.authSession!), request.params.classId);
+    const response = await service.listOwnClassSubmissions(
+      actorFrom(request.authSession!), request.params.classId, request.query.cursor ?? null,
+    );
     return reply.status(200).send(response);
   });
 
-  app.get<{ Params: ClassLearningParams }>("/v1/classes/:classId/assignment-submissions", {
+  app.get<{ Params: ClassLearningParams; Querystring: SubmissionListQuery }>("/v1/classes/:classId/assignment-submissions", {
     preHandler: app.authenticateOrOwnerCapability,
     schema: {
       params: ClassLearningParamsSchema,
+      querystring: SubmissionListQuerySchema,
       response: { 200: SubmissionListResponseSchema, ...errors() },
     },
   }, async (request, reply) => {
-    const response = await service.listClassSubmissions(actorFrom(request.authSession!), request.params.classId);
+    const response = await service.listClassSubmissions(
+      actorFrom(request.authSession!), request.params.classId, request.query.cursor ?? null,
+    );
     return reply.status(200).send(response);
   });
 

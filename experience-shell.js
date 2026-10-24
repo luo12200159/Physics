@@ -90,6 +90,7 @@
       assignments: [],
       assignmentSubmissions: {},
       classSubmissions: [],
+      classSubmissionsLoaded: false,
       activeAssignmentId: "",
       selectedQuestionIds: [],
       picker: { search: "", grade: "全部", type: "全部", difficulty: "全部" },
@@ -3129,23 +3130,69 @@
       </div>`;
   }
 
+  function classroomScoreText(value) {
+    return Number.isFinite(value) ? `${value} 分` : "暂无已评分证据";
+  }
+
+  function classroomKnowledgePointLabel(knowledgePointId) {
+    const resolved = window.PHYSICS_LEARNING_ENGINE?.resolveKnowledgePointIdentity?.({ knowledgePointId });
+    return String(resolved?.label || knowledgePointId || "未标注知识点");
+  }
+
+  function classroomEvidenceDetails(ids, label = "查看原始证据 ID") {
+    const values = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (!values.length) return "";
+    return `<details class="classroom-evidence-ids"><summary>${escapeHtml(label)}</summary>${values.map((id) => `<code>${escapeHtml(id)}</code>`).join("")}</details>`;
+  }
+
+  function renderClassroomAnalytics(analytics) {
+    if (!analytics) return `<section class="classroom-analytics" data-classroom-analytics id="classroom-analytics">
+      <header><div><span>真实作答证据</span><h3>班级学情分析</h3></div><strong>暂不可用</strong></header>
+      <p class="classroom-message error">提交记录读取失败，当前不计算均分、未交人数或知识点表现，避免用不完整数据形成结论。请恢复连接后刷新。</p>
+    </section>`;
+    const summary = analytics.classSummary || {};
+    const assignmentRows = Array.isArray(analytics.assignments) ? analytics.assignments : [];
+    const studentRows = Array.isArray(analytics.students) ? analytics.students : [];
+    const knowledgeRows = Array.isArray(analytics.knowledgePoints) ? analytics.knowledgePoints : [];
+    return `<section class="classroom-analytics" data-classroom-analytics id="classroom-analytics">
+      <header><div><span>真实作答证据</span><h3>班级学情分析</h3></div><strong>${summary.activeStudentCount || 0} 名在班学生</strong></header>
+      <p>${escapeHtml(analytics.evidenceRule || "仅使用已评分的真实作答证据；证据不足时不作稳定结论。")}</p>
+      <div class="classroom-analytics-overview" aria-label="班级总体情况">
+        <article><strong>${summary.publishedAssignmentCount || 0}</strong><span>已发布作业</span></article>
+        <article><strong>${summary.gradedSubmissionCount || 0}</strong><span>已评分提交</span></article>
+        <article><strong>${summary.pendingReviewCount || 0}</strong><span>待人工复核</span></article>
+        <article><strong>${summary.overdueUnsubmittedCount || 0}</strong><span>逾期未交人次</span></article>
+      </div>
+      <div class="classroom-analytics-dimensions">
+        <article><h4>作业学情</h4>${assignmentRows.map((item) => `<div><strong>${escapeHtml(item.title)}</strong><span>应交 ${item.recipientCount} · 已交 ${item.submittedCount} · 已评分 ${item.gradedCount} · 待人工复核 ${item.pendingReviewCount} · 未交 ${item.unsubmittedCount}</span><small>已评分提交均分：${escapeHtml(classroomScoreText(item.averageScore))}</small>${classroomEvidenceDetails([...(item.gradedSubmissionIds || []), ...(item.pendingSubmissionIds || [])])}</div>`).join("") || "<p>暂无已发布作业。</p>"}</article>
+        <article><h4>学生学情</h4>${studentRows.map((item) => `<div><strong>${escapeHtml(item.displayName)}</strong><span>应做 ${item.assignedCount} · 已交 ${item.submittedCount} · 待人工复核 ${item.pendingReviewCount} · 订正 ${item.correctionCount} 次</span><small>${item.evidenceStatus === "insufficient" ? "证据不足" : "形成性证据"} · 已评分提交均分：${escapeHtml(classroomScoreText(item.averageScore))}</small>${classroomEvidenceDetails([...(item.gradedSubmissionIds || []), ...(item.pendingSubmissionIds || [])])}</div>`).join("") || "<p>暂无在班学生。</p>"}</article>
+        <article><h4>知识点学情</h4>${knowledgeRows.map((item) => `<div><strong>${escapeHtml(classroomKnowledgePointLabel(item.knowledgePointId))}</strong><span>已评分题目证据 ${item.scoredCount} 条</span><small>${item.evidenceStatus === "insufficient" ? "证据不足" : "形成性证据"} · 题目得分均值：${escapeHtml(classroomScoreText(item.averageScore))}</small>${classroomEvidenceDetails(item.evidenceIds)}</div>`).join("") || "<p>暂无已评分的逐题知识点证据。</p>"}</article>
+      </div>
+    </section>`;
+  }
+
   function renderSelectedClass(selected, disabled) {
     const invite = ui.classroom.lastInvite?.classId === selected.id ? ui.classroom.lastInvite : null;
     const activeStudents = ui.classroom.roster.filter((member) => member.status === "active");
     const published = ui.classroom.assignments.filter((assignment) => assignment.status === "published");
     const pending = ui.classroom.reviewCases.length;
-    const unsubmitted = published.reduce((count, assignment) => {
+    const analytics = ui.classroom.classSubmissionsLoaded ? window.PhysicsStudioClassroom?.buildClassroomAnalytics?.({
+      roster: ui.classroom.roster,
+      assignments: ui.classroom.assignments,
+      submissions: ui.classroom.classSubmissions
+    }) || null : null;
+    const unsubmitted = ui.classroom.classSubmissionsLoaded ? published.reduce((count, assignment) => {
       const recipients = activeStudents.filter((member) => assignment.targetType === "class"
         || assignment.targetType === "student" && assignment.targetId === member.id
         || assignment.targetType === "group" && assignment.targetId === member.groupId);
       return count + recipients.filter((member) => !ui.classroom.classSubmissions.some((submission) =>
         submission.assignmentId === assignment.id && submission.studentUserId === member.userId)).length;
-    }, 0);
+    }, 0) : null;
     return `
       <header class="classroom-class-head"><div><span>${escapeHtml(selected.grade)} · ${escapeHtml(selected.subject)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.schoolLabel || "未填写学校")}</p></div><strong>${escapeHtml(selected.status)}</strong></header>
       <div class="classroom-class-meta"><span>班级 ID：${escapeHtml(selected.id)}</span><span>当前学生：${activeStudents.length} 人</span><button class="danger" data-classroom-action="delete-class" type="button"${disabled}>删除班级</button></div>
       <section class="classroom-workbench"><h3>教学工作台</h3><p>以下数据来自当前班级服务；离线时为上次成功同步的快照。</p>
-        <div><a href="#classroom-roster">学生 ${activeStudents.length} 人</a><a href="#classroom-assignment-form">进行中作业 ${published.length} 份</a><a href="#classroom-review-cases">待批改 ${pending} 份</a><a href="#classroom-assignment-status">未提交 ${unsubmitted} 人次</a></div>
+        <div><a href="#classroom-roster">学生 ${activeStudents.length} 人</a><a href="#classroom-assignment-form">进行中作业 ${published.length} 份</a><a href="#classroom-review-cases">待批改 ${pending} 份</a><a href="#classroom-assignment-status">${unsubmitted == null ? "未提交：待同步" : `未提交 ${unsubmitted} 人次`}</a></div>
         <nav aria-label="教学快捷操作"><a href="#classroom-assignment-form">布置作业</a><a href="#classroom-roster">管理班级</a><a href="#classroom-learning-summary">查看学情</a></nav>
       </section>
       <div class="classroom-action-grid">
@@ -3186,9 +3233,10 @@
       <section class="classroom-assignment-status" id="classroom-assignment-status"><header><h3>作业与提交</h3><strong>${published.length} 份已发布</strong></header>
         ${ui.classroom.assignments.map((assignment) => {
           const submissions = ui.classroom.classSubmissions.filter((item) => item.assignmentId === assignment.id);
-          return `<article><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.status)} · ${assignment.questionIds.length} 题 · ${submissions.length} 次提交${assignment.dueAt ? ` · 截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : ""}</span><small>${escapeHtml(assignment.target || "")}</small></article>`;
+          return `<article><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.status)} · ${assignment.questionIds.length} 题 · ${ui.classroom.classSubmissionsLoaded ? `${submissions.length} 次提交` : "提交记录待同步"}${assignment.dueAt ? ` · 截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : ""}</span><small>${escapeHtml(assignment.target || "")}</small></article>`;
         }).join("") || "<p>尚无作业。可从上方题库选择题目。</p>"}
       </section>
+      ${renderClassroomAnalytics(analytics)}
       <section class="classroom-roster" id="classroom-roster">
         <header><div><span>逐级管理</span><h3>学生花名册</h3></div><strong>${ui.classroom.roster.length} 人</strong></header>
         ${ui.classroom.roster.map((member) => `
@@ -3359,6 +3407,8 @@
         ui.classroom.reviewCases = [];
         ui.classroom.assignments = [];
         ui.classroom.assignmentSubmissions = {};
+        ui.classroom.classSubmissions = [];
+        ui.classroom.classSubmissionsLoaded = false;
       }
     }, showMessage ? "班级数据已刷新。" : "", false);
   }
@@ -3399,7 +3449,7 @@
       .then(call)
       .catch((error) => {
         console.warn(`${label}读取失败；保留已有班级功能。`, error);
-        return { items: [] };
+        return { items: [], loadFailed: true };
       });
     const [roster, groups, summary, reviews, assignments, submissions] = await Promise.all([
       client.listRoster(classId),
@@ -3419,6 +3469,7 @@
     ui.classroom.reviewCases = Array.isArray(reviews?.items) ? reviews.items : [];
     ui.classroom.assignments = Array.isArray(assignments?.items) ? assignments.items : [];
     ui.classroom.classSubmissions = Array.isArray(submissions?.items) ? submissions.items : [];
+    ui.classroom.classSubmissionsLoaded = submissions?.loadFailed !== true;
   }
 
   async function loadStudentAssignments(classId) {
@@ -3777,6 +3828,8 @@
         ui.classroom.groups = [];
         ui.classroom.learningSummary = [];
         ui.classroom.reviewCases = [];
+        ui.classroom.classSubmissions = [];
+        ui.classroom.classSubmissionsLoaded = false;
         if (ui.classroom.selectedClassId) await loadClassroomDetail(ui.classroom.selectedClassId);
       }, "班级已删除，原邀请码已失效。", true);
     }
@@ -3792,6 +3845,8 @@
           ui.classroom.lastInvite = null;
           ui.classroom.assignments = [];
           ui.classroom.assignmentSubmissions = {};
+          ui.classroom.classSubmissions = [];
+          ui.classroom.classSubmissionsLoaded = false;
         }
       }, "已退出班级服务，继续使用本机离线数据。", false);
     } else if (action === "copy-invite") {

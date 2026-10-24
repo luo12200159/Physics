@@ -16,6 +16,9 @@ const refreshToken = `r1.44444444-4444-4444-8444-444444444444.${"a".repeat(43)}`
 const ownerCapability = `oc1.${"o".repeat(43)}`;
 const ownerUserId = "99999999-9999-4999-8999-999999999999";
 const sharedWork = { assignments: [], submissions: [], reviews: [] };
+const shellSource = fs.readFileSync(path.join(project, "experience-shell.js"), "utf8");
+assert.match(shellSource, /classSubmissionsLoaded/);
+assert.match(shellSource, /提交记录读取失败，当前不计算均分、未交人数或知识点表现/);
 
 function experience(role) {
   return {
@@ -501,6 +504,14 @@ async function login(page, loginName) {
     assert.equal(sharedWork.submissions[0].answers.length, 3);
     await teacher.page.setViewportSize({ width: 1440, height: 960 });
     await teacher.page.locator('[data-classroom-action="refresh"]').click();
+    const analyticsBeforeReview = teacher.page.locator('[data-classroom-analytics]');
+    await analyticsBeforeReview.waitFor({ timeout: 6_000 });
+    const analyticsBeforeReviewText = await analyticsBeforeReview.innerText();
+    assert.match(analyticsBeforeReviewText, /班级学情分析/);
+    assert.match(analyticsBeforeReviewText, /待人工复核\s*1/);
+    assert.match(analyticsBeforeReviewText, /暂无已评分证据/);
+    assert.match(analyticsBeforeReviewText, /证据不足/);
+    assert.equal(await analyticsBeforeReview.locator("code").first().textContent(), "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     try {
       await teacher.page.locator('[data-classroom-review-form]').waitFor({ timeout: 6_000 });
     } catch (error) {

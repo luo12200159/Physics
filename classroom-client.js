@@ -1360,19 +1360,51 @@
     }
   }
 
+  async function listSubmissionPages(path, options = {}) {
+    const items = [];
+    const seenCursors = new Set();
+    let cursor = "";
+    for (let page = 0; page < 200; page += 1) {
+      const response = await requestJson(
+        `${path}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        { method: "GET", ...options },
+      );
+      if (!response || !Array.isArray(response.items)) {
+        throw new ClassroomError("班级提交记录响应格式无效；未生成学情统计。", {
+          code: "invalid_server_response", status: 0,
+        });
+      }
+      items.push(...response.items);
+      if (!response.nextCursor) {
+        return Object.freeze({ items: Object.freeze(items), nextCursor: null, complete: true });
+      }
+      const nextCursor = uuid(response.nextCursor, "分页游标");
+      if (seenCursors.has(nextCursor)) {
+        throw new ClassroomError("班级提交记录分页游标重复；未生成学情统计。", {
+          code: "invalid_server_response", status: 0,
+        });
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new ClassroomError("班级提交记录超过单次完整读取上限；未生成学情统计。", {
+      code: "submission_page_limit", status: 0,
+    });
+  }
+
   async function listOwnSubmissions(assignmentId) {
     const id = uuid(assignmentId, "作业编号");
-    return requestJson(`/v1/assignments/${encodeURIComponent(id)}/submissions/me`, { method: "GET", authMode: "bearer" });
+    return listSubmissionPages(`/v1/assignments/${encodeURIComponent(id)}/submissions/me`, { authMode: "bearer" });
   }
 
   async function listClassSubmissions(classId) {
     const id = uuid(classId, "班级编号");
-    return requestJson(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions`, { method: "GET" });
+    return listSubmissionPages(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions`);
   }
 
   async function listOwnClassSubmissions(classId) {
     const id = uuid(classId, "班级编号");
-    return requestJson(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions/me`, { method: "GET", authMode: "bearer" });
+    return listSubmissionPages(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions/me`, { authMode: "bearer" });
   }
 
   async function getClassLearningSummary(classId) {
@@ -1868,6 +1900,130 @@
     return result.user;
   }
 
+  function buildClassroomAnalytics(input = {}) {
+    const roster = Array.isArray(input.roster) ? input.roster : [];
+    const assignments = (Array.isArray(input.assignments) ? input.assignments : [])
+      .filter((item) => item?.status === "published");
+    const submissions = Array.isArray(input.submissions) ? input.submissions : [];
+    const now = new Date(input.now || Date.now());
+    const activeStudents = roster.filter((member) => member?.status === "active"
+      && (member.role || member.memberRole || "student") === "student");
+    const latestByAssignmentStudent = new Map();
+    for (const submission of submissions) {
+      const studentUserId = String(submission?.studentUserId || submission?.studentId || "");
+      const assignmentId = String(submission?.assignmentId || "");
+      if (!studentUserId || !assignmentId) continue;
+      const key = `${assignmentId}|${studentUserId}`;
+      const previous = latestByAssignmentStudent.get(key);
+      const version = Number(submission.version || 1);
+      const previousVersion = Number(previous?.version || 1);
+      const submittedAt = new Date(submission.submittedAt || 0).getTime();
+      const previousAt = new Date(previous?.submittedAt || 0).getTime();
+      if (!previous || version > previousVersion || version === previousVersion && submittedAt > previousAt) {
+        latestByAssignmentStudent.set(key, submission);
+      }
+    }
+    const isPending = (submission) => submission?.reviewStatus === "pending"
+      || submission?.status === "submitted" || submission?.status === "underReview";
+    const isGraded = (submission) => Number.isFinite(Number(submission?.score))
+      && submission?.score !== null && !isPending(submission)
+      && submission?.status === "accepted";
+    const average = (values) => values.length
+      ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 10) / 10
+      : null;
+    const recipientsFor = (assignment) => activeStudents.filter((member) => assignment.targetType === "class"
+      || assignment.targetType === "group" && assignment.targetId === member.groupId
+      || assignment.targetType === "student" && [member.id, member.userId].includes(assignment.targetId));
+    const latestFor = (assignmentId, userId) => latestByAssignmentStudent.get(`${assignmentId}|${userId}`) || null;
+    const trackedLatestSubmissions = assignments.flatMap((assignment) => recipientsFor(assignment)
+      .map((member) => latestFor(assignment.id, member.userId)).filter(Boolean));
+
+    const assignmentRows = assignments.map((assignment) => {
+      const recipients = recipientsFor(assignment);
+      const latest = recipients.map((member) => latestFor(assignment.id, member.userId)).filter(Boolean);
+      const graded = latest.filter(isGraded);
+      const overdue = Number.isFinite(now.getTime()) && assignment.dueAt
+        && new Date(assignment.dueAt).getTime() < now.getTime();
+      return Object.freeze({
+        assignmentId: assignment.id,
+        title: String(assignment.title || "未命名作业"),
+        recipientCount: recipients.length,
+        submittedCount: latest.length,
+        gradedCount: graded.length,
+        pendingReviewCount: latest.filter(isPending).length,
+        unsubmittedCount: Math.max(0, recipients.length - latest.length),
+        overdueUnsubmittedCount: overdue ? Math.max(0, recipients.length - latest.length) : 0,
+        averageScore: average(graded.map((item) => Number(item.score))),
+        gradedSubmissionIds: Object.freeze(graded.map((item) => String(item.id || "")).filter(Boolean)),
+        pendingSubmissionIds: Object.freeze(latest.filter(isPending).map((item) => String(item.id || "")).filter(Boolean)),
+      });
+    });
+
+    const studentRows = activeStudents.map((member) => {
+      const assigned = assignments.filter((assignment) => recipientsFor(assignment)
+        .some((recipient) => recipient.userId === member.userId));
+      const latest = assigned.map((assignment) => latestFor(assignment.id, member.userId)).filter(Boolean);
+      const graded = latest.filter(isGraded);
+      return Object.freeze({
+        membershipId: member.id,
+        userId: member.userId,
+        displayName: String(member.displayName || "学生"),
+        assignedCount: assigned.length,
+        submittedCount: latest.length,
+        gradedCount: graded.length,
+        pendingReviewCount: latest.filter(isPending).length,
+        correctionCount: latest.reduce((count, item) => count + Math.max(0, Number(item.version || 1) - 1), 0),
+        averageScore: average(graded.map((item) => Number(item.score))),
+        evidenceStatus: graded.length >= 3 ? "formative" : "insufficient",
+        gradedSubmissionIds: Object.freeze(graded.map((item) => String(item.id || "")).filter(Boolean)),
+        pendingSubmissionIds: Object.freeze(latest.filter(isPending).map((item) => String(item.id || "")).filter(Boolean)),
+      });
+    });
+
+    const assignmentById = new Map(assignments.map((item) => [item.id, item]));
+    const knowledgeEvidence = new Map();
+    for (const submission of trackedLatestSubmissions.filter(isGraded)) {
+      const assignment = assignmentById.get(submission.assignmentId);
+      const questionById = new Map((assignment?.questionItems || []).map((item) => [item.id, item]));
+      for (const scoreEntry of Array.isArray(submission.perQuestionScores) ? submission.perQuestionScores : []) {
+        const score = scoreEntry?.score;
+        if (score === null || !Number.isFinite(Number(score))) continue;
+        const question = questionById.get(scoreEntry.questionId);
+        const knowledgePointId = String(question?.knowledgePointId || "");
+        if (!knowledgePointId) continue;
+        const evidence = knowledgeEvidence.get(knowledgePointId) || { scores: [], latestEvidenceAt: "", evidenceIds: [] };
+        evidence.scores.push(Number(score));
+        evidence.evidenceIds.push(`${submission.id}:${scoreEntry.questionId}`);
+        const submittedAt = String(submission.submittedAt || "");
+        if (submittedAt > evidence.latestEvidenceAt) evidence.latestEvidenceAt = submittedAt;
+        knowledgeEvidence.set(knowledgePointId, evidence);
+      }
+    }
+    const knowledgePoints = [...knowledgeEvidence.entries()].map(([knowledgePointId, evidence]) => Object.freeze({
+      knowledgePointId,
+      scoredCount: evidence.scores.length,
+      averageScore: average(evidence.scores),
+      evidenceStatus: evidence.scores.length >= 3 ? "formative" : "insufficient",
+      latestEvidenceAt: evidence.latestEvidenceAt || null,
+      evidenceIds: Object.freeze([...evidence.evidenceIds]),
+    })).sort((left, right) => left.knowledgePointId.localeCompare(right.knowledgePointId, "zh-CN"));
+
+    return Object.freeze({
+      classSummary: Object.freeze({
+        activeStudentCount: activeStudents.length,
+        publishedAssignmentCount: assignments.length,
+        latestSubmissionCount: trackedLatestSubmissions.length,
+        gradedSubmissionCount: trackedLatestSubmissions.filter(isGraded).length,
+        pendingReviewCount: trackedLatestSubmissions.filter(isPending).length,
+        overdueUnsubmittedCount: assignmentRows.reduce((count, item) => count + item.overdueUnsubmittedCount, 0),
+      }),
+      assignments: Object.freeze(assignmentRows),
+      students: Object.freeze(studentRows),
+      knowledgePoints: Object.freeze(knowledgePoints),
+      evidenceRule: "只统计每名学生每份作业的最新服务端记录；待人工复核、缺交和空题分不进入平均分。知识点少于 3 条已评分题目证据时只显示证据不足。",
+    });
+  }
+
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("online", () => { void flushSyncQueue(); });
   }
@@ -1933,6 +2089,7 @@
     listReviewCases,
     decideReviewCase,
     saveReportSnapshot,
-    listReportSnapshots
+    listReportSnapshots,
+    buildClassroomAnalytics
   });
 })();

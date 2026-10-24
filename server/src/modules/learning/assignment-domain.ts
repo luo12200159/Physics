@@ -19,6 +19,11 @@ export interface AssignmentAnswer {
   hintViewCount?: number;
 }
 
+export interface PerQuestionScore {
+  questionId: string;
+  score: number | null;
+}
+
 /** The answer key stays in the teacher-owned persisted snapshot, never in student responses. */
 export function visibleQuestionItems(items: readonly AssignmentQuestionItem[]): Omit<AssignmentQuestionItem, "correctAnswer">[] {
   return items.map(({ correctAnswer: _answer, ...visible }) => visible);
@@ -49,6 +54,37 @@ export function validateSubmissionAnswers(
     answeredQuestionIds: [...answered],
     missingQuestionIds: questionIds.filter((questionId) => !answered.has(questionId)),
   };
+}
+
+/**
+ * Validates teacher-entered question scores against the question IDs retained
+ * in this immutable submission. A null score deliberately means "not yet
+ * scored" and therefore remains outside accuracy and average-score evidence.
+ */
+export function validatePerQuestionScores(
+  scores: readonly PerQuestionScore[],
+  questionIds: readonly string[],
+): PerQuestionScore[] {
+  const expected = new Set(questionIds);
+  const seen = new Set<string>();
+  return scores.map((entry) => {
+    if (!entry || typeof entry.questionId !== "string" || !expected.has(entry.questionId)) {
+      throw new ApiError(400, "foreign_question_score", "A score refers to a question outside this assignment");
+    }
+    if (seen.has(entry.questionId)) {
+      throw new ApiError(400, "duplicate_question_score", "A question was scored more than once in this review");
+    }
+    seen.add(entry.questionId);
+    if (entry.score !== null && (
+      typeof entry.score !== "number"
+      || !Number.isFinite(entry.score)
+      || entry.score < 0
+      || entry.score > 100
+    )) {
+      throw new ApiError(400, "invalid_question_score", "Each scored question must be between 0 and 100");
+    }
+    return { questionId: entry.questionId, score: entry.score };
+  });
 }
 
 function choiceKey(value: string): string | null {

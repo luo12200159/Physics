@@ -11,10 +11,16 @@ const ClientEntityIdSchema = Type.String({
 const DeviceIdSchema = Type.String({ pattern: "^[0-9a-f]{64}$" });
 const JsonObjectSchema = Type.Record(Type.String({ minLength: 1, maxLength: 120 }), Type.Unknown());
 const JsonArraySchema = Type.Array(Type.Unknown(), { maxItems: 2_000 });
+const PerQuestionScoreSchema = StrictObject({
+  questionId: ClientEntityIdSchema,
+  score: Type.Union([Type.Number({ minimum: 0, maximum: 100 }), Type.Null()]),
+});
+const PerQuestionScoresSchema = Type.Array(PerQuestionScoreSchema, { maxItems: 100 });
 
 export const ClassLearningParamsSchema = StrictObject({ classId: UuidSchema });
 export const AssignmentParamsSchema = StrictObject({ assignmentId: UuidSchema });
 export const ReviewCaseParamsSchema = StrictObject({ reviewId: UuidSchema });
+export const SubmissionListQuerySchema = StrictObject({ cursor: Type.Optional(UuidSchema) });
 
 const VariantRoleSchema = Type.Union([
   Type.Literal("near"),
@@ -223,7 +229,7 @@ export const SubmissionRequestSchema = StrictObject({
 export const ReviewDecisionRequestSchema = StrictObject({
   decision: Type.Union([Type.Literal("approve"), Type.Literal("return"), Type.Literal("rejudge")]),
   score: Type.Number({ minimum: 0, maximum: 100 }),
-  perQuestionScores: JsonArraySchema,
+  perQuestionScores: PerQuestionScoresSchema,
   reason: Type.String({ minLength: 1, maxLength: 1_000 }),
   annotation: JsonObjectSchema,
 });
@@ -293,11 +299,13 @@ export const SubmissionViewSchema = StrictObject({
   previousSubmissionId: Type.Optional(Type.Union([UuidSchema, Type.Null()])),
   reviewStatus: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("approved"), Type.Literal("returned"), Type.Literal("rejudged")])),
   score: Type.Optional(Type.Union([Type.Number({ minimum: 0, maximum: 100 }), Type.Null()])),
+  perQuestionScores: Type.Optional(PerQuestionScoresSchema),
   feedback: Type.Optional(Type.Union([Type.String({ maxLength: 1_000 }), Type.Null()])),
 });
 
 export const SubmissionListResponseSchema = StrictObject({
   items: Type.Array(SubmissionViewSchema, { maxItems: 500 }),
+  nextCursor: Type.Optional(Type.Union([UuidSchema, Type.Null()])),
 });
 
 export const ReviewCaseViewSchema = StrictObject({
@@ -349,6 +357,7 @@ export const ReportSnapshotListResponseSchema = StrictObject({
 export type ClassLearningParams = Static<typeof ClassLearningParamsSchema>;
 export type AssignmentParams = Static<typeof AssignmentParamsSchema>;
 export type ReviewCaseParams = Static<typeof ReviewCaseParamsSchema>;
+export type SubmissionListQuery = Static<typeof SubmissionListQuerySchema>;
 export type SyncLearningRequest = Static<typeof SyncLearningRequestSchema>;
 export type SyncVariantSetsRequest = Static<typeof SyncVariantSetsRequestSchema>;
 export type VariantSetSyncResponse = Static<typeof VariantSetSyncResponseSchema>;

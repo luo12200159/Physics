@@ -802,15 +802,40 @@ final class LanClassroomHost implements Closeable {
                 throw new ClientError(409, "review_already_decided", "该提交已经批改。");
             }
             Object rawScore = body.get("score");
-            if (!(rawScore instanceof Number) || ((Number)rawScore).doubleValue() < 0 || ((Number)rawScore).doubleValue() > 100) throw validation("分数必须在 0 到 100 之间。");
+            double score = rawScore instanceof Number ? ((Number)rawScore).doubleValue() : Double.NaN;
+            if (!Double.isFinite(score) || score < 0 || score > 100) throw validation("分数必须在 0 到 100 之间。");
+            Object rawQuestionScores = body.get("perQuestionScores");
+            if (!(rawQuestionScores instanceof List<?>)) throw validation("逐题评分格式无效。");
+            List<Object> checkedScores = new ArrayList<Object>();
+            List<String> scoredQuestionIds = new ArrayList<String>();
+            List<String> submittedQuestionIds = storedSubmissionQuestionIds(submission);
+            for (Object rawEntry : (List<?>)rawQuestionScores) {
+                if (!(rawEntry instanceof Map<?,?>)) throw validation("逐题评分格式无效。");
+                Map<?,?> entry = (Map<?,?>)rawEntry;
+                String questionId = requiredText(valueText(entry.get("questionId")), "题目编号", 160);
+                if (!submittedQuestionIds.contains(questionId) || scoredQuestionIds.contains(questionId)) {
+                    throw validation("逐题评分编号重复或不属于本次提交。");
+                }
+                Object questionScore = entry.get("score");
+                double numericQuestionScore = questionScore instanceof Number ? ((Number)questionScore).doubleValue() : Double.NaN;
+                if (questionScore != null && (!Double.isFinite(numericQuestionScore)
+                    || numericQuestionScore < 0 || numericQuestionScore > 100)) {
+                    throw validation("逐题分数必须在 0 到 100 之间。");
+                }
+                Map<String,Object> checkedEntry = object();
+                checkedEntry.put("questionId", questionId);
+                checkedEntry.put("score", questionScore);
+                checkedScores.add(checkedEntry);
+                scoredQuestionIds.add(questionId);
+            }
             String reason = requiredText(valueText(body.get("reason")), "教师反馈", 1000);
-            submission.score = ((Number)rawScore).doubleValue();
+            submission.score = score;
             submission.feedback = reason;
             submission.reviewStatus = "approve".equals(decision) ? "approved" : "return".equals(decision) ? "returned" : "rejudged";
             submission.status = "return".equals(decision) ? "returned" : "accepted";
             submission.reviewRevision += 1;
             submission.updatedAt = System.currentTimeMillis();
-            submission.perQuestionScoresJson = body.get("perQuestionScores") instanceof List<?> ? Json.stringify(body.get("perQuestionScores")) : "[]";
+            submission.perQuestionScoresJson = Json.stringify(checkedScores);
             saveLocked();
             return reviewJson(submission, assignment);
         }
@@ -843,6 +868,7 @@ final class LanClassroomHost implements Closeable {
         value.put("submissionVersion", Integer.valueOf(submission.version));
         SubmissionRecord previous = submission.previousSubmissionId == null ? null : findSubmission(submission.previousSubmissionId);
         if (previous != null) value.put("previousAnswers", Json.parse(previous.answersJson));
+        value.put("perQuestionScores", Json.parse(submission.perQuestionScoresJson == null ? "[]" : submission.perQuestionScoresJson));
         return value;
     }
 
@@ -1274,6 +1300,7 @@ final class LanClassroomHost implements Closeable {
         value.put("previousSubmissionId", submission.previousSubmissionId);
         value.put("reviewStatus", submission.reviewStatus);
         value.put("score", submission.score < 0 ? null : Double.valueOf(submission.score));
+        value.put("perQuestionScores", Json.parse(submission.perQuestionScoresJson == null ? "[]" : submission.perQuestionScoresJson));
         value.put("feedback", submission.feedback);
         return value;
     }
@@ -1339,6 +1366,33 @@ final class LanClassroomHost implements Closeable {
         if (source.size() > maximumItems) throw validation("列表字段过长。");
         List<String> result = new ArrayList<String>();
         for (Object item : source) result.add(requiredText(valueText(item), "列表字段", maximumLength));
+        return result;
+    }
+    private static List<String> storedSubmissionQuestionIds(SubmissionRecord submission) throws ClientError {
+        final Object parsed;
+        try {
+            parsed = Json.parse(submission.answersJson);
+        } catch (ClientError error) {
+            throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+        }
+        if (!(parsed instanceof List<?>)) {
+            throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+        }
+        List<String> result = new ArrayList<String>();
+        for (Object rawAnswer : (List<?>)parsed) {
+            if (!(rawAnswer instanceof Map<?,?>)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            Object rawQuestionId = ((Map<?,?>)rawAnswer).get("questionId");
+            if (!(rawQuestionId instanceof String)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            String questionId = ((String)rawQuestionId).trim();
+            if (questionId.length() == 0 || questionId.length() > 160 || containsControl(questionId) || result.contains(questionId)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            result.add(questionId);
+        }
         return result;
     }
     private static String requiredPattern(String value, Pattern pattern, String message) throws ClientError {

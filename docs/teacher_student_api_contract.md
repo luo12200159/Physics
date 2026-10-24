@@ -15,10 +15,10 @@
 | 发布或保存草稿 | `POST /v1/classes/:classId/assignments` | 班级 owner/教师；`publish` 为真时必须有完整题目快照。`targetType` 为 class/group/student，组或学生目标须属于本班。 |
 | 查看作业 | `GET /v1/classes/:classId/assignments` | 学生只见本人有权限的已发布作业；教师见本班作业。响应 `questionItems` 不含 `correctAnswer`。 |
 | 逐题提交 | `POST /v1/assignments/:assignmentId/submissions` | 仅目标学生；`answers` 非空，每题有 `questionId` 与真实非空 `response`，缺题、重复题或越界题均拒绝。只有最近提交被教师退回后才可生成订正版本。 |
-| 查看自己的提交 | `GET /v1/assignments/:assignmentId/submissions/me`、`GET /v1/classes/:classId/assignment-submissions/me` | 仅当前学生；返回本人版本、状态、反馈。 |
-| 查看班级提交 | `GET /v1/classes/:classId/assignment-submissions` | 本班 owner/教师；包括学生备注名、逐题答案、提交时间与版本。 |
+| 查看自己的提交 | `GET /v1/assignments/:assignmentId/submissions/me`、`GET /v1/classes/:classId/assignment-submissions/me` | 仅当前学生；返回本人版本、状态、反馈；以可选 UUID `cursor` 分页。 |
+| 查看班级提交 | `GET /v1/classes/:classId/assignment-submissions` | 本班 owner/教师；包括学生备注名、逐题答案、提交时间、版本、复核状态、总分以及已确认的逐题分；以可选 UUID `cursor` 分页。客户端必须读完全部页面后才计算未交和均分。 |
 | 查看待批改 | `GET /v1/classes/:classId/review-cases` | 本班 owner/教师；包含当前作答及前一版本作答。 |
-| 教师批改 | `PATCH /v1/review-cases/:reviewId` | 本班 owner/教师；`decision` 为 approve/return/rejudge，附总分、可选逐题分与非空理由。复核前不把开放题计入正确率。 |
+| 教师批改 | `PATCH /v1/review-cases/:reviewId` | 本班 owner/教师；`decision` 为 approve/return/rejudge，附总分、逐题分（允许 `null` 表示尚未评分）与非空理由。逐题 ID 必须属于本次提交且不得重复，数值必须在 0—100。复核前不把开放题计入正确率。 |
 
 作业题目快照至少含 `id/title/content/questionType/options/knowledgePointId/difficulty`；服务端私有快照可保留精确单选答案供未来可靠自动判题，但任何学生读取路径必须剔除答案。提交版本为 `version >= 1`，`previousSubmissionId` 指向上一不可变提交。复核记录与提交版本分开保存。逾期是根据 `dueAt` 和当前时间计算的属性，不覆盖提交/复核状态。
 
@@ -30,4 +30,4 @@
 
 ## 数据口径
 
-作业进度按服务端真实提交记录计数；草稿、无答案标记、未批改开放题均不是已评分证据。可计算正确率的分母只能是已评分的有效题目或提交，且应注明是初次作答还是订正后；本候选版未实现完整四维作业学情统计，也不宣称自动证明学生掌握。教师对少量样本须显示证据不足。所有教师结论需可回溯到 submission/question/evidence ID。
+作业进度按服务端真实提交记录计数；草稿、无答案标记、未批改开放题均不是已评分证据。班级学情基础统计对每名学生、每份作业只选择版本号/提交时间最新的记录；只有状态为 `accepted`、非待复核且总分为有效数值的提交进入作业和学生均分。知识点统计只读取这些提交中非空的 `perQuestionScores`，少于 3 条已评分题目证据时只显示“证据不足”，不作掌握判断。每个统计行保留 submission ID，知识点证据使用 `submissionId:questionId` 追溯。提交分页未完整读取时，界面不计算未交人数、均分或知识点表现。首次与订正的因果性提升判断、不同任务之间的可比复测不由该描述性统计自动生成。

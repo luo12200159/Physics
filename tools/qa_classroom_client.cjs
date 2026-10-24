@@ -125,7 +125,7 @@ async function main() {
       "createGroup", "updateMembership", "syncStatus", "syncLearning",
       "syncExamRecords", "syncVariantSets", "listVariantSets", "flushSyncQueue", "acknowledgeSyncConflict",
       "listAssignments", "createAssignment", "submitAssignment", "listOwnSubmissions", "listClassSubmissions", "listOwnClassSubmissions", "getClassLearningSummary",
-      "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots"
+      "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots", "buildClassroomAnalytics"
     ]
   );
   assert.equal(typeof api.register, "function", "split apps require explicit student/teacher account registration");
@@ -390,6 +390,23 @@ async function main() {
     publish: true
   });
 
+  let submissionPage = 0;
+  fetchHandler = async (call) => {
+    submissionPage += 1;
+    if (submissionPage === 1) {
+      assert.equal(call.url, `https://classroom.example/api/v1/classes/${CLASS_ID}/assignment-submissions`);
+      return jsonResponse(200, { items: [{ id: "submission-page-1" }], nextCursor: CURSOR_ID });
+    }
+    assert.equal(call.url, `https://classroom.example/api/v1/classes/${CLASS_ID}/assignment-submissions?cursor=${CURSOR_ID}`);
+    return jsonResponse(200, { items: [{ id: "submission-page-2" }], nextCursor: null });
+  };
+  const pagedSubmissions = await api.listClassSubmissions(CLASS_ID);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(pagedSubmissions)),
+    { items: [{ id: "submission-page-1" }, { id: "submission-page-2" }], nextCursor: null, complete: true },
+    "teacher analytics must receive every server submission page",
+  );
+
   const refreshCalls = [];
   let protectedAttempts = 0;
   fetchHandler = async (call) => {
@@ -476,6 +493,60 @@ async function main() {
     api.updateMembership(MEMBERSHIP_ID, { role: "teacher" }),
     /不支持的字段/
   );
+
+  const analytics = api.buildClassroomAnalytics({
+    now: "2026-10-23T12:00:00.000Z",
+    roster: [
+      { id: "m-a", userId: "student-a", displayName: "学生甲", role: "student", status: "active", groupId: null },
+      { id: "m-b", userId: "student-b", displayName: "学生乙", role: "student", status: "active", groupId: null },
+      { id: "m-c", userId: "student-c", displayName: "已移出学生", role: "student", status: "removed", groupId: null },
+    ],
+    assignments: [{
+      id: "assignment-1", title: "运动学三题", status: "published", targetType: "class", targetId: null,
+      dueAt: "2026-10-22T12:00:00.000Z",
+      questionItems: [
+        { id: "q-1", knowledgePointId: "kp-motion", difficulty: "基础" },
+        { id: "q-2", knowledgePointId: "kp-motion", difficulty: "进阶" },
+        { id: "q-3", knowledgePointId: "kp-force", difficulty: "基础" },
+      ],
+    }],
+    submissions: [
+      { id: "s-a-v1", assignmentId: "assignment-1", studentUserId: "student-a", version: 1,
+        status: "returned", reviewStatus: "returned", score: 40, submittedAt: "2026-10-20T10:00:00.000Z",
+        perQuestionScores: [{ questionId: "q-1", score: 40 }, { questionId: "q-2", score: 30 }, { questionId: "q-3", score: 50 }] },
+      { id: "s-a-v2", assignmentId: "assignment-1", studentUserId: "student-a", version: 2,
+        status: "accepted", reviewStatus: "approved", score: 80, submittedAt: "2026-10-21T10:00:00.000Z",
+        perQuestionScores: [{ questionId: "q-1", score: 80 }, { questionId: "q-2", score: null }, { questionId: "q-3", score: 90 }] },
+      { id: "s-b-v1", assignmentId: "assignment-1", studentUserId: "student-b", version: 1,
+        status: "submitted", reviewStatus: "pending", score: null, submittedAt: "2026-10-21T11:00:00.000Z",
+        perQuestionScores: [] },
+      { id: "s-c-v1", assignmentId: "assignment-1", studentUserId: "student-c", version: 1,
+        status: "accepted", reviewStatus: "approved", score: 100, submittedAt: "2026-10-21T12:00:00.000Z",
+        perQuestionScores: [{ questionId: "q-1", score: 100 }] },
+    ],
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(analytics.classSummary)), {
+    activeStudentCount: 2,
+    publishedAssignmentCount: 1,
+    latestSubmissionCount: 2,
+    gradedSubmissionCount: 1,
+    pendingReviewCount: 1,
+    overdueUnsubmittedCount: 0,
+  });
+  assert.equal(analytics.assignments[0].submittedCount, 2);
+  assert.equal(analytics.assignments[0].gradedCount, 1);
+  assert.equal(analytics.assignments[0].averageScore, 80);
+  assert.deepEqual(JSON.parse(JSON.stringify(analytics.assignments[0].gradedSubmissionIds)), ["s-a-v2"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(analytics.assignments[0].pendingSubmissionIds)), ["s-b-v1"]);
+  assert.equal(analytics.students.find((item) => item.userId === "student-a").correctionCount, 1);
+  assert.equal(analytics.students.find((item) => item.userId === "student-b").averageScore, null,
+    "pending manual review must not enter the score average");
+  assert.deepEqual(JSON.parse(JSON.stringify(analytics.knowledgePoints.find((item) => item.knowledgePointId === "kp-motion"))), {
+    knowledgePointId: "kp-motion", scoredCount: 1, averageScore: 80,
+    evidenceStatus: "insufficient", latestEvidenceAt: "2026-10-21T10:00:00.000Z",
+    evidenceIds: ["s-a-v2:q-1"],
+  });
+  assert.equal(analytics.knowledgePoints.find((item) => item.knowledgePointId === "kp-force").scoredCount, 1);
 
   const deviceIdBeforeLogout = loginBody.deviceId;
   fetchHandler = async (call) => {

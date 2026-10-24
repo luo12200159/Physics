@@ -2005,6 +2005,7 @@ html.android-app .student-method-dialog::backdrop {
   font: inherit;
 }
 
+.classroom-analytics,
 .classroom-learning-summary,
 .classroom-review-cases {
   display: grid;
@@ -2016,6 +2017,7 @@ html.android-app .student-method-dialog::backdrop {
   background: #fff;
 }
 
+.classroom-analytics > header,
 .classroom-learning-summary > header,
 .classroom-review-cases > header {
   display: flex;
@@ -2024,6 +2026,7 @@ html.android-app .student-method-dialog::backdrop {
   gap: 12px;
 }
 
+.classroom-analytics > header span,
 .classroom-learning-summary > header span,
 .classroom-review-cases > header span {
   color: #3f6a57;
@@ -2032,11 +2035,13 @@ html.android-app .student-method-dialog::backdrop {
   letter-spacing: 0.07em;
 }
 
+.classroom-analytics > header h3,
 .classroom-learning-summary > header h3,
 .classroom-review-cases > header h3 {
   margin: 3px 0 0;
 }
 
+.classroom-analytics > p,
 .classroom-learning-summary > p,
 .classroom-review-cases > p {
   margin: 0;
@@ -2067,6 +2072,46 @@ html.android-app .student-method-dialog::backdrop {
   font-size: 0.82em;
   overflow-wrap: anywhere;
 }
+
+.classroom-analytics-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.classroom-analytics-overview article {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  background: #edf6f0;
+}
+
+.classroom-analytics-overview strong { color: #174e39; font-size: 1.25em; }
+.classroom-analytics-overview span { color: #56665e; font-size: 0.82em; }
+
+.classroom-analytics-dimensions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.classroom-analytics-dimensions > article {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e0e6e2;
+  border-radius: 12px;
+  background: #f8fbf8;
+}
+
+.classroom-analytics-dimensions h4 { margin: 0 0 9px; }
+.classroom-analytics-dimensions article > div { display: grid; gap: 3px; padding: 9px 0; border-top: 1px solid #e0e6e2; }
+.classroom-analytics-dimensions article > div:first-of-type { border-top: 0; }
+.classroom-analytics-dimensions span,
+.classroom-analytics-dimensions small { color: #5d6b63; font-size: 0.82em; overflow-wrap: anywhere; }
+.classroom-evidence-ids summary { cursor: pointer; color: #315f4b; font-size: 0.8em; }
+.classroom-evidence-ids code { display: block; margin-top: 4px; color: #4d5d55; font-size: 0.72em; overflow-wrap: anywhere; }
 
 .classroom-review-form {
   display: grid;
@@ -2349,8 +2394,13 @@ html.android-app .student-method-dialog::backdrop {
   .classroom-form-grid,
   .classroom-layout,
   .classroom-action-grid,
+  .classroom-analytics-dimensions,
   .student-classroom-panel {
     grid-template-columns: 1fr;
+  }
+
+  .classroom-analytics-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .student-assignment-list {

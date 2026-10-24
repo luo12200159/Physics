@@ -35,6 +35,39 @@ function authService(): AuthService {
 }
 
 describe("learning route registration", () => {
+  it("preserves teacher-confirmed per-question scores for explainable analytics", async () => {
+    const listClassSubmissions = vi.fn(async () => ({ items: [{
+      id: PROFILE_ID,
+      assignmentId: CLASS_ID,
+      clientEntityId: "submission-graded-1",
+      status: "accepted" as const,
+      submittedAt: "2026-10-23T10:00:00.000Z",
+      studentUserId: TEACHER_SESSION.userId,
+      version: 1,
+      previousSubmissionId: null,
+      reviewStatus: "approved" as const,
+      score: 80,
+      perQuestionScores: [{ questionId: "q-1", score: 80 }, { questionId: "q-2", score: null }],
+    }], nextCursor: null }));
+    const app = await buildTestApp({
+      authService: authService(),
+      learningService: { listClassSubmissions } as unknown as LearningService,
+    });
+    const response = await app.inject({
+      method: "GET", url: `/v1/classes/${CLASS_ID}/assignment-submissions?cursor=${PROFILE_ID}`,
+      headers: { authorization: "Bearer header.payload.signature" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().items[0].perQuestionScores).toEqual([
+      { questionId: "q-1", score: 80 }, { questionId: "q-2", score: null },
+    ]);
+    expect(response.json().nextCursor).toBeNull();
+    expect(listClassSubmissions).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: TEACHER_SESSION.userId }), CLASS_ID, PROFILE_ID,
+    );
+    await app.close();
+  });
+
   it("rejects completion markers and exposes typed submission history routes", async () => {
     const submitAssignment = vi.fn(async () => ({
       id: PROFILE_ID,

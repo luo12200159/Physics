@@ -42,6 +42,12 @@ async function main() {
   const host = fs.readFileSync(hostSource, "utf8");
   assert.match(host, /preferredInterface[\s\S]*startsWith\("wlan"\)[\s\S]*startsWith\("ap"\)/,
     "Android QR sharing must prefer Wi-Fi/hotspot addresses over unrelated private interfaces");
+  assert.match(host, /storedSubmissionQuestionIds\(submission\)/,
+    "teacher scoring must be restricted to question IDs present in the submitted evidence");
+  assert.match(host, /Double\.isFinite\(score\)/,
+    "non-finite total scores must never enter persisted grading evidence");
+  assert.match(host, /Double\.isFinite\(numericQuestionScore\)/,
+    "non-finite per-question scores must never enter persisted grading evidence");
   assert.doesNotMatch(activity, /Log\.[a-z]+\([^\n]*(?:Authorization|ownerCapability|accessToken)/i,
     "classroom secrets must not be written to Android logs");
   const manifest = fs.readFileSync(path.join(root, "android", "AndroidManifest.xml"), "utf8");
@@ -194,15 +200,22 @@ public final class LanClassroomTransportHarness {
       LanClassroomTransport.Response corrected = call("/v1/assignments/" + assignmentId + "/submissions", "POST", "Bearer " + studentAccess, revisedAnswers);
       require(corrected.status == 201 && corrected.bodyText.indexOf("\"version\":2") >= 0, 40);
       String correctionId = field(corrected.bodyText, "id");
+      LanClassroomTransport.Response infiniteScore = call("/v1/review-cases/" + correctionId, "PATCH", "Owner " + owner,
+        "{\"decision\":\"approve\",\"score\":1e999,\"perQuestionScores\":[{\"questionId\":\"q-1\",\"score\":1e999}],\"reason\":\"invalid number\",\"annotation\":{}}");
+      require(infiniteScore.status == 400, 48);
+      LanClassroomTransport.Response infiniteQuestionScore = call("/v1/review-cases/" + correctionId, "PATCH", "Owner " + owner,
+        "{\"decision\":\"approve\",\"score\":80,\"perQuestionScores\":[{\"questionId\":\"q-1\",\"score\":1e999}],\"reason\":\"invalid item number\",\"annotation\":{}}");
+      require(infiniteQuestionScore.status == 400, 49);
       LanClassroomTransport.Response revisionReview = call("/v1/classes/" + classId + "/review-cases", "GET", "Owner " + owner, "");
       require(revisionReview.status == 200 && revisionReview.bodyText.indexOf("force answer v1") >= 0
         && revisionReview.bodyText.indexOf("force answer revised") >= 0, 41);
       LanClassroomTransport.Response approved = call("/v1/review-cases/" + correctionId, "PATCH", "Owner " + owner,
-        "{\"decision\":\"approve\",\"score\":90,\"perQuestionScores\":[],\"reason\":\"Corrected reasoning\",\"annotation\":{}}");
+        "{\"decision\":\"approve\",\"score\":90,\"perQuestionScores\":[{\"questionId\":\"q-1\",\"score\":100},{\"questionId\":\"q-2\",\"score\":80},{\"questionId\":\"q-3\",\"score\":90}],\"reason\":\"Corrected reasoning\",\"annotation\":{}}");
       require(approved.status == 200, 42);
       LanClassroomTransport.Response ownHistory = call("/v1/classes/" + classId + "/assignment-submissions/me", "GET", "Bearer " + studentAccess, "");
       require(ownHistory.status == 200 && ownHistory.bodyText.indexOf("first-draft") >= 0
-        && ownHistory.bodyText.indexOf("correction-v2") >= 0, 43);
+        && ownHistory.bodyText.indexOf("correction-v2") >= 0
+        && ownHistory.bodyText.indexOf("perQuestionScores") >= 0, 43);
       LanClassroomTransport.Response otherHistory = call("/v1/classes/" + classId + "/assignment-submissions/me", "GET", "Bearer " + studentTwoAccess, "");
       require(otherHistory.status == 200 && otherHistory.bodyText.indexOf("force answer") < 0, 44);
 

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   gradeObjectiveAnswers,
+  validatePerQuestionScores,
   validateSubmissionAnswers,
   visibleQuestionItems,
   type AssignmentAnswer,
@@ -45,5 +46,20 @@ describe("assignment evidence boundary", () => {
       { questionId: "q-a", response: "b" },
       { questionId: "q-b", response: "我观察到速度增加" },
     ])).toEqual({ scoredCount: 1, correctCount: 1, pendingCount: 1, score: null });
+  });
+
+  it("accepts nullable teacher scores but rejects duplicate, foreign, and out-of-range entries", () => {
+    expect(validatePerQuestionScores([
+      { questionId: "q-a", score: 80 },
+      { questionId: "q-b", score: null },
+    ], ["q-a", "q-b"])).toEqual([
+      { questionId: "q-a", score: 80 },
+      { questionId: "q-b", score: null },
+    ]);
+    expect(() => validatePerQuestionScores([
+      { questionId: "q-a", score: 80 }, { questionId: "q-a", score: 90 },
+    ], ["q-a", "q-b"])).toThrow(/more than once/i);
+    expect(() => validatePerQuestionScores([{ questionId: "q-other", score: 80 }], ["q-a"])).toThrow(/outside/i);
+    expect(() => validatePerQuestionScores([{ questionId: "q-a", score: 101 }], ["q-a"])).toThrow(/between 0 and 100/i);
   });
 });

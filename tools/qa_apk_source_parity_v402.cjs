@@ -7,9 +7,6 @@ const fflate = require("../vendor/fflate.js");
 
 const root = path.resolve(__dirname, "..");
 const version = JSON.parse(fs.readFileSync(path.join(root, "version.json"), "utf8"));
-const apk = path.join(root, "发布", "Android", `费曼物理学生端-Android-v${version.appVersion}.apk`);
-assert.ok(fs.existsSync(apk), `student APK missing: ${apk}`);
-const entries = fflate.unzipSync(new Uint8Array(fs.readFileSync(apk)));
 const businessAssets = [
   "styles.css", "learning-lab.css", "experience-shell.css", "activation.css",
   "activation-public-key.js", "activation.js", "curriculum-taxonomy.js",
@@ -21,15 +18,32 @@ const businessAssets = [
   "physics-visuals.js", "motion-representation-drafts.js", "variant-generator.js",
   "app.js", "learning-lab.js", "experience-shell.js"
 ];
-for (const name of businessAssets) {
-  assert.ok(entries[`assets/${name}`], `APK missing assets/${name}`);
-  assert.deepEqual(Buffer.from(entries[`assets/${name}`]), fs.readFileSync(path.join(root, name)),
-    `APK business resource is stale: ${name}`);
+const editions = [
+  { label: "student", file: `费曼物理学生端-Android-v${version.appVersion}.apk`, teacherLock: false },
+  { label: "teacher", file: `费曼物理教师端-Android-v${version.appVersion}.apk`, teacherLock: true },
+];
+for (const edition of editions) {
+  const apk = path.join(root, "发布", "Android", edition.file);
+  assert.ok(fs.existsSync(apk), `${edition.label} APK missing: ${apk}`);
+  const entries = fflate.unzipSync(new Uint8Array(fs.readFileSync(apk)));
+  for (const name of businessAssets) {
+    assert.ok(entries[`assets/${name}`], `${edition.label} APK missing assets/${name}`);
+    assert.deepEqual(Buffer.from(entries[`assets/${name}`]), fs.readFileSync(path.join(root, name)),
+      `${edition.label} APK business resource is stale: ${name}`);
+  }
+  const index = Buffer.from(entries["assets/index.html"] || []).toString("utf8");
+  assert.match(index, /<script src="version-config\.js"><\/script>/);
+  assert.match(index, /<script src="solution-format\.js"><\/script>/);
+  const runtimeVersion = Buffer.from(entries["assets/version-config.js"] || []).toString("utf8");
+  assert.match(runtimeVersion, new RegExp(`"appVersion":"${version.appVersion.replaceAll(".", "\\.")}"`));
+  if (edition.teacherLock) {
+    assert.deepEqual(
+      Buffer.from(entries["assets/teacher-mode-lock.js"] || []),
+      fs.readFileSync(path.join(root, "teacher-mode-lock.js")),
+      "teacher APK must contain the current teacher PIN management source",
+    );
+  } else {
+    assert.equal(entries["assets/teacher-mode-lock.js"], undefined, "student APK must not bundle teacher PIN management");
+  }
 }
-const index = Buffer.from(entries["assets/index.html"] || []).toString("utf8");
-assert.match(index, /<script src="version-config\.js"><\/script>/);
-assert.match(index, /<script src="solution-format\.js"><\/script>/);
-const runtimeVersion = Buffer.from(entries["assets/version-config.js"] || []).toString("utf8");
-assert.match(runtimeVersion, new RegExp(`"appVersion":"${version.appVersion.replaceAll(".", "\\.")}"`));
-assert.equal(entries["assets/teacher-mode-lock.js"], undefined, "student APK must not bundle teacher PIN management");
-console.log(`Student APK source parity passed: ${businessAssets.length} business files, v${version.appVersion}`);
+console.log(`Student and teacher APK source parity passed: ${businessAssets.length} shared business files, v${version.appVersion}`);
