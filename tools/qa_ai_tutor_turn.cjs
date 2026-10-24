@@ -4,6 +4,13 @@ const path = require("node:path");
 const vm = require("node:vm");
 
 const project = path.resolve(__dirname, "..");
+const gatewaySource = fs.readFileSync(path.join(project, "server", "physics-ai-gateway.mjs"), "utf8");
+const variantGatewayStart = gatewaySource.indexOf("async function generateVariants(");
+const variantGatewayEnd = gatewaySource.indexOf("\nasync function analyzeDocument", variantGatewayStart);
+const variantGateway = gatewaySource.slice(variantGatewayStart, variantGatewayEnd);
+assert.equal((variantGateway.match(/await callOpenAI\(/g) || []).length, 2,
+  "variant generation must use separate generation and independent verification calls");
+assert.match(variantGateway, /crossVerification/);
 const saved = new Map();
 const session = new Map();
 const requests = [];
@@ -42,7 +49,7 @@ const context = vm.createContext({
   }
 });
 context.window = context;
-context.PHYSICS_LEARNING_ENGINE = { version: "3.2.0" };
+context.PHYSICS_LEARNING_ENGINE = { version: "3.3.0" };
 
 for (const file of ["storage-repository.js", "ai-tutor.js"]) {
   vm.runInContext(fs.readFileSync(path.join(project, file), "utf8"), context, { filename: file });
@@ -98,12 +105,107 @@ const question = {
     modeling: { object: "物体", equations: "F=ma", unrelated: "drop-me" },
     sessionState: { turn: 0, previousPrompt: "从哪里开始？", privateProfile: "drop-me" }
   });
-  assert.equal(online.source, "gateway");
+  assert.equal(online.source, "offline-hint");
   assert.equal(online.hintLevel, 1);
-  assert.equal(requests.at(-1).url, "https://gateway.example.test/v1/physics/tutor-turn");
-  assert.doesNotMatch(JSON.stringify(requests.at(-1).body), /张伟|privateProfile|drop-me/);
-  assert.equal(requests.at(-1).body.responseSchema.name, "physics_tutor_turn_v1");
-  assert.deepEqual(Object.keys(requests.at(-1).body.modeling).sort(), ["equations", "object"]);
+  assert.equal(requests.length, 0, "student work must not be sent without server-verified consent");
+  assert.doesNotMatch(tutor.redactPersonalData("姓名：张伟", ["张伟"]), /张伟/);
+
+  const aiVariant = (id, role) => ({
+    id,
+    variantRole: role,
+    title: role === "near" ? "近迁移" : "逆向迁移",
+    content: "质量为 2 kg 的物体受水平合力作用，请根据给定量求加速度。",
+    options: [],
+    stage: "高中",
+    grade: "高一",
+    topic: "牛顿第二定律",
+    knowledgePointId: "hs-newton-second-law",
+    knowledgePoints: ["牛顿第二定律"],
+    examPoints: ["F=ma"],
+    questionType: "计算题",
+    difficulty: "基础",
+    modelDefinitionId: "model-newton-2",
+    transferGroupId: "transfer-newton-2",
+    independenceGroupId: `independent-${role}`,
+    changeSummary: "改变已知量与设问组合",
+    relationToParent: "保持牛顿第二定律模型",
+    answer: "3 m/s²",
+    correctAnswer: "",
+    correctAnswers: [],
+    solution: "以物体为研究对象，由 F=ma 得 a=F/m=3 m/s²，并核对量纲。",
+    solutionDetail: {
+      overview: "建立质点动力学模型",
+      known: ["m=2 kg", "F=6 N"],
+      unknown: "a",
+      researchObject: "物体",
+      process: "水平匀加速过程",
+      laws: [{ name: "牛顿第二定律", condition: "惯性参考系中的质点" }],
+      steps: [{ reasoning: "列动力学方程", equation: "F=ma", substitution: "6=2a", result: "a=3 m/s²" }],
+      finalAnswer: "3 m/s²",
+      checks: ["N/kg=m/s²"],
+      pitfalls: ["合力不是某一个分力"],
+      parentDifference: "已知量与设问顺序改变"
+    },
+    crossVerification: {
+      passed: true,
+      checks: ["独立重算得到 a=3 m/s²", "单位与量纲一致"],
+      criticalIssues: [],
+      verifier: "independent-second-pass"
+    },
+    reviewRequired: true
+  });
+  responseFactory = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      return JSON.stringify({
+        variants: [aiVariant("ai-near", "near"), aiVariant("ai-reverse", "reverse")],
+        generationNotes: "两题均经独立求解复核，仍需教师审核。",
+        reviewRequired: true
+      });
+    }
+  });
+  await assert.rejects(
+    tutor.generateVariants({
+      question: { ...question, questionType: "计算题", difficulty: "基础" },
+      count: 3,
+      personalIdentifiers: ["张伟"]
+    }),
+    /年龄段未确认|服务端尚无持久化学生授权校验/
+  );
+  assert.equal(requests.length, 0, "variant generation must not send content without verified consent");
+
+  responseFactory = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      const unsafe = aiVariant("ai-near", "near");
+      delete unsafe.crossVerification;
+      return JSON.stringify({ variants: [unsafe, aiVariant("ai-reverse", "reverse")], generationNotes: "", reviewRequired: true });
+    }
+  });
+  await assert.rejects(
+    tutor.generateVariants({ question: { ...question, questionType: "计算题", difficulty: "基础" }, count: 2 }),
+    /年龄段未确认|服务端尚无持久化学生授权校验/
+  );
+
+  responseFactory = async () => ({
+    ok: true,
+    status: 200,
+    async text() {
+      const conflicted = aiVariant("ai-near", "near");
+      conflicted.crossVerification.criticalIssues = ["答案数值与独立重算不一致"];
+      return JSON.stringify({
+        variants: [conflicted, aiVariant("ai-reverse", "reverse")],
+        generationNotes: "",
+        reviewRequired: true
+      });
+    }
+  });
+  await assert.rejects(
+    tutor.generateVariants({ question: { ...question, questionType: "计算题", difficulty: "基础" }, count: 2 }),
+    /年龄段未确认|服务端尚无持久化学生授权校验/
+  );
 
   responseFactory = async () => ({ ok: true, status: 200, async text() { return "{}"; } });
   const fallback = await tutor.tutorTurn({

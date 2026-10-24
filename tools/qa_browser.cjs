@@ -89,7 +89,7 @@ if (!new Set(["desktop", "mobile", "teacher"]).has(mode)) {
         const lightweight = JSON.parse(localStorage.getItem("physics-learning-loop-v1") || "{}");
         const backup = localStorage.getItem("physics-learning-loop-v1::idb-migration-backup");
         const attemptCount = await new Promise((resolve, reject) => {
-          const request = indexedDB.open("physics-study-room-v2", 2);
+          const request = indexedDB.open("physics-study-room-v2");
           request.onerror = () => reject(request.error);
           request.onsuccess = () => {
             const db = request.result;

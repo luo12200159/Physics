@@ -20,9 +20,14 @@ import {
   ReviewCaseViewSchema,
   ReviewDecisionRequestSchema,
   SubmissionRequestSchema,
+  SubmissionListQuerySchema,
+  SubmissionListResponseSchema,
   SubmissionViewSchema,
   SyncExamRecordsRequestSchema,
   SyncLearningRequestSchema,
+  SyncVariantSetsRequestSchema,
+  VariantSetListResponseSchema,
+  VariantSetSyncResponseSchema,
   LearningSyncResponseSchema,
   type AssignmentParams,
   type AssignmentRequest,
@@ -31,8 +36,10 @@ import {
   type ReviewCaseParams,
   type ReviewDecisionRequest,
   type SubmissionRequest,
+  type SubmissionListQuery,
   type SyncExamRecordsRequest,
   type SyncLearningRequest,
+  type SyncVariantSetsRequest,
 } from "./contracts.js";
 import type { LearningService } from "./service.js";
 
@@ -92,6 +99,34 @@ export function registerLearningRoutes(app: FastifyInstance, service: LearningSe
     return reply.status(200).send(response);
   });
 
+  app.post<{ Params: ClassLearningParams; Body: SyncVariantSetsRequest }>("/v1/classes/:classId/variant-sets/sync", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassLearningParamsSchema,
+      body: SyncVariantSetsRequestSchema,
+      response: { 200: VariantSetSyncResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.syncVariantSets(
+      actorFrom(request.authSession!),
+      request.params.classId,
+      request.body,
+      { ip: request.ip, requestId: String(request.id), idempotency: request.mutationIdempotency! },
+    );
+    return reply.status(200).send(response);
+  });
+
+  app.get<{ Params: ClassLearningParams }>("/v1/classes/:classId/variant-sets", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassLearningParamsSchema,
+      response: { 200: VariantSetListResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.listVariantSets(actorFrom(request.authSession!), request.params.classId);
+    return reply.status(200).send(response);
+  });
+
   app.post<{ Params: ClassLearningParams; Body: AssignmentRequest }>("/v1/classes/:classId/assignments", {
     preHandler: app.authenticateOrOwnerCapability,
     schema: {
@@ -135,6 +170,48 @@ export function registerLearningRoutes(app: FastifyInstance, service: LearningSe
       { ip: request.ip, requestId: String(request.id), idempotency: request.mutationIdempotency! },
     );
     return reply.status(201).send(response);
+  });
+
+  app.get<{ Params: AssignmentParams; Querystring: SubmissionListQuery }>("/v1/assignments/:assignmentId/submissions/me", {
+    preHandler: app.authenticate,
+    schema: {
+      params: AssignmentParamsSchema,
+      querystring: SubmissionListQuerySchema,
+      response: { 200: SubmissionListResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.listOwnSubmissions(
+      actorFrom(request.authSession!), request.params.assignmentId, request.query.cursor ?? null,
+    );
+    return reply.status(200).send(response);
+  });
+
+  app.get<{ Params: ClassLearningParams; Querystring: SubmissionListQuery }>("/v1/classes/:classId/assignment-submissions/me", {
+    preHandler: app.authenticate,
+    schema: {
+      params: ClassLearningParamsSchema,
+      querystring: SubmissionListQuerySchema,
+      response: { 200: SubmissionListResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.listOwnClassSubmissions(
+      actorFrom(request.authSession!), request.params.classId, request.query.cursor ?? null,
+    );
+    return reply.status(200).send(response);
+  });
+
+  app.get<{ Params: ClassLearningParams; Querystring: SubmissionListQuery }>("/v1/classes/:classId/assignment-submissions", {
+    preHandler: app.authenticateOrOwnerCapability,
+    schema: {
+      params: ClassLearningParamsSchema,
+      querystring: SubmissionListQuerySchema,
+      response: { 200: SubmissionListResponseSchema, ...errors() },
+    },
+  }, async (request, reply) => {
+    const response = await service.listClassSubmissions(
+      actorFrom(request.authSession!), request.params.classId, request.query.cursor ?? null,
+    );
+    return reply.status(200).send(response);
   });
 
   app.get<{ Params: ClassLearningParams }>("/v1/classes/:classId/review-cases", {

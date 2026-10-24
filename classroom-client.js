@@ -176,6 +176,26 @@
   installAndroidLanTransport();
   installWindowsLanTransport();
 
+  function nativeSecureStore() {
+    const bridge = globalThis.PhysicsStudioAndroid || window.PhysicsStudioAndroid;
+    return bridge
+      && typeof bridge.saveSecureCredential === "function"
+      && typeof bridge.readSecureCredential === "function"
+      && typeof bridge.deleteSecureCredential === "function"
+      ? bridge
+      : null;
+  }
+
+  function appEdition() {
+    try {
+      const bridge = globalThis.PhysicsStudioAndroid || window.PhysicsStudioAndroid;
+      const value = String(bridge?.getAppEdition?.() || globalThis.PHYSICS_STUDIO_APP_EDITION || "legacy");
+      return value === "student" || value === "teacher" ? value : "legacy";
+    } catch {
+      return "legacy";
+    }
+  }
+
   class ClassroomError extends Error {
     constructor(message, details = {}) {
       super(message);
@@ -388,9 +408,48 @@
     return Object.freeze({ ...auth.user });
   }
 
+  async function register(input = {}) {
+    const role = input.role === "teacher" ? "teacher" : input.role === "student" ? "student" : "";
+    if (!role) throw inputError("注册身份无效。", "invalid_role");
+    const result = await requestJson("/v1/auth/register", {
+      method: "POST",
+      auth: false,
+      body: {
+        login: requiredText(input.login, "登录名", 120),
+        displayName: requiredText(input.displayName, "显示名称", 80),
+        role,
+        password: requiredPassword(input.password),
+        deviceId: stableDeviceId(),
+        deviceName: requiredText(input.deviceName, "设备名称", 80),
+      },
+    });
+    const auth = validateAuthResponse(result);
+    if (auth.user.role !== role) throw new ClassroomError("注册身份与服务端响应不一致。", { code: "invalid_server_response" });
+    saveSession(auth);
+    return Object.freeze({ ...auth.user });
+  }
+
+  async function reauthenticate(password) {
+    const result = await requestJson("/v1/auth/reauthenticate", {
+      method: "POST",
+      body: { password: requiredPassword(password) },
+    });
+    if (!result?.accessToken || !result?.user) {
+      throw new ClassroomError("教师身份重新验证响应无效。", { code: "invalid_server_response" });
+    }
+    saveSession({
+      accessToken: result.accessToken,
+      refreshToken: readSessionValue(REFRESH_TOKEN_KEY),
+      user: { ...(readStoredUser() || {}), ...result.user },
+    });
+    return Object.freeze({ ...result.user });
+  }
+
   function readOwnerCapabilities() {
     try {
-      const value = JSON.parse(syncStorage().getItem(OWNER_CAPABILITIES_KEY) || "{}");
+      const secure = nativeSecureStore();
+      const legacy = syncStorage().getItem(OWNER_CAPABILITIES_KEY) || "";
+      const value = JSON.parse(secure?.readSecureCredential("owner-capabilities") || legacy || "{}");
       if (!value || typeof value !== "object" || Array.isArray(value)) return {};
       const now = Date.now();
       const valid = {};
@@ -420,7 +479,20 @@
         };
       }
       if (JSON.stringify(valid) !== JSON.stringify(value)) {
-        try { syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(valid)); } catch { /* read path */ }
+        try {
+          if (secure) {
+            secure.saveSecureCredential("owner-capabilities", JSON.stringify(valid));
+            syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+          } else {
+            syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(valid));
+          }
+        } catch { /* read path */ }
+      } else if (secure && legacy) {
+        try {
+          if (secure.saveSecureCredential("owner-capabilities", JSON.stringify(valid))) {
+            syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+          }
+        } catch { /* legacy migration remains retryable */ }
       }
       return valid;
     } catch {
@@ -446,7 +518,14 @@
       source: "server"
     };
     try {
-      syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(records));
+      const encoded = JSON.stringify(records);
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("owner-capabilities", encoded)) throw new Error("secure_store_failed");
+        syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+      } else {
+        syncStorage().setItem(OWNER_CAPABILITIES_KEY, encoded);
+      }
     } catch {
       throw new ClassroomError("无法保存本机班级管理能力。", { code: "storage_unavailable" });
     }
@@ -458,7 +537,14 @@
     if (!records[id]) return;
     delete records[id];
     try {
-      syncStorage().setItem(OWNER_CAPABILITIES_KEY, JSON.stringify(records));
+      const encoded = JSON.stringify(records);
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("owner-capabilities", encoded)) throw new Error("secure_store_failed");
+        syncStorage().removeItem(OWNER_CAPABILITIES_KEY);
+      } else {
+        syncStorage().setItem(OWNER_CAPABILITIES_KEY, encoded);
+      }
     } catch {
       throw new ClassroomError("无法更新本机班级管理能力。", { code: "storage_unavailable" });
     }
@@ -472,7 +558,6 @@
     const refreshToken = readSessionValue(REFRESH_TOKEN_KEY);
     const user = readStoredUser();
     const authenticated = Boolean(accessToken && refreshToken && user);
-    if (!authenticated && (accessToken || refreshToken || user)) clearSession();
     const owner = currentOwnerCapability();
     const ownerAuthenticated = Boolean(owner);
     const legacyOwnerCount = Object.values(readOwnerCapabilities())
@@ -482,6 +567,7 @@
       serviceConfigured: Boolean(serverUrl),
       hostedLocally: Boolean(hosted.serverUrl),
       authenticated,
+      restorableSession: Boolean(!accessToken && refreshToken && user),
       ownerAuthenticated,
       legacyOwnerCount,
       user: authenticated ? Object.freeze({ ...user }) : owner
@@ -645,6 +731,23 @@
     }
   }
 
+  async function restoreSession() {
+    const current = status();
+    if (current.authenticated) return current.user;
+    const refreshToken = readSessionValue(REFRESH_TOKEN_KEY);
+    const user = readStoredUser();
+    if (!refreshToken || !user) return null;
+    try {
+      const auth = await refreshSession();
+      return Object.freeze({ ...auth.user });
+    } catch (error) {
+      if (["invalid_refresh_token", "refresh_token_reused", "deletion_pending"].includes(error?.code)) {
+        clearSession();
+      }
+      throw error;
+    }
+  }
+
   async function readResponseText(response) {
     let text;
     try {
@@ -729,8 +832,17 @@
   function saveSession(auth) {
     try {
       window.sessionStorage.setItem(ACCESS_TOKEN_KEY, auth.accessToken);
-      window.sessionStorage.setItem(REFRESH_TOKEN_KEY, auth.refreshToken);
       window.sessionStorage.setItem(USER_KEY, JSON.stringify(auth.user));
+      const secure = nativeSecureStore();
+      if (secure) {
+        if (!secure.saveSecureCredential("refresh-token", auth.refreshToken)
+          || !secure.saveSecureCredential("authenticated-user", JSON.stringify(auth.user))) {
+          throw new Error("secure_store_failed");
+        }
+        window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
+      } else {
+        window.sessionStorage.setItem(REFRESH_TOKEN_KEY, auth.refreshToken);
+      }
     } catch {
       clearSession();
       throw new ClassroomError("无法在当前会话中保存登录信息。", {
@@ -745,6 +857,9 @@
       window.sessionStorage.removeItem(REFRESH_TOKEN_KEY);
       window.sessionStorage.removeItem(USER_KEY);
       window.sessionStorage.removeItem(GUEST_SESSION_KEY);
+      const secure = nativeSecureStore();
+      secure?.deleteSecureCredential("refresh-token");
+      secure?.deleteSecureCredential("authenticated-user");
     } catch {
       // 会话存储不可用时没有更多可清理的数据边界。
     }
@@ -752,6 +867,10 @@
 
   function readSessionValue(key) {
     try {
+      if (key === REFRESH_TOKEN_KEY) {
+        const secureValue = nativeSecureStore()?.readSecureCredential("refresh-token");
+        if (secureValue) return String(secureValue);
+      }
       return String(window.sessionStorage.getItem(key) || "");
     } catch {
       return "";
@@ -760,7 +879,9 @@
 
   function readStoredUser() {
     try {
-      const value = JSON.parse(window.sessionStorage.getItem(USER_KEY) || "null");
+      const sessionValue = window.sessionStorage.getItem(USER_KEY) || "";
+      const secureValue = nativeSecureStore()?.readSecureCredential("authenticated-user") || "";
+      const value = JSON.parse(sessionValue || secureValue || "null");
       if (!value || !UUID_PATTERN.test(String(value.id || "")) || !ROLES.has(value.role)) return null;
       return {
         id: String(value.id).toLowerCase(),
@@ -891,7 +1012,8 @@
   function syncStatus() {
     const queue = readSyncList(SYNC_QUEUE_KEY);
     const conflicts = readSyncList(SYNC_CONFLICT_KEY);
-    const authenticated = status().authenticated;
+    const sessionStatus = status();
+    const authenticated = sessionStatus.authenticated || sessionStatus.ownerAuthenticated;
     const offline = typeof navigator !== "undefined" && navigator.onLine === false;
     let state = "synced";
     let label = "已同步";
@@ -972,7 +1094,7 @@
 
   async function flushSyncQueue() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return syncStatus();
-    if (!status().authenticated) return syncStatus();
+    if (!status().authenticated && !status().ownerAuthenticated) return syncStatus();
     const queue = readSyncList(SYNC_QUEUE_KEY);
     let accepted = 0;
     for (const event of queue) {
@@ -1067,6 +1189,84 @@
     }
   }
 
+  function normalizeVariantSetForSync(value = {}) {
+    const variants = Array.isArray(value.variants) ? value.variants
+      .filter((variant) => variant?.validation?.passed === true
+        && ["system-validated", "teacher-approved"].includes(variant.approvalStatus))
+      .slice(0, 3)
+      .map((variant) => ({
+        id: requiredText(variant.id, "变式题编号", 160),
+        variantRole: ["near", "reverse", "context"].includes(variant.variantRole) ? variant.variantRole : "near",
+        title: requiredText(variant.title, "变式题标题", 240),
+        content: requiredText(variant.content, "变式题干", 60000),
+        options: Array.isArray(variant.options) ? variant.options.slice(0, 12).map((option) => ({
+          key: String(option?.key || "").slice(0, 10),
+          text: String(option?.text || "").slice(0, 2000)
+        })) : [],
+        stage: variant.stage === "高中" ? "高中" : "初中",
+        grade: requiredText(variant.grade, "年级", 40),
+        topic: requiredText(variant.topic, "知识点", 160),
+        knowledgePointId: requiredText(variant.knowledgePointId || variant.topic, "知识点编号", 160),
+        questionType: requiredText(variant.questionType, "题型", 80),
+        difficulty: ["基础", "进阶", "挑战"].includes(variant.difficulty) ? variant.difficulty : "进阶",
+        changeSummary: requiredText(variant.changeSummary, "改变内容", 2000),
+        relationToParent: requiredText(variant.relationToParent, "与母题关系", 2000),
+        answer: requiredText(variant.answer, "标准答案", 30000),
+        solution: requiredText(variant.solution, "详细解析", 60000),
+        solutionDetail: variant.solutionDetail && typeof variant.solutionDetail === "object" ? variant.solutionDetail : {},
+        validation: variant.validation && typeof variant.validation === "object" ? variant.validation : {},
+        source: variant.generatedBy === "controlled-ai-gateway" ? "应用内 AI 生成变式" : "应用内已审核题模变式",
+        approvalStatus: variant.approvalStatus === "teacher-approved" ? "teacher-approved" : "system-validated"
+      })) : [];
+    if (variants.length < 2) throw inputError("每个同步题组至少需要 2 道已审核且通过质量门禁的变式。", "invalid_variant_set");
+    return {
+      clientEntityId: requiredText(value.id || value.clientEntityId, "变式题组编号", 160),
+      parentQuestionId: requiredText(value.parentQuestionId, "母题编号", 160),
+      sourceContentHash: requiredText(value.sourceContentHash, "母题内容摘要", 16),
+      cacheKey: requiredText(value.cacheKey, "变式缓存键", 600),
+      specVersion: value.specVersion === "variant_generation_v1" ? value.specVersion : "variant_generation_v1",
+      generatorVersion: requiredText(value.generatorVersion || "1.0.0", "生成器版本", 40),
+      status: "approved",
+      variants,
+      updatedAt: normalizeDateTime(value.updatedAt || new Date().toISOString(), "变式更新时间")
+    };
+  }
+
+  async function syncVariantSets(classId, input = {}) {
+    const id = uuid(classId, "班级编号");
+    const sets = (Array.isArray(input.sets) ? input.sets : []).slice(0, 20).map(normalizeVariantSetForSync);
+    if (!sets.length) throw inputError("没有可同步的已审核变式题组。", "invalid_variant_set");
+    const body = syncBody({ sets });
+    delete body.baseRevision;
+    delete body.clientCreatedAt;
+    const event = {
+      kind: "variant-set-sync",
+      path: `/v1/classes/${encodeURIComponent(id)}/variant-sets/sync`,
+      method: "POST",
+      body,
+      baseRevision: 0
+    };
+    if (isOffline() || (!status().authenticated && !currentOwnerCapability(id))) {
+      enqueueSyncEvent(event);
+      return Object.freeze({ queued: true, ...syncStatus() });
+    }
+    try {
+      const result = await requestJson(event.path, { method: event.method, body: event.body });
+      return Object.freeze({ ...result, queued: false, ...syncStatus() });
+    } catch (error) {
+      if (error?.status === 0 || error?.code === "network_error" || error?.code === "request_timeout") {
+        enqueueSyncEvent(event);
+        return Object.freeze({ queued: true, ...syncStatus() });
+      }
+      throw error;
+    }
+  }
+
+  async function listVariantSets(classId) {
+    const id = uuid(classId, "班级编号");
+    return requestJson(`/v1/classes/${encodeURIComponent(id)}/variant-sets`, { method: "GET" });
+  }
+
   async function listAssignments(classId) {
     const id = uuid(classId, "班级编号");
     return requestJson(`/v1/classes/${encodeURIComponent(id)}/assignments`, { method: "GET" });
@@ -1084,6 +1284,16 @@
       targetType,
       targetId: input.targetId || null,
       questionIds: Array.isArray(input.questionIds) ? input.questionIds.map((value) => requiredText(value, "题目编号", 160)).slice(0, 100) : [],
+      questionItems: Array.isArray(input.questionItems) ? input.questionItems.map((item) => ({
+        id: requiredText(item.id, "题目编号", 160),
+        title: requiredText(item.title, "题目标题", 240),
+        content: requiredText(item.content, "题干", 30000),
+        questionType: requiredText(item.questionType, "题型", 80),
+        options: Array.isArray(item.options) ? item.options.map((option) => String(option).slice(0, 2000)).slice(0, 12) : [],
+        knowledgePointId: String(item.knowledgePointId || "").slice(0, 160),
+        difficulty: String(item.difficulty || "").slice(0, 40),
+        ...(item.correctAnswer ? { correctAnswer: String(item.correctAnswer).slice(0, 2000) } : {})
+      })).slice(0, 100) : [],
       knowledgePointKeys: Array.isArray(input.knowledgePointKeys) ? input.knowledgePointKeys.map((value) => requiredText(value, "知识点编号", 160)).slice(0, 100) : [],
       target: requiredText(input.target, "达标条件", 1000),
       publish: Boolean(input.publish)
@@ -1113,9 +1323,19 @@
 
   async function submitAssignment(assignmentId, input = {}) {
     const id = uuid(assignmentId, "方案编号");
+    if (!Array.isArray(input.answers) || !input.answers.length || input.answers.some((answer) =>
+      !answer || !String(answer.questionId || "").trim() || !String(answer.response || "").trim())) {
+      throw new ClassroomError("请先完成真实题目作答，再提交作业。", { code: "answer_required", status: 400 });
+    }
     const body = {
       clientEntityId: requiredText(input.clientEntityId, "提交编号", 160),
-      answers: Array.isArray(input.answers) ? input.answers : []
+      answers: input.answers.map((answer) => ({
+        questionId: requiredText(answer.questionId, "题目编号", 160),
+        response: requiredText(answer.response, "作答内容", 30000),
+        steps: String(answer.steps || "").slice(0, 30000),
+        ...(answer.startedAt ? { startedAt: normalizeDateTime(answer.startedAt, "开始时间") } : {}),
+        hintViewCount: Math.max(0, Math.min(100, Number(answer.hintViewCount) || 0))
+      }))
     };
     const event = {
       kind: "assignment-submission",
@@ -1140,6 +1360,53 @@
     }
   }
 
+  async function listSubmissionPages(path, options = {}) {
+    const items = [];
+    const seenCursors = new Set();
+    let cursor = "";
+    for (let page = 0; page < 200; page += 1) {
+      const response = await requestJson(
+        `${path}${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`,
+        { method: "GET", ...options },
+      );
+      if (!response || !Array.isArray(response.items)) {
+        throw new ClassroomError("班级提交记录响应格式无效；未生成学情统计。", {
+          code: "invalid_server_response", status: 0,
+        });
+      }
+      items.push(...response.items);
+      if (!response.nextCursor) {
+        return Object.freeze({ items: Object.freeze(items), nextCursor: null, complete: true });
+      }
+      const nextCursor = uuid(response.nextCursor, "分页游标");
+      if (seenCursors.has(nextCursor)) {
+        throw new ClassroomError("班级提交记录分页游标重复；未生成学情统计。", {
+          code: "invalid_server_response", status: 0,
+        });
+      }
+      seenCursors.add(nextCursor);
+      cursor = nextCursor;
+    }
+    throw new ClassroomError("班级提交记录超过单次完整读取上限；未生成学情统计。", {
+      code: "submission_page_limit", status: 0,
+    });
+  }
+
+  async function listOwnSubmissions(assignmentId) {
+    const id = uuid(assignmentId, "作业编号");
+    return listSubmissionPages(`/v1/assignments/${encodeURIComponent(id)}/submissions/me`, { authMode: "bearer" });
+  }
+
+  async function listClassSubmissions(classId) {
+    const id = uuid(classId, "班级编号");
+    return listSubmissionPages(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions`);
+  }
+
+  async function listOwnClassSubmissions(classId) {
+    const id = uuid(classId, "班级编号");
+    return listSubmissionPages(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions/me`, { authMode: "bearer" });
+  }
+
   async function getClassLearningSummary(classId) {
     const id = uuid(classId, "班级编号");
     return requestJson(`/v1/classes/${encodeURIComponent(id)}/learning/summary`, { method: "GET" });
@@ -1150,11 +1417,12 @@
     return requestJson(`/v1/classes/${encodeURIComponent(id)}/review-cases`, { method: "GET" });
   }
 
-  async function decideReviewCase(reviewId, input = {}) {
+  async function decideReviewCase(reviewId, input = {}, classId = "") {
     const id = uuid(reviewId, "复核编号");
     return requestJson(`/v1/review-cases/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: input
+      body: input,
+      ...(classId ? { ownerClassId: uuid(classId, "班级编号") } : {})
     });
   }
 
@@ -1252,9 +1520,11 @@
     const authMode = String(options.authMode || "auto");
     const bearer = readSessionValue(ACCESS_TOKEN_KEY);
     const classMatch = String(path).match(/\/v1\/classes\/([0-9a-f-]{36})/i);
-    const owner = currentOwnerCapability(classMatch?.[1] || "", serverUrl);
+    const ownerClassId = options.ownerClassId && /^\/v1\/review-cases\/[0-9a-f-]{36}$/i.test(String(path))
+      ? String(options.ownerClassId) : "";
+    const owner = currentOwnerCapability(classMatch?.[1] || ownerClassId, serverUrl);
     const useOwner = auth && authMode !== "bearer" && Boolean(owner)
-      && (authMode === "owner" || Boolean(classMatch));
+      && (authMode === "owner" || Boolean(classMatch) || Boolean(ownerClassId));
     if (auth && authMode === "bearer" && !bearer) {
       throw new ClassroomError("请先登录学生账号再加入班级。", { code: "authentication_required", status: 401 });
     }
@@ -1327,6 +1597,12 @@
   }
 
   async function createClass(input = {}) {
+    if (appEdition() === "student") {
+      throw new ClassroomError("学生端不能创建或管理班级。", {
+        code: "resource_forbidden",
+        status: 403
+      });
+    }
     const name = requiredText(input.name, "班级名称", 120);
     const payload = { name };
     if (String(input.grade || "").trim()) payload.grade = String(input.grade).trim();
@@ -1337,6 +1613,12 @@
       return requestJson("/v1/classes", { method: "POST", body: payload });
     }
     const hosted = hostedNativeServices();
+    if (appEdition() === "teacher" && !hosted.serverUrl) {
+      throw new ClassroomError("请先登录教师账号后再创建云端班级。", {
+        code: "authentication_required",
+        status: 401
+      });
+    }
     const configuredServer = loadServerUrl();
     const discoveredServers = [...hosted.services];
     const candidates = [];
@@ -1618,6 +1900,130 @@
     return result.user;
   }
 
+  function buildClassroomAnalytics(input = {}) {
+    const roster = Array.isArray(input.roster) ? input.roster : [];
+    const assignments = (Array.isArray(input.assignments) ? input.assignments : [])
+      .filter((item) => item?.status === "published");
+    const submissions = Array.isArray(input.submissions) ? input.submissions : [];
+    const now = new Date(input.now || Date.now());
+    const activeStudents = roster.filter((member) => member?.status === "active"
+      && (member.role || member.memberRole || "student") === "student");
+    const latestByAssignmentStudent = new Map();
+    for (const submission of submissions) {
+      const studentUserId = String(submission?.studentUserId || submission?.studentId || "");
+      const assignmentId = String(submission?.assignmentId || "");
+      if (!studentUserId || !assignmentId) continue;
+      const key = `${assignmentId}|${studentUserId}`;
+      const previous = latestByAssignmentStudent.get(key);
+      const version = Number(submission.version || 1);
+      const previousVersion = Number(previous?.version || 1);
+      const submittedAt = new Date(submission.submittedAt || 0).getTime();
+      const previousAt = new Date(previous?.submittedAt || 0).getTime();
+      if (!previous || version > previousVersion || version === previousVersion && submittedAt > previousAt) {
+        latestByAssignmentStudent.set(key, submission);
+      }
+    }
+    const isPending = (submission) => submission?.reviewStatus === "pending"
+      || submission?.status === "submitted" || submission?.status === "underReview";
+    const isGraded = (submission) => Number.isFinite(Number(submission?.score))
+      && submission?.score !== null && !isPending(submission)
+      && submission?.status === "accepted";
+    const average = (values) => values.length
+      ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 10) / 10
+      : null;
+    const recipientsFor = (assignment) => activeStudents.filter((member) => assignment.targetType === "class"
+      || assignment.targetType === "group" && assignment.targetId === member.groupId
+      || assignment.targetType === "student" && [member.id, member.userId].includes(assignment.targetId));
+    const latestFor = (assignmentId, userId) => latestByAssignmentStudent.get(`${assignmentId}|${userId}`) || null;
+    const trackedLatestSubmissions = assignments.flatMap((assignment) => recipientsFor(assignment)
+      .map((member) => latestFor(assignment.id, member.userId)).filter(Boolean));
+
+    const assignmentRows = assignments.map((assignment) => {
+      const recipients = recipientsFor(assignment);
+      const latest = recipients.map((member) => latestFor(assignment.id, member.userId)).filter(Boolean);
+      const graded = latest.filter(isGraded);
+      const overdue = Number.isFinite(now.getTime()) && assignment.dueAt
+        && new Date(assignment.dueAt).getTime() < now.getTime();
+      return Object.freeze({
+        assignmentId: assignment.id,
+        title: String(assignment.title || "未命名作业"),
+        recipientCount: recipients.length,
+        submittedCount: latest.length,
+        gradedCount: graded.length,
+        pendingReviewCount: latest.filter(isPending).length,
+        unsubmittedCount: Math.max(0, recipients.length - latest.length),
+        overdueUnsubmittedCount: overdue ? Math.max(0, recipients.length - latest.length) : 0,
+        averageScore: average(graded.map((item) => Number(item.score))),
+        gradedSubmissionIds: Object.freeze(graded.map((item) => String(item.id || "")).filter(Boolean)),
+        pendingSubmissionIds: Object.freeze(latest.filter(isPending).map((item) => String(item.id || "")).filter(Boolean)),
+      });
+    });
+
+    const studentRows = activeStudents.map((member) => {
+      const assigned = assignments.filter((assignment) => recipientsFor(assignment)
+        .some((recipient) => recipient.userId === member.userId));
+      const latest = assigned.map((assignment) => latestFor(assignment.id, member.userId)).filter(Boolean);
+      const graded = latest.filter(isGraded);
+      return Object.freeze({
+        membershipId: member.id,
+        userId: member.userId,
+        displayName: String(member.displayName || "学生"),
+        assignedCount: assigned.length,
+        submittedCount: latest.length,
+        gradedCount: graded.length,
+        pendingReviewCount: latest.filter(isPending).length,
+        correctionCount: latest.reduce((count, item) => count + Math.max(0, Number(item.version || 1) - 1), 0),
+        averageScore: average(graded.map((item) => Number(item.score))),
+        evidenceStatus: graded.length >= 3 ? "formative" : "insufficient",
+        gradedSubmissionIds: Object.freeze(graded.map((item) => String(item.id || "")).filter(Boolean)),
+        pendingSubmissionIds: Object.freeze(latest.filter(isPending).map((item) => String(item.id || "")).filter(Boolean)),
+      });
+    });
+
+    const assignmentById = new Map(assignments.map((item) => [item.id, item]));
+    const knowledgeEvidence = new Map();
+    for (const submission of trackedLatestSubmissions.filter(isGraded)) {
+      const assignment = assignmentById.get(submission.assignmentId);
+      const questionById = new Map((assignment?.questionItems || []).map((item) => [item.id, item]));
+      for (const scoreEntry of Array.isArray(submission.perQuestionScores) ? submission.perQuestionScores : []) {
+        const score = scoreEntry?.score;
+        if (score === null || !Number.isFinite(Number(score))) continue;
+        const question = questionById.get(scoreEntry.questionId);
+        const knowledgePointId = String(question?.knowledgePointId || "");
+        if (!knowledgePointId) continue;
+        const evidence = knowledgeEvidence.get(knowledgePointId) || { scores: [], latestEvidenceAt: "", evidenceIds: [] };
+        evidence.scores.push(Number(score));
+        evidence.evidenceIds.push(`${submission.id}:${scoreEntry.questionId}`);
+        const submittedAt = String(submission.submittedAt || "");
+        if (submittedAt > evidence.latestEvidenceAt) evidence.latestEvidenceAt = submittedAt;
+        knowledgeEvidence.set(knowledgePointId, evidence);
+      }
+    }
+    const knowledgePoints = [...knowledgeEvidence.entries()].map(([knowledgePointId, evidence]) => Object.freeze({
+      knowledgePointId,
+      scoredCount: evidence.scores.length,
+      averageScore: average(evidence.scores),
+      evidenceStatus: evidence.scores.length >= 3 ? "formative" : "insufficient",
+      latestEvidenceAt: evidence.latestEvidenceAt || null,
+      evidenceIds: Object.freeze([...evidence.evidenceIds]),
+    })).sort((left, right) => left.knowledgePointId.localeCompare(right.knowledgePointId, "zh-CN"));
+
+    return Object.freeze({
+      classSummary: Object.freeze({
+        activeStudentCount: activeStudents.length,
+        publishedAssignmentCount: assignments.length,
+        latestSubmissionCount: trackedLatestSubmissions.length,
+        gradedSubmissionCount: trackedLatestSubmissions.filter(isGraded).length,
+        pendingReviewCount: trackedLatestSubmissions.filter(isPending).length,
+        overdueUnsubmittedCount: assignmentRows.reduce((count, item) => count + item.overdueUnsubmittedCount, 0),
+      }),
+      assignments: Object.freeze(assignmentRows),
+      students: Object.freeze(studentRows),
+      knowledgePoints: Object.freeze(knowledgePoints),
+      evidenceRule: "只统计每名学生每份作业的最新服务端记录；待人工复核、缺交和空题分不进入平均分。知识点少于 3 条已评分题目证据时只显示证据不足。",
+    });
+  }
+
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     window.addEventListener("online", () => { void flushSyncQueue(); });
   }
@@ -1643,11 +2049,14 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "3.2.0",
+    version: "4.1.0",
     configure,
     status,
     checkHealth,
     login,
+    register,
+    reauthenticate,
+    restoreSession,
     logout,
     createClass,
     listClasses,
@@ -1666,15 +2075,21 @@
     syncStatus,
     syncLearning,
     syncExamRecords,
+    syncVariantSets,
+    listVariantSets,
     flushSyncQueue,
     acknowledgeSyncConflict,
     listAssignments,
     createAssignment,
     submitAssignment,
+    listOwnSubmissions,
+    listClassSubmissions,
+    listOwnClassSubmissions,
     getClassLearningSummary,
     listReviewCases,
     decideReviewCase,
     saveReportSnapshot,
-    listReportSnapshots
+    listReportSnapshots,
+    buildClassroomAnalytics
   });
 })();

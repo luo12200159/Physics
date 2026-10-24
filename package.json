@@ -1,7 +1,7 @@
 {
   "name": "physics-study-room-qa",
   "private": true,
-  "version": "3.2.0",
+  "version": "4.1.0",
   "description": "Feynman Physics front-end QA and release entry points",
   "scripts": {
     "qa:node": "node tools/qa_node.cjs",
@@ -11,14 +11,16 @@
     "qa:teacher": "node tools/qa_targeted_teacher_ui.cjs",
     "qa:classroom-ui": "node tools/qa_classroom_ui.cjs",
     "qa:desktop-parity": "node tools/qa_desktop_parity.cjs",
+    "qa:dual-apps": "node tools/qa_dual_app_browser.cjs",
     "qa:student-guest-join": "node tools/qa_student_guest_join.cjs",
     "qa:interaction": "node tools/qa_interaction_latency.cjs",
+    "qa:student-v4": "node tools/qa_student_v4.cjs && node tools/qa_student_v4_browser.cjs && node tools/qa_backup_source_records_v402.cjs",
     "server:install": "pnpm --dir server install --frozen-lockfile",
     "server:migrate": "pnpm --dir server run migrate:up",
     "server:dev": "pnpm --dir server run dev",
     "server:test": "pnpm --dir server run test",
     "server:build": "pnpm --dir server run build",
-    "qa": "npm run qa:node && npm run qa:android-security && npm run qa:browser && npm run qa:mobile && npm run qa:interaction && npm run qa:teacher && npm run qa:classroom-ui && npm run qa:student-guest-join && npm run qa:desktop-parity"
+    "qa": "npm run qa:node && npm run qa:android-security && npm run qa:browser && npm run qa:mobile && npm run qa:dual-apps && npm run qa:student-v4 && npm run qa:interaction && npm run qa:teacher && npm run qa:classroom-ui && npm run qa:student-guest-join && npm run qa:desktop-parity"
   },
   "devDependencies": {
     "playwright-core": "^1.52.0"

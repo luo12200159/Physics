@@ -3139,3 +3139,171 @@ html.android-app .diagnostic-question label > .diagnostic-choice-text {
 }
 .teacher-primary-nav button:hover,
 .teacher-primary-nav button:focus-visible { background: #e9f4e8; }
+
+.variant-training-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, .72fr) minmax(0, 1.8fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.variant-parent-card {
+  position: sticky;
+  top: 72px;
+  max-height: calc(100vh - 110px);
+  overflow: auto;
+}
+
+.variant-exam-workbench,
+.variant-solution-detail,
+.variant-review-set {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.variant-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.variant-progress-header div,
+.variant-hint-row,
+.variant-progress-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.variant-progress-header time {
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  color: #174f3e;
+}
+
+.variant-question-card .tutor-stem,
+.variant-parent-card > p,
+.variant-review-set p,
+.variant-review-set textarea {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.variant-change-summary {
+  margin-top: 14px;
+  padding: 10px 12px;
+  border-left: 3px solid #5d826d;
+  background: #eff6f0;
+}
+
+.variant-hint-row button {
+  min-height: 44px;
+}
+
+.variant-solution-detail {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #bed0c5;
+  border-radius: 14px;
+  background: #f8fbf8;
+}
+
+.variant-solution-detail h4 {
+  margin: 8px 0 0;
+}
+
+.variant-solution-detail ol,
+.variant-solution-detail ul {
+  margin: 0;
+  padding-left: 22px;
+}
+
+.variant-solution-detail li {
+  margin: 7px 0;
+}
+
+.variant-solution-detail code,
+.variant-solution-detail small,
+.variant-solution-detail strong {
+  display: block;
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+}
+
+.variant-review-set {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid #bed0c5;
+  border-radius: 16px;
+  background: #f8fbf8;
+}
+
+.variant-review-set > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.variant-review-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.variant-review-grid > section {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #d3ded7;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.variant-review-grid label,
+.variant-review-grid input,
+.variant-review-grid textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+}
+
+@media (max-width: 980px) {
+  .variant-training-layout,
+  .variant-review-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .variant-parent-card {
+    position: static;
+    max-height: none;
+  }
+
+  .variant-review-set > header {
+    display: grid;
+  }
+}
+.motion-draft-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  margin: 16px 0;
+}
+
+.motion-draft-list article {
+  background: #f6faf7;
+  border: 1px solid #dbe6de;
+  border-radius: 14px;
+  min-width: 0;
+  padding: 16px;
+}
+
+.motion-draft-list article p {
+  overflow-wrap: anywhere;
+}
+
+.motion-draft-list article button {
+  min-height: 48px;
+}

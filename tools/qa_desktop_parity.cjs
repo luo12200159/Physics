@@ -16,6 +16,7 @@ const requiredScriptFiles = [
   "question-answer-service.js",
   "classroom-client.js",
   "learning-engine.js",
+  "variant-generator.js",
   "teacher-mode-lock.js",
   "app.js",
   "learning-lab.js",

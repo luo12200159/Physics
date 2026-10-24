@@ -10,13 +10,13 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("费曼物理 Windows 单文件安装程序")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("3.2.0.0")]
-[assembly: AssemblyFileVersion("3.2.0.0")]
+[assembly: AssemblyVersion("4.1.0.0")]
+[assembly: AssemblyFileVersion("4.1.0.0")]
 
 internal static class InstallerProgram
 {
     private const string AppName = "费曼物理";
-    private const string AppVersion = "3.2.0";
+    private const string AppVersion = "4.1.0";
     private const string UninstallKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\PhysicsStudio";
 
     private static readonly PayloadFile[] Payload =
@@ -29,10 +29,12 @@ internal static class InstallerProgram
         new PayloadFile("PhysicsStudio.Payload.LearningLabStyles", "learning-lab.css"),
         new PayloadFile("PhysicsStudio.Payload.ExperienceStyles", "experience-shell.css"),
         new PayloadFile("PhysicsStudio.Payload.ActivationStyles", "activation.css"),
+        new PayloadFile("PhysicsStudio.Payload.VersionConfig", "version-config.js"),
         new PayloadFile("PhysicsStudio.Payload.ActivationPublicKey", "activation-public-key.js"),
         new PayloadFile("PhysicsStudio.Payload.ActivationScript", "activation.js"),
         new PayloadFile("PhysicsStudio.Payload.StorageRepository", "storage-repository.js"),
         new PayloadFile("PhysicsStudio.Payload.CurriculumTaxonomy", "curriculum-taxonomy.js"),
+        new PayloadFile("PhysicsStudio.Payload.SolutionFormat", "solution-format.js"),
         new PayloadFile("PhysicsStudio.Payload.CurriculumBank", "curriculum-bank.js"),
         new PayloadFile("PhysicsStudio.Payload.ExamQuestionIndex", "exam-question-index.js"),
         new PayloadFile("PhysicsStudio.Payload.MockExamBank", "mock-exam-bank.js"),
@@ -59,7 +61,9 @@ internal static class InstallerProgram
         new PayloadFile("PhysicsStudio.Payload.ClassroomClient", "classroom-client.js"),
         new PayloadFile("PhysicsStudio.Payload.QuestionAnswerService", "question-answer-service.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningEngine", "learning-engine.js"),
-        new PayloadFile("PhysicsStudio.Payload.PhysicsVisuals", "physics-visuals.js"),
+            new PayloadFile("PhysicsStudio.Payload.PhysicsVisuals", "physics-visuals.js"),
+            new PayloadFile("PhysicsStudio.Payload.MotionRepresentationDrafts", "motion-representation-drafts.js"),
+            new PayloadFile("PhysicsStudio.Payload.VariantGenerator", "variant-generator.js"),
         new PayloadFile("PhysicsStudio.Payload.TeacherModeLock", "teacher-mode-lock.js"),
         new PayloadFile("PhysicsStudio.Payload.Script", "app.js"),
         new PayloadFile("PhysicsStudio.Payload.LearningLab", "learning-lab.js"),

@@ -64,7 +64,7 @@ final class LanClassroomHost implements Closeable {
     private static final int MAX_STRING_BYTES = 1024 * 1024;
     private static final int MAX_COLLECTION_ITEMS = 10000;
     private static final int STATE_MAGIC = 0x5053434c;
-    private static final int STATE_VERSION = 1;
+    private static final int STATE_VERSION = 2;
     private static final String DISCOVERY_PREFIX = "PHYSICS_STUDIO_CLASSROOM_DISCOVER_V1:";
     private static final Pattern NONCE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{8,80}$");
     private static final Pattern INVITE_PATTERN = Pattern.compile("^[A-Za-z0-9_-]{22}$");
@@ -261,11 +261,18 @@ final class LanClassroomHost implements Closeable {
                 return HttpResponse.json(201, createAssignment(classId, authorization, request.jsonBody()));
             }
             if ("review-cases".equals(segment[3]) && "GET".equals(request.method)) {
-                return HttpResponse.json(200, emptyClassCollection(classId, authorization));
+                return HttpResponse.json(200, listReviewCases(classId, authorization));
+            }
+            if ("assignment-submissions".equals(segment[3]) && "GET".equals(request.method)) {
+                return HttpResponse.json(200, listClassSubmissions(classId, authorization));
             }
         }
         if (segment.length == 5 && "v1".equals(segment[0]) && "classes".equals(segment[1])) {
             String classId = segment[2].toLowerCase(Locale.ROOT);
+            if ("assignment-submissions".equals(segment[3]) && "me".equals(segment[4])
+                && "GET".equals(request.method)) {
+                return HttpResponse.json(200, listOwnClassSubmissions(classId, authorization));
+            }
             if ("learning".equals(segment[3]) && "summary".equals(segment[4]) && "GET".equals(request.method)) {
                 return HttpResponse.json(200, emptyClassCollection(classId, authorization));
             }
@@ -291,6 +298,14 @@ final class LanClassroomHost implements Closeable {
         if (segment.length == 4 && "v1".equals(segment[0]) && "assignments".equals(segment[1])
             && "submissions".equals(segment[3]) && "POST".equals(request.method)) {
             return HttpResponse.json(201, submitAssignment(segment[2].toLowerCase(Locale.ROOT), authorization, request.jsonBody()));
+        }
+        if (segment.length == 5 && "v1".equals(segment[0]) && "assignments".equals(segment[1])
+            && "submissions".equals(segment[3]) && "me".equals(segment[4]) && "GET".equals(request.method)) {
+            return HttpResponse.json(200, listOwnAssignmentSubmissions(segment[2].toLowerCase(Locale.ROOT), authorization));
+        }
+        if (segment.length == 3 && "v1".equals(segment[0]) && "review-cases".equals(segment[1])
+            && "PATCH".equals(request.method)) {
+            return HttpResponse.json(200, decideReviewCase(segment[2].toLowerCase(Locale.ROOT), authorization, request.jsonBody()));
         }
         throw new ClientError(404, "not_found", "请求的班级资源不存在。");
     }
@@ -603,9 +618,39 @@ final class LanClassroomHost implements Closeable {
                 && !"student".equals(assignment.targetType)) assignment.targetType = "class";
             assignment.targetId = nullableText(body.get("targetId"), 160);
             assignment.questionIds = stringList(body.get("questionIds"), 100, 160);
+            if (new java.util.HashSet<String>(assignment.questionIds).size() != assignment.questionIds.size()) {
+                throw validation("作业题目编号不得重复。");
+            }
             assignment.knowledgePointKeys = stringList(body.get("knowledgePointKeys"), 100, 160);
             assignment.target = requiredText(valueText(body.get("target")), "达标条件", 1000);
             assignment.published = Boolean.TRUE.equals(body.get("publish"));
+            if (assignment.published && assignment.questionIds.isEmpty()) {
+                throw validation("发布作业前必须选择题目。");
+            }
+            Object suppliedItems = body.get("questionItems");
+            if (assignment.published && (!(suppliedItems instanceof List<?>)
+                || ((List<?>)suppliedItems).size() != assignment.questionIds.size())) {
+                throw validation("发布作业前必须提供每道题的完整题干快照。");
+            }
+            if (suppliedItems instanceof List<?>) {
+                List<?> items = (List<?>)suppliedItems;
+                if (!items.isEmpty() && items.size() != assignment.questionIds.size()) throw validation("题目快照与题目编号不一致。");
+                List<Object> checked = new ArrayList<Object>();
+                List<String> seenIds = new ArrayList<String>();
+                for (Object item : items) {
+                    if (!(item instanceof Map<?,?>)) throw validation("题目快照无效。");
+                    Map<?,?> question = (Map<?,?>)item;
+                    String id = requiredText(valueText(question.get("id")), "题目编号", 160);
+                    if (!assignment.questionIds.contains(id) || seenIds.contains(id)) throw validation("题目快照与题目编号不一致。");
+                    seenIds.add(id);
+                    requiredText(valueText(question.get("title")), "题目标题", 240);
+                    requiredText(valueText(question.get("content")), "题干", 30000);
+                    requiredText(valueText(question.get("questionType")), "题型", 80);
+                    if (!(question.get("options") instanceof List<?>)) throw validation("题目选项格式无效。");
+                    checked.add(item);
+                }
+                assignment.questionItemsJson = Json.stringify(checked);
+            }
             assignment.createdAt = System.currentTimeMillis();
             state.assignments.add(assignment);
             saveLocked();
@@ -623,23 +668,208 @@ final class LanClassroomHost implements Closeable {
             if (membership == null || !"active".equals(membership.status)) {
                 throw new ClientError(403, "resource_forbidden", "无权提交该班级作业。");
             }
+            if ("group".equals(assignment.targetType) && !equalsNullable(assignment.targetId, membership.groupId)
+                || "student".equals(assignment.targetType) && !assignment.targetId.equals(membership.id)
+                   && !assignment.targetId.equals(student.id)) {
+                throw new ClientError(403, "resource_forbidden", "作业未下发给该学生。");
+            }
             String clientEntityId = requiredText(valueText(body.get("clientEntityId")), "提交编号", 160);
             for (SubmissionRecord existing : state.submissions) {
                 if (assignmentId.equals(existing.assignmentId) && student.id.equals(existing.studentId)
                     && clientEntityId.equals(existing.clientEntityId)) return submissionJson(existing);
+            }
+            Object rawAnswers = body.get("answers");
+            if (!(rawAnswers instanceof List<?>)) throw validation("必须提交真实逐题作答。");
+            List<?> answers = (List<?>)rawAnswers;
+            if (assignment.questionIds.isEmpty() || answers.size() != assignment.questionIds.size()) {
+                throw validation("必须完成作业中的每一道题。");
+            }
+            List<Object> canonicalAnswers = new ArrayList<Object>();
+            List<String> seen = new ArrayList<String>();
+            for (Object raw : answers) {
+                if (!(raw instanceof Map<?,?>)) throw validation("逐题作答格式无效。");
+                Map<?,?> answer = (Map<?,?>)raw;
+                String questionId = requiredText(valueText(answer.get("questionId")), "题目编号", 160);
+                if (!assignment.questionIds.contains(questionId) || seen.contains(questionId)) throw validation("逐题作答编号重复或不属于本作业。");
+                seen.add(questionId);
+                Map<String,Object> entry = object();
+                entry.put("questionId", questionId);
+                entry.put("response", requiredText(valueText(answer.get("response")), "作答内容", 30000));
+                entry.put("steps", optionalText(answer.get("steps"), 30000));
+                entry.put("startedAt", valueText(answer.get("startedAt")));
+                entry.put("hintViewCount", answer.get("hintViewCount") instanceof Number ? answer.get("hintViewCount") : Integer.valueOf(0));
+                canonicalAnswers.add(entry);
+            }
+            SubmissionRecord latest = null;
+            for (SubmissionRecord existing : state.submissions) {
+                if (assignmentId.equals(existing.assignmentId) && student.id.equals(existing.studentId)
+                    && (latest == null || existing.version > latest.version)) latest = existing;
+            }
+            if (latest != null && !"returned".equals(latest.status)) {
+                throw new ClientError(409, "submission_already_active", "教师退回后才能提交订正版本。");
             }
             SubmissionRecord submission = new SubmissionRecord();
             submission.id = UUID.randomUUID().toString();
             submission.assignmentId = assignmentId;
             submission.studentId = student.id;
             submission.clientEntityId = clientEntityId;
-            submission.answersJson = Json.stringify(body.get("answers"));
+            submission.answersJson = Json.stringify(canonicalAnswers);
             submission.status = "submitted";
             submission.submittedAt = System.currentTimeMillis();
+            submission.updatedAt = submission.submittedAt;
+            submission.version = latest == null ? 1 : latest.version + 1;
+            submission.previousSubmissionId = latest == null ? null : latest.id;
             state.submissions.add(submission);
             saveLocked();
             return submissionJson(submission);
         }
+    }
+
+    private Map<String, Object> listOwnClassSubmissions(String classId, String authorization) throws ClientError {
+        synchronized (gate) {
+            activeClass(classId);
+            StudentRecord student = requireStudent(authorization);
+            MembershipRecord member = findMembership(classId, student.id);
+            if (member == null || !"active".equals(member.status)) throw new ClientError(403, "resource_forbidden", "无权访问该班级作业。");
+            List<Object> items = new ArrayList<Object>();
+            for (SubmissionRecord submission : state.submissions) {
+                AssignmentRecord assignment = findAssignment(submission.assignmentId);
+                if (assignment != null && classId.equals(assignment.classId) && student.id.equals(submission.studentId)) {
+                    items.add(submissionJson(submission));
+                }
+            }
+            return listJson(items);
+        }
+    }
+
+    private Map<String, Object> listOwnAssignmentSubmissions(String assignmentId, String authorization) throws ClientError {
+        synchronized (gate) {
+            AssignmentRecord assignment = findAssignment(assignmentId);
+            if (assignment == null) throw notFound("assignment_not_found", "作业不存在。");
+            StudentRecord student = requireStudent(authorization);
+            MembershipRecord member = findMembership(assignment.classId, student.id);
+            if (member == null || !"active".equals(member.status)) throw new ClientError(403, "resource_forbidden", "无权查看该作业。");
+            List<Object> items = new ArrayList<Object>();
+            for (SubmissionRecord submission : state.submissions) {
+                if (assignmentId.equals(submission.assignmentId) && student.id.equals(submission.studentId)) items.add(submissionJson(submission));
+            }
+            return listJson(items);
+        }
+    }
+
+    private Map<String, Object> listClassSubmissions(String classId, String authorization) throws ClientError {
+        synchronized (gate) {
+            requireOwner(activeClass(classId), authorization);
+            List<Object> items = new ArrayList<Object>();
+            for (SubmissionRecord submission : state.submissions) {
+                AssignmentRecord assignment = findAssignment(submission.assignmentId);
+                if (assignment != null && classId.equals(assignment.classId)) {
+                    Map<String,Object> value = submissionJson(submission);
+                    StudentRecord student = findStudent(submission.studentId);
+                    if (student != null) value.put("studentDisplayName", student.displayName);
+                    items.add(value);
+                }
+            }
+            return listJson(items);
+        }
+    }
+
+    private Map<String, Object> listReviewCases(String classId, String authorization) throws ClientError {
+        synchronized (gate) {
+            requireOwner(activeClass(classId), authorization);
+            List<Object> items = new ArrayList<Object>();
+            for (SubmissionRecord submission : state.submissions) {
+                AssignmentRecord assignment = findAssignment(submission.assignmentId);
+                if (assignment != null && classId.equals(assignment.classId) && "pending".equals(submission.reviewStatus)) {
+                    items.add(reviewJson(submission, assignment));
+                }
+            }
+            return listJson(items);
+        }
+    }
+
+    private Map<String, Object> decideReviewCase(String reviewId, String authorization, Map<String,Object> body)
+        throws ClientError, IOException {
+        synchronized (gate) {
+            SubmissionRecord submission = findSubmission(reviewId);
+            if (submission == null) throw notFound("review_case_not_found", "待批改记录不存在。");
+            AssignmentRecord assignment = findAssignment(submission.assignmentId);
+            if (assignment == null) throw notFound("assignment_not_found", "作业不存在。");
+            requireOwner(activeClass(assignment.classId), authorization);
+            String decision = requiredText(valueText(body.get("decision")), "批改决定", 20);
+            if (!"approve".equals(decision) && !"return".equals(decision) && !"rejudge".equals(decision)) throw validation("批改决定无效。");
+            if (!"pending".equals(submission.reviewStatus) && !"rejudge".equals(decision)) {
+                throw new ClientError(409, "review_already_decided", "该提交已经批改。");
+            }
+            Object rawScore = body.get("score");
+            double score = rawScore instanceof Number ? ((Number)rawScore).doubleValue() : Double.NaN;
+            if (!Double.isFinite(score) || score < 0 || score > 100) throw validation("分数必须在 0 到 100 之间。");
+            Object rawQuestionScores = body.get("perQuestionScores");
+            if (!(rawQuestionScores instanceof List<?>)) throw validation("逐题评分格式无效。");
+            List<Object> checkedScores = new ArrayList<Object>();
+            List<String> scoredQuestionIds = new ArrayList<String>();
+            List<String> submittedQuestionIds = storedSubmissionQuestionIds(submission);
+            for (Object rawEntry : (List<?>)rawQuestionScores) {
+                if (!(rawEntry instanceof Map<?,?>)) throw validation("逐题评分格式无效。");
+                Map<?,?> entry = (Map<?,?>)rawEntry;
+                String questionId = requiredText(valueText(entry.get("questionId")), "题目编号", 160);
+                if (!submittedQuestionIds.contains(questionId) || scoredQuestionIds.contains(questionId)) {
+                    throw validation("逐题评分编号重复或不属于本次提交。");
+                }
+                Object questionScore = entry.get("score");
+                double numericQuestionScore = questionScore instanceof Number ? ((Number)questionScore).doubleValue() : Double.NaN;
+                if (questionScore != null && (!Double.isFinite(numericQuestionScore)
+                    || numericQuestionScore < 0 || numericQuestionScore > 100)) {
+                    throw validation("逐题分数必须在 0 到 100 之间。");
+                }
+                Map<String,Object> checkedEntry = object();
+                checkedEntry.put("questionId", questionId);
+                checkedEntry.put("score", questionScore);
+                checkedScores.add(checkedEntry);
+                scoredQuestionIds.add(questionId);
+            }
+            String reason = requiredText(valueText(body.get("reason")), "教师反馈", 1000);
+            submission.score = score;
+            submission.feedback = reason;
+            submission.reviewStatus = "approve".equals(decision) ? "approved" : "return".equals(decision) ? "returned" : "rejudged";
+            submission.status = "return".equals(decision) ? "returned" : "accepted";
+            submission.reviewRevision += 1;
+            submission.updatedAt = System.currentTimeMillis();
+            submission.perQuestionScoresJson = Json.stringify(checkedScores);
+            saveLocked();
+            return reviewJson(submission, assignment);
+        }
+    }
+
+    private StudentRecord findStudent(String id) {
+        for (StudentRecord item : state.students) if (item.id.equals(id)) return item;
+        return null;
+    }
+
+    private SubmissionRecord findSubmission(String id) {
+        for (SubmissionRecord item : state.submissions) if (item.id.equalsIgnoreCase(id)) return item;
+        return null;
+    }
+
+    private Map<String,Object> reviewJson(SubmissionRecord submission, AssignmentRecord assignment) throws ClientError {
+        Map<String,Object> value = object();
+        value.put("id", submission.id);
+        value.put("submissionId", submission.id);
+        value.put("assignmentId", assignment.id);
+        value.put("classId", assignment.classId);
+        value.put("status", submission.reviewStatus);
+        value.put("currentScore", submission.score < 0 ? null : Double.valueOf(submission.score));
+        value.put("revision", Integer.valueOf(submission.reviewRevision));
+        value.put("submittedAt", iso(submission.submittedAt));
+        value.put("updatedAt", iso(submission.updatedAt));
+        StudentRecord student = findStudent(submission.studentId);
+        value.put("studentDisplayName", student == null ? "学生" : student.displayName);
+        value.put("answers", Json.parse(submission.answersJson));
+        value.put("submissionVersion", Integer.valueOf(submission.version));
+        SubmissionRecord previous = submission.previousSubmissionId == null ? null : findSubmission(submission.previousSubmissionId);
+        if (previous != null) value.put("previousAnswers", Json.parse(previous.answersJson));
+        value.put("perQuestionScores", Json.parse(submission.perQuestionScoresJson == null ? "[]" : submission.perQuestionScoresJson));
+        return value;
     }
 
     private Map<String, Object> emptyClassCollection(String classId, String authorization) throws ClientError {
@@ -890,9 +1120,11 @@ final class LanClassroomHost implements Closeable {
     private static State readState(File file) throws IOException {
         DataInputStream input = new DataInputStream(new BufferedInputStream(new FileInputStream(file)));
         try {
-            if (input.readInt() != STATE_MAGIC || input.readInt() != STATE_VERSION) {
+            if (input.readInt() != STATE_MAGIC) {
                 throw new IOException("unsupported classroom state");
             }
+            int version = input.readInt();
+            if (version != 1 && version != STATE_VERSION) throw new IOException("unsupported classroom state");
             State value = new State();
             value.instanceId = readString(input);
             readClasses(input, value.classes);
@@ -901,8 +1133,20 @@ final class LanClassroomHost implements Closeable {
             readMemberships(input, value.memberships);
             readSessions(input, value.sessions);
             readGroups(input, value.groups);
-            readAssignments(input, value.assignments);
-            readSubmissions(input, value.submissions);
+            readAssignments(input, value.assignments, version);
+            readSubmissions(input, value.submissions, version);
+            if (version == 1) {
+                Map<String, Integer> versions = new HashMap<String, Integer>();
+                for (SubmissionRecord submission : value.submissions) {
+                    String key = submission.assignmentId + ":" + submission.studentId;
+                    int next = versions.containsKey(key) ? versions.get(key).intValue() + 1 : 1;
+                    versions.put(key, Integer.valueOf(next));
+                    submission.version = next;
+                    submission.reviewStatus = "pending";
+                    submission.reviewRevision = 1;
+                    submission.updatedAt = submission.submittedAt;
+                }
+            }
             return value;
         } catch (EOFException error) {
             throw new IOException("incomplete classroom state", error);
@@ -1010,7 +1254,7 @@ final class LanClassroomHost implements Closeable {
         return value;
     }
 
-    private static Map<String, Object> assignmentJson(AssignmentRecord assignment) {
+    private static Map<String, Object> assignmentJson(AssignmentRecord assignment) throws ClientError {
         Map<String, Object> value = object();
         value.put("id", assignment.id);
         value.put("classId", assignment.classId);
@@ -1020,6 +1264,20 @@ final class LanClassroomHost implements Closeable {
         value.put("targetType", assignment.targetType);
         value.put("targetId", assignment.targetId);
         value.put("questionIds", new ArrayList<String>(assignment.questionIds));
+        List<Object> visibleItems = new ArrayList<Object>();
+        Object parsedItems = Json.parse(assignment.questionItemsJson == null ? "[]" : assignment.questionItemsJson);
+        if (parsedItems instanceof List<?>) {
+            for (Object item : (List<?>)parsedItems) {
+                if (!(item instanceof Map<?,?>)) continue;
+                Map<?,?> raw = (Map<?,?>)item;
+                Map<String,Object> visible = object();
+                for (String key : new String[]{"id","title","content","questionType","options","knowledgePointId","difficulty"}) {
+                    if (raw.containsKey(key)) visible.put(key, raw.get(key));
+                }
+                visibleItems.add(visible);
+            }
+        }
+        value.put("questionItems", visibleItems);
         value.put("knowledgePointKeys", new ArrayList<String>(assignment.knowledgePointKeys));
         value.put("target", assignment.target);
         value.put("status", assignment.published ? "published" : "draft");
@@ -1028,7 +1286,7 @@ final class LanClassroomHost implements Closeable {
         return value;
     }
 
-    private static Map<String, Object> submissionJson(SubmissionRecord submission) {
+    private static Map<String, Object> submissionJson(SubmissionRecord submission) throws ClientError {
         Map<String, Object> value = object();
         value.put("id", submission.id);
         value.put("assignmentId", submission.assignmentId);
@@ -1036,6 +1294,14 @@ final class LanClassroomHost implements Closeable {
         value.put("clientEntityId", submission.clientEntityId);
         value.put("status", submission.status);
         value.put("submittedAt", iso(submission.submittedAt));
+        value.put("answers", Json.parse(submission.answersJson));
+        value.put("studentUserId", submission.studentId);
+        value.put("version", Integer.valueOf(submission.version));
+        value.put("previousSubmissionId", submission.previousSubmissionId);
+        value.put("reviewStatus", submission.reviewStatus);
+        value.put("score", submission.score < 0 ? null : Double.valueOf(submission.score));
+        value.put("perQuestionScores", Json.parse(submission.perQuestionScoresJson == null ? "[]" : submission.perQuestionScoresJson));
+        value.put("feedback", submission.feedback);
         return value;
     }
 
@@ -1100,6 +1366,33 @@ final class LanClassroomHost implements Closeable {
         if (source.size() > maximumItems) throw validation("列表字段过长。");
         List<String> result = new ArrayList<String>();
         for (Object item : source) result.add(requiredText(valueText(item), "列表字段", maximumLength));
+        return result;
+    }
+    private static List<String> storedSubmissionQuestionIds(SubmissionRecord submission) throws ClientError {
+        final Object parsed;
+        try {
+            parsed = Json.parse(submission.answersJson);
+        } catch (ClientError error) {
+            throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+        }
+        if (!(parsed instanceof List<?>)) {
+            throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+        }
+        List<String> result = new ArrayList<String>();
+        for (Object rawAnswer : (List<?>)parsed) {
+            if (!(rawAnswer instanceof Map<?,?>)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            Object rawQuestionId = ((Map<?,?>)rawAnswer).get("questionId");
+            if (!(rawQuestionId instanceof String)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            String questionId = ((String)rawQuestionId).trim();
+            if (questionId.length() == 0 || questionId.length() > 160 || containsControl(questionId) || result.contains(questionId)) {
+                throw new ClientError(500, "stored_submission_invalid", "已保存的作答数据无法批改。");
+            }
+            result.add(questionId);
+        }
         return result;
     }
     private static String requiredPattern(String value, Pattern pattern, String message) throws ClientError {
@@ -1248,16 +1541,16 @@ final class LanClassroomHost implements Closeable {
         for(int i=0,n=readCount(in);i<n;i++){GroupRecord v=new GroupRecord();v.id=readString(in);v.classId=readString(in);v.name=readString(in);v.createdAt=in.readLong();values.add(v);}
     }
     private static void writeAssignments(DataOutputStream out, List<AssignmentRecord> values) throws IOException {
-        out.writeInt(values.size()); for(AssignmentRecord v:values){writeString(out,v.id);writeString(out,v.classId);writeString(out,v.title);writeString(out,v.instructions);out.writeLong(v.dueAt);writeString(out,v.targetType);writeString(out,v.targetId);writeStringList(out,v.questionIds);writeStringList(out,v.knowledgePointKeys);writeString(out,v.target);out.writeBoolean(v.published);out.writeLong(v.createdAt);}
+        out.writeInt(values.size()); for(AssignmentRecord v:values){writeString(out,v.id);writeString(out,v.classId);writeString(out,v.title);writeString(out,v.instructions);out.writeLong(v.dueAt);writeString(out,v.targetType);writeString(out,v.targetId);writeStringList(out,v.questionIds);writeStringList(out,v.knowledgePointKeys);writeString(out,v.target);out.writeBoolean(v.published);out.writeLong(v.createdAt);writeString(out,v.questionItemsJson);}
     }
-    private static void readAssignments(DataInputStream in, List<AssignmentRecord> values) throws IOException {
-        for(int i=0,n=readCount(in);i<n;i++){AssignmentRecord v=new AssignmentRecord();v.id=readString(in);v.classId=readString(in);v.title=readString(in);v.instructions=readString(in);v.dueAt=in.readLong();v.targetType=readString(in);v.targetId=readString(in);v.questionIds=readStringList(in);v.knowledgePointKeys=readStringList(in);v.target=readString(in);v.published=in.readBoolean();v.createdAt=in.readLong();values.add(v);}
+    private static void readAssignments(DataInputStream in, List<AssignmentRecord> values, int version) throws IOException {
+        for(int i=0,n=readCount(in);i<n;i++){AssignmentRecord v=new AssignmentRecord();v.id=readString(in);v.classId=readString(in);v.title=readString(in);v.instructions=readString(in);v.dueAt=in.readLong();v.targetType=readString(in);v.targetId=readString(in);v.questionIds=readStringList(in);v.knowledgePointKeys=readStringList(in);v.target=readString(in);v.published=in.readBoolean();v.createdAt=in.readLong();v.questionItemsJson=version>=2?readString(in):"[]";values.add(v);}
     }
     private static void writeSubmissions(DataOutputStream out, List<SubmissionRecord> values) throws IOException {
-        out.writeInt(values.size()); for(SubmissionRecord v:values){writeString(out,v.id);writeString(out,v.assignmentId);writeString(out,v.studentId);writeString(out,v.clientEntityId);writeString(out,v.answersJson);writeString(out,v.status);out.writeLong(v.submittedAt);}
+        out.writeInt(values.size()); for(SubmissionRecord v:values){writeString(out,v.id);writeString(out,v.assignmentId);writeString(out,v.studentId);writeString(out,v.clientEntityId);writeString(out,v.answersJson);writeString(out,v.status);out.writeLong(v.submittedAt);out.writeInt(v.version);writeString(out,v.previousSubmissionId);writeString(out,v.reviewStatus);out.writeDouble(v.score);writeString(out,v.feedback);out.writeInt(v.reviewRevision);out.writeLong(v.updatedAt);writeString(out,v.perQuestionScoresJson);}
     }
-    private static void readSubmissions(DataInputStream in, List<SubmissionRecord> values) throws IOException {
-        for(int i=0,n=readCount(in);i<n;i++){SubmissionRecord v=new SubmissionRecord();v.id=readString(in);v.assignmentId=readString(in);v.studentId=readString(in);v.clientEntityId=readString(in);v.answersJson=readString(in);v.status=readString(in);v.submittedAt=in.readLong();values.add(v);}
+    private static void readSubmissions(DataInputStream in, List<SubmissionRecord> values, int version) throws IOException {
+        for(int i=0,n=readCount(in);i<n;i++){SubmissionRecord v=new SubmissionRecord();v.id=readString(in);v.assignmentId=readString(in);v.studentId=readString(in);v.clientEntityId=readString(in);v.answersJson=readString(in);v.status=readString(in);v.submittedAt=in.readLong();if(version>=2){v.version=in.readInt();v.previousSubmissionId=readString(in);v.reviewStatus=readString(in);v.score=in.readDouble();v.feedback=readString(in);v.reviewRevision=in.readInt();v.updatedAt=in.readLong();v.perQuestionScoresJson=readString(in);}values.add(v);}
     }
 
     private static final class State {
@@ -1277,8 +1570,8 @@ final class LanClassroomHost implements Closeable {
     private static final class MembershipRecord { String id,classId,studentId,displayName,role,status,groupId,studentNumber; long joinedAt; }
     private static final class SessionRecord { String studentId,accessHash,refreshHash; long expiresAt; }
     private static final class GroupRecord { String id,classId,name; long createdAt; }
-    private static final class AssignmentRecord { String id,classId,title,instructions,targetType,targetId,target; List<String> questionIds=new ArrayList<String>(),knowledgePointKeys=new ArrayList<String>(); long dueAt,createdAt; boolean published; }
-    private static final class SubmissionRecord { String id,assignmentId,studentId,clientEntityId,answersJson,status; long submittedAt; }
+    private static final class AssignmentRecord { String id,classId,title,instructions,targetType,targetId,target,questionItemsJson="[]"; List<String> questionIds=new ArrayList<String>(),knowledgePointKeys=new ArrayList<String>(); long dueAt,createdAt; boolean published; }
+    private static final class SubmissionRecord { String id,assignmentId,studentId,clientEntityId,answersJson,status,previousSubmissionId,reviewStatus="pending",feedback,perQuestionScoresJson="[]"; long submittedAt,updatedAt; int version=1,reviewRevision=1; double score=-1; }
 
     private static final class ClientError extends Exception {
         final int status; final String code;

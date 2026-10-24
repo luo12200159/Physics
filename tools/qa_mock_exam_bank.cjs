@@ -5,13 +5,14 @@ const vm = require("node:vm");
 
 const projectRoot = path.resolve(__dirname, "..");
 const context = vm.createContext({ window: {} });
+vm.runInContext(fs.readFileSync(path.join(projectRoot, "solution-format.js"), "utf8"), context, { filename: "solution-format.js" });
 const source = fs.readFileSync(path.join(projectRoot, "mock-exam-bank.js"), "utf8");
 vm.runInContext(source, context, { filename: "mock-exam-bank.js" });
 
 const bank = context.window.PHYSICS_MOCK_EXAM_BANK;
 assert.ok(bank, "原创模拟卷题库未注册");
 assert.equal(bank.version, 2);
-assert.equal(bank.contentVersion, "2026.07.29-detailed-solutions-r2");
+assert.equal(bank.contentVersion, context.window.PHYSICS_SOLUTION_FORMAT.CONTENT_VERSION);
 assert.equal(bank.exams.length, 2);
 assert.equal(bank.questions.length, 38);
 

@@ -14,6 +14,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Message;
 import android.provider.Settings;
+import android.security.keystore.KeyGenParameterSpec;
+import android.security.keystore.KeyProperties;
 import android.util.Log;
 import android.util.Base64;
 import android.view.View;
@@ -42,8 +44,10 @@ import java.io.OutputStream;
 import java.io.IOException;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -52,6 +56,11 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
+import javax.crypto.spec.GCMParameterSpec;
 
 @SuppressWarnings("deprecation")
 public final class MainActivity extends Activity {
@@ -68,23 +77,33 @@ public final class MainActivity extends Activity {
     private static final String ACTIVATION_PREFERENCES = "physics_studio_activation_v1";
     private static final String ACTIVATION_CODE_KEY = "activation_code";
     private static final String ACTIVATION_FALLBACK_DEVICE_KEY = "fallback_device_secret";
+    private static final String SECURE_CREDENTIAL_PREFERENCES = "physics_studio_secure_credentials_v1";
+    private static final String SECURE_KEY_ALIAS_PREFIX = "physics_studio_credential_";
     private static final int MAX_OCR_IMAGE_DATA_URL_LENGTH = 12 * 1024 * 1024;
+    private static final int MAX_ANDROID_EXPORT_BYTES = 100 * 1024 * 1024;
 
     private WebView webView;
     private ValueCallback<Uri[]> filePathCallback;
     private String pendingExportText;
     private byte[] pendingAttachmentBytes;
+    private String pendingAttachmentRequestId;
+    private boolean fileExportReserved;
     private PermissionRequest pendingCameraPermissionRequest;
     private PermissionRequest pendingAudioPermissionRequest;
     private final ExecutorService classroomExecutor = Executors.newFixedThreadPool(2);
+    private final ExecutorService exportExecutor = Executors.newSingleThreadExecutor();
     private volatile LanClassroomHost classroomHost;
     private volatile boolean classroomHostClosing;
+    private String appEdition = "legacy";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        appEdition = readAppEdition();
         configureSystemBars();
-        startClassroomHost();
+        if ("teacher".equals(appEdition) || "legacy".equals(appEdition)) {
+            startClassroomHost();
+        }
 
         FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(Color.rgb(244, 246, 242));
@@ -112,8 +131,28 @@ public final class MainActivity extends Activity {
 
         configureWebView();
         if (savedInstanceState == null || webView.restoreState(savedInstanceState) == null) {
-            webView.loadUrl(START_URL);
+            webView.loadUrl(startUrlForIntent(getIntent()));
         }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (webView != null && "student".equals(appEdition)) {
+            webView.loadUrl(startUrlForIntent(intent));
+        }
+    }
+
+    private String startUrlForIntent(Intent intent) {
+        if (!"student".equals(appEdition) || intent == null) return START_URL;
+        Uri data = intent.getData();
+        if (data == null || !"physicsstudio".equals(data.getScheme()) || !"join".equals(data.getHost())) {
+            return START_URL;
+        }
+        String payload = data.toString();
+        if (payload.length() > 600) return START_URL;
+        return START_URL + "?join=" + Uri.encode(payload);
     }
 
     private void startClassroomHost() {
@@ -137,6 +176,20 @@ public final class MainActivity extends Activity {
                 }
             }
         });
+    }
+
+    private String readAppEdition() {
+        try {
+            Bundle metadata = getPackageManager()
+                .getApplicationInfo(getPackageName(), PackageManager.GET_META_DATA)
+                .metaData;
+            String value = metadata == null ? "" : metadata.getString("physicsStudioEdition", "");
+            if ("student".equals(value) || "teacher".equals(value)) return value;
+        } catch (PackageManager.NameNotFoundException ignored) {
+            // The installed package always has application metadata. Keep the
+            // legacy boundary if the manifest is unexpectedly incomplete.
+        }
+        return "legacy";
     }
 
     private void configureSystemBars() {
@@ -408,6 +461,65 @@ public final class MainActivity extends Activity {
     }
 
     private final class AndroidBridge {
+        @JavascriptInterface
+        public String getAppEdition() {
+            return appEdition;
+        }
+
+        @JavascriptInterface
+        public boolean saveSecureCredential(String name, String value) {
+            if (!isAllowedSecureCredentialName(name) || value == null || value.length() > 65536) {
+                return false;
+            }
+            try {
+                SecretKey key = secureCredentialKey();
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.ENCRYPT_MODE, key, new SecureRandom());
+                byte[] encrypted = cipher.doFinal(value.getBytes(StandardCharsets.UTF_8));
+                byte[] iv = cipher.getIV();
+                JSONObject envelope = new JSONObject();
+                envelope.put("v", 1);
+                envelope.put("iv", Base64.encodeToString(iv, Base64.NO_WRAP));
+                envelope.put("ciphertext", Base64.encodeToString(encrypted, Base64.NO_WRAP));
+                return getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                    .edit()
+                    .putString(name, envelope.toString())
+                    .commit();
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public String readSecureCredential(String name) {
+            if (!isAllowedSecureCredentialName(name)) return "";
+            String encoded = getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                .getString(name, "");
+            if (encoded == null || encoded.isEmpty()) return "";
+            try {
+                JSONObject envelope = new JSONObject(encoded);
+                if (envelope.optInt("v", 0) != 1) return "";
+                byte[] iv = Base64.decode(envelope.optString("iv", ""), Base64.NO_WRAP);
+                byte[] encrypted = Base64.decode(envelope.optString("ciphertext", ""), Base64.NO_WRAP);
+                if (iv.length != 12 || encrypted.length < 16 || encrypted.length > 70000) return "";
+                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
+                cipher.init(Cipher.DECRYPT_MODE, secureCredentialKey(), new GCMParameterSpec(128, iv));
+                byte[] clear = cipher.doFinal(encrypted);
+                return clear.length > 65536 ? "" : new String(clear, StandardCharsets.UTF_8);
+            } catch (Exception ignored) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public boolean deleteSecureCredential(String name) {
+            if (!isAllowedSecureCredentialName(name)) return false;
+            return getSharedPreferences(SECURE_CREDENTIAL_PREFERENCES, MODE_PRIVATE)
+                .edit()
+                .remove(name)
+                .commit();
+        }
+
         /**
          * The current dependency-free Android shell is compiled directly with android.jar and
          * does not bundle an OCR model. Android itself does not expose a general text-recognition
@@ -597,12 +709,37 @@ public final class MainActivity extends Activity {
 
         @JavascriptInterface
         public void saveBase64File(String fileName, String mimeType, String base64Data) {
-            if (base64Data == null) return;
+            saveBase64FileInternal(null, fileName, mimeType, base64Data);
+        }
+
+        @JavascriptInterface
+        public void saveBase64FileWithAck(String requestId, String fileName, String mimeType, String base64Data) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            saveBase64FileInternal(requestId, fileName, mimeType, base64Data);
+        }
+
+        private void saveBase64FileInternal(String requestId, String fileName, String mimeType, String base64Data) {
+            if (base64Data == null) {
+                postFileExportResponse(requestId, "error", "invalid_data");
+                return;
+            }
+            long maximumEncodedLength = ((MAX_ANDROID_EXPORT_BYTES + 2L) / 3L) * 4L + 16L;
+            if (base64Data.length() > maximumEncodedLength) {
+                postFileExportResponse(requestId, "error", "too_large");
+                return;
+            }
+            synchronized (MainActivity.this) {
+                if (fileExportReserved) {
+                    postFileExportResponse(requestId, "error", "busy");
+                    return;
+                }
+                fileExportReserved = true;
+            }
             final byte[] decoded;
             try {
                 decoded = Base64.decode(base64Data, Base64.DEFAULT);
             } catch (IllegalArgumentException error) {
-                Log.e(TAG, "Invalid attachment data", error);
+                finishFileExport(requestId, "error", "invalid_data");
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
@@ -611,10 +748,15 @@ public final class MainActivity extends Activity {
                 });
                 return;
             }
+            if (decoded.length > MAX_ANDROID_EXPORT_BYTES) {
+                finishFileExport(requestId, "error", "too_large");
+                return;
+            }
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
                     pendingAttachmentBytes = decoded;
+                    pendingAttachmentRequestId = requestId;
                     Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE);
                     intent.setType(
@@ -622,16 +764,42 @@ public final class MainActivity extends Activity {
                             ? "application/octet-stream"
                             : mimeType
                     );
-                        intent.putExtra(Intent.EXTRA_TITLE, sanitizeGenericFileName(fileName, mimeType));
+                    intent.putExtra(Intent.EXTRA_TITLE, sanitizeGenericFileName(fileName, mimeType));
                     try {
                         startActivityForResult(intent, REQUEST_SAVE_ATTACHMENT);
                     } catch (ActivityNotFoundException error) {
                         pendingAttachmentBytes = null;
+                        pendingAttachmentRequestId = null;
+                        finishFileExport(requestId, "error", "no_file_picker");
                         Toast.makeText(MainActivity.this, "没有可保存附件的应用。", Toast.LENGTH_SHORT).show();
                     }
                 }
             });
         }
+    }
+
+    private boolean isAllowedSecureCredentialName(String name) {
+        return "refresh-token".equals(name)
+            || "authenticated-user".equals(name)
+            || "owner-capabilities".equals(name);
+    }
+
+    private SecretKey secureCredentialKey() throws Exception {
+        String alias = SECURE_KEY_ALIAS_PREFIX + getPackageName();
+        KeyStore keyStore = KeyStore.getInstance("AndroidKeyStore");
+        keyStore.load(null);
+        java.security.Key existing = keyStore.getKey(alias, null);
+        if (existing instanceof SecretKey) return (SecretKey)existing;
+        KeyGenerator generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+        generator.init(new KeyGenParameterSpec.Builder(
+            alias,
+            KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT
+        )
+            .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+            .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+            .setRandomizedEncryptionRequired(true)
+            .build());
+        return generator.generateKey();
     }
 
     private static boolean isSafeClassroomRequestId(String value) {
@@ -675,6 +843,36 @@ public final class MainActivity extends Activity {
                 );
             }
         });
+    }
+
+    private void postFileExportResponse(final String requestId, final String status, final String errorCode) {
+        if (!isSafeClassroomRequestId(requestId)) return;
+        final JSONObject response = new JSONObject();
+        try {
+            response.put("requestId", requestId);
+            response.put("status", status);
+            if (errorCode != null && !errorCode.isEmpty()) response.put("errorCode", errorCode);
+        } catch (Exception ignored) {
+            return;
+        }
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (webView == null) return;
+                webView.evaluateJavascript(
+                    "globalThis.PhysicsStudioAndroidExportResponse&&"
+                        + "globalThis.PhysicsStudioAndroidExportResponse(" + response.toString() + ")",
+                    null
+                );
+            }
+        });
+    }
+
+    private void finishFileExport(String requestId, String status, String errorCode) {
+        synchronized (this) {
+            fileExportReserved = false;
+        }
+        postFileExportResponse(requestId, status, errorCode);
     }
 
     private static boolean isSafeActivationCode(String code) {
@@ -844,19 +1042,49 @@ public final class MainActivity extends Activity {
             return;
         }
         if (requestCode == REQUEST_SAVE_ATTACHMENT) {
-            if (resultCode == RESULT_OK && data != null && data.getData() != null
-                && pendingAttachmentBytes != null) {
-                try (OutputStream stream = getContentResolver().openOutputStream(data.getData())) {
-                    if (stream == null) throw new IllegalStateException("Cannot open output stream");
-                    stream.write(pendingAttachmentBytes);
-                    stream.flush();
-                    Toast.makeText(this, "附件已保存。", Toast.LENGTH_SHORT).show();
-                } catch (Exception error) {
-                    Log.e(TAG, "Failed to save attachment", error);
-                    Toast.makeText(this, "附件保存失败。", Toast.LENGTH_LONG).show();
-                }
-            }
+            final byte[] bytes = pendingAttachmentBytes;
+            final String requestId = pendingAttachmentRequestId;
             pendingAttachmentBytes = null;
+            pendingAttachmentRequestId = null;
+            if (resultCode != RESULT_OK) {
+                finishFileExport(requestId, "canceled", null);
+                return;
+            }
+            final Uri outputUri = data == null ? null : data.getData();
+            if (outputUri == null || bytes == null) {
+                finishFileExport(requestId, "error", "write_failed");
+                return;
+            }
+            exportExecutor.execute(new Runnable() {
+                @Override
+                public void run() {
+                    try (OutputStream stream = getContentResolver().openOutputStream(outputUri)) {
+                        if (stream == null) throw new IllegalStateException("Cannot open output stream");
+                        stream.write(bytes);
+                        stream.flush();
+                    } catch (Exception error) {
+                        Log.e(TAG, "Failed to save attachment", error);
+                        finishFileExport(requestId, "error", "write_failed");
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "附件保存失败。", Toast.LENGTH_LONG).show();
+                            }
+                        });
+                        return;
+                    }
+                    finishFileExport(requestId, "saved", null);
+                    if (requestId == null) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                Toast.makeText(MainActivity.this, "附件已保存。", Toast.LENGTH_SHORT).show();
+                            }
+                        });
+                    }
+                }
+            });
+            return;
         }
     }
 
@@ -882,6 +1110,7 @@ public final class MainActivity extends Activity {
         classroomHost = null;
         if (host != null) host.close();
         classroomExecutor.shutdownNow();
+        exportExecutor.shutdown();
         if (filePathCallback != null) filePathCallback.onReceiveValue(null);
         if (pendingCameraPermissionRequest != null) {
             pendingCameraPermissionRequest.deny();

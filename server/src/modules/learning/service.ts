@@ -11,6 +11,12 @@ import {
 import { withTransaction } from "../../infrastructure/db.js";
 import { appendAudit, hashAuditIp } from "../audit/repository.js";
 import { authorize, type Actor, type AuthorizationAction } from "../authorization/policy.js";
+import {
+  validatePerQuestionScores,
+  validateSubmissionAnswers,
+  visibleQuestionItems,
+  type AssignmentQuestionItem,
+} from "./assignment-domain.js";
 import type {
   AssignmentListResponse,
   AssignmentRequest,
@@ -24,9 +30,14 @@ import type {
   ReviewCaseView,
   ReviewDecisionRequest,
   SubmissionRequest,
+  SubmissionListResponse,
   SubmissionView,
   SyncExamRecordsRequest,
   SyncLearningRequest,
+  SyncVariantSetsRequest,
+  VariantSetListResponse,
+  VariantSetSyncResponse,
+  VariantSetView,
 } from "./contracts.js";
 
 interface ClassAccessRow {
@@ -65,6 +76,15 @@ interface SubmissionRow {
   client_entity_id: string;
   status: "submitted" | "underReview" | "returned" | "accepted";
   submitted_at: Date;
+  answers?: SubmissionRequest["answers"];
+  student_user_id?: string;
+  student_display_name?: string;
+  submission_version?: number;
+  previous_submission_id?: string | null;
+  review_status?: "pending" | "approved" | "returned" | "rejudged";
+  current_score?: number | string | null;
+  current_per_question_scores?: ReviewDecisionRequest["perQuestionScores"] | null;
+  feedback?: string | null;
 }
 
 interface ReviewCaseRow {
@@ -77,6 +97,10 @@ interface ReviewCaseRow {
   revision: number;
   submitted_at: Date;
   updated_at: Date;
+  student_display_name?: string;
+  answers?: SubmissionRequest["answers"];
+  submission_version?: number;
+  previous_answers?: SubmissionRequest["answers"] | null;
 }
 
 interface SnapshotRow {
@@ -86,6 +110,21 @@ interface SnapshotRow {
   payload: Record<string, unknown>;
   updated_at: Date;
   profile_id: string;
+}
+
+interface VariantSetRow {
+  id: string;
+  class_id: string;
+  client_entity_id: string;
+  parent_question_id: string;
+  source_content_hash: string;
+  cache_key: string;
+  spec_version: string;
+  generator_version: string;
+  status: "approved";
+  payload: Record<string, unknown>;
+  payload_hash: Buffer;
+  updated_at: Date;
 }
 
 export interface LearningServiceOptions {
@@ -202,6 +241,9 @@ function assignmentView(row: AssignmentRow): AssignmentView {
   const knowledgePointKeys = Array.isArray(snapshot.knowledgePointKeys)
     ? snapshot.knowledgePointKeys.filter((item): item is string => typeof item === "string")
     : [];
+  const questionItems = Array.isArray(snapshot.questionItems)
+    ? visibleQuestionItems(snapshot.questionItems as AssignmentQuestionItem[])
+    : [];
   return {
     id: row.id,
     classId: row.class_id,
@@ -213,6 +255,7 @@ function assignmentView(row: AssignmentRow): AssignmentView {
     targetType,
     targetId,
     questionIds,
+    questionItems,
     knowledgePointKeys,
     target: typeof snapshot.target === "string" ? snapshot.target : "",
     createdAt: row.created_at.toISOString(),
@@ -227,6 +270,23 @@ function submissionView(row: SubmissionRow): SubmissionView {
     clientEntityId: row.client_entity_id,
     status: row.status,
     submittedAt: row.submitted_at.toISOString(),
+    ...(row.answers ? { answers: row.answers } : {}),
+    ...(row.student_user_id ? { studentUserId: row.student_user_id } : {}),
+    ...(row.student_display_name ? { studentDisplayName: row.student_display_name } : {}),
+    ...(row.submission_version ? { version: row.submission_version } : {}),
+    ...(row.submission_version ? { previousSubmissionId: row.previous_submission_id ?? null } : {}),
+    ...(row.review_status ? { reviewStatus: row.review_status } : {}),
+    ...(row.current_score !== undefined ? { score: row.current_score === null ? null : Number(row.current_score) } : {}),
+    ...(row.current_per_question_scores ? { perQuestionScores: row.current_per_question_scores } : {}),
+    ...(row.feedback !== undefined ? { feedback: row.feedback } : {}),
+  };
+}
+
+function submissionPage(rows: SubmissionRow[]): SubmissionListResponse {
+  const pageRows = rows.slice(0, 500);
+  return {
+    items: pageRows.map(submissionView),
+    nextCursor: rows.length > 500 ? pageRows[pageRows.length - 1]?.id ?? null : null,
   };
 }
 
@@ -241,6 +301,26 @@ function reviewView(row: ReviewCaseRow): ReviewCaseView {
     revision: row.revision,
     submittedAt: row.submitted_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    ...(row.student_display_name ? { studentDisplayName: row.student_display_name } : {}),
+    ...(row.answers ? { answers: row.answers } : {}),
+    ...(row.submission_version ? { submissionVersion: row.submission_version } : {}),
+    ...(row.previous_answers ? { previousAnswers: row.previous_answers } : {}),
+  };
+}
+
+function variantSetView(row: VariantSetRow): VariantSetView {
+  const payload = parseSnapshot(row.payload);
+  return {
+    clientEntityId: row.client_entity_id,
+    classId: row.class_id,
+    parentQuestionId: row.parent_question_id,
+    sourceContentHash: row.source_content_hash,
+    cacheKey: row.cache_key,
+    specVersion: row.spec_version,
+    generatorVersion: row.generator_version,
+    status: "approved",
+    variants: Array.isArray(payload.variants) ? payload.variants as VariantSetView["variants"] : [],
+    updatedAt: row.updated_at.toISOString(),
   };
 }
 
@@ -249,6 +329,24 @@ export class LearningService {
 
   constructor(private readonly options: LearningServiceOptions) {
     this.now = options.now ?? (() => new Date());
+  }
+
+  private async assertPersistedStudentConsent(tx: PoolClient, studentUserId: string): Promise<void> {
+    // The client's age flag or consent boolean is not evidence of authorization.
+    // Legacy accounts have no row and therefore cannot upload personal learning data.
+    const result = await tx.query<{ age_band: string; guardian_user_id: string | null }>(
+      `select age_band, guardian_user_id
+         from student_data_consents
+        where student_user_id = $1
+          and consent_status = 'verified'
+          and withdrawn_at is null
+          and verified_at <= now()`,
+      [studentUserId],
+    );
+    const record = result.rows[0];
+    if (!record || (record.age_band === "under14" && !record.guardian_user_id)) {
+      reject("student_consent_not_verified", "Server-verified student data consent is required");
+    }
   }
 
   private async classAccess(actorId: string, classId: string): Promise<ClassAccessRow> {
@@ -380,6 +478,7 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
+      await this.assertPersistedStudentConsent(tx, actor.userId);
       const profile = await this.ensureProfile(tx, actor, input.profile, now);
       await this.recordInboundEvent(
         tx,
@@ -469,6 +568,7 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
+      await this.assertPersistedStudentConsent(tx, actor.userId);
       const profile = await this.ensureProfile(tx, actor, input.profile, now);
       await this.recordInboundEvent(
         tx,
@@ -522,6 +622,113 @@ export class LearningService {
     return result.body as unknown as ExamSyncResponse;
   }
 
+  async syncVariantSets(
+    actor: Actor,
+    classId: string,
+    input: SyncVariantSetsRequest,
+    context: LearningMutationContext,
+  ): Promise<VariantSetSyncResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "assignment.create", access);
+    requireActiveClass(access);
+    const now = this.now();
+    const result = await withTransaction(this.options.pool, async (tx) => executeIdempotently(tx, {
+      ...context.idempotency,
+      actorId: actor.userId,
+      expiresAt: apiExpiry(now),
+    }, async () => {
+      let accepted = 0;
+      let duplicates = 0;
+      const items: VariantSetView[] = [];
+      for (const item of input.sets) {
+        if (item.variants.some((variant) => {
+          const validation = parseSnapshot(variant.validation);
+          return validation.passed !== true
+            || !["teacher-approved", "system-validated"].includes(variant.approvalStatus);
+        })) {
+          throw new ApiError(400, "variant_not_approved", "Every synced variant must pass validation and teacher/system approval");
+        }
+        const payload = JSON.stringify(item);
+        const payloadHash = createHash("sha256").update(payload, "utf8").digest();
+        const existing = await tx.query<VariantSetRow>(
+          `select id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                  cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at
+             from class_variant_sets
+            where class_id = $1 and (client_entity_id = $2 or cache_key = $3)
+            for update`,
+          [classId, item.clientEntityId, item.cacheKey],
+        );
+        if (existing.rows.length > 1) {
+          throw new ApiError(409, "variant_identity_conflict", "Variant set identity and cache key refer to different records");
+        }
+        const current = existing.rows[0];
+        if (current?.payload_hash.equals(payloadHash)) {
+          duplicates += 1;
+          items.push(variantSetView(current));
+          continue;
+        }
+        const updated = current
+          ? await tx.query<VariantSetRow>(
+            `update class_variant_sets
+                set client_entity_id = $3, parent_question_id = $4, source_content_hash = $5,
+                    cache_key = $6, spec_version = $7, generator_version = $8,
+                    status = 'approved', payload = $9::jsonb, payload_hash = $10, updated_at = $11
+              where id = $1 and class_id = $2
+            returning id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                      cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at`,
+            [current.id, classId, item.clientEntityId, item.parentQuestionId, item.sourceContentHash,
+              item.cacheKey, item.specVersion, item.generatorVersion, payload, payloadHash, now],
+          )
+          : await tx.query<VariantSetRow>(
+            `insert into class_variant_sets(
+               id, class_id, client_entity_id, parent_question_id, source_content_hash,
+               cache_key, spec_version, generator_version, status, payload, payload_hash,
+               created_by, created_at, updated_at
+             ) values ($1, $2, $3, $4, $5, $6, $7, $8, 'approved', $9::jsonb, $10, $11, $12, $12)
+            returning id, class_id, client_entity_id, parent_question_id, source_content_hash,
+                      cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at`,
+            [randomUUID(), classId, item.clientEntityId, item.parentQuestionId, item.sourceContentHash,
+              item.cacheKey, item.specVersion, item.generatorVersion, payload, payloadHash, actor.userId, now],
+          );
+        const row = updated.rows[0];
+        if (!row) throw new Error("Variant set sync did not return a row");
+        accepted += 1;
+        items.push(variantSetView(row));
+      }
+      const response: VariantSetSyncResponse = { accepted, duplicates, items };
+      await appendAudit(tx, {
+        actorId: actor.userId,
+        actorRole: actor.role,
+        action: "variant.sets.sync",
+        resourceType: "class",
+        resourceId: classId,
+        classId,
+        result: "succeeded",
+        beforeState: null,
+        afterState: asJson({ accepted, duplicates, clientEntityIds: items.map((item) => item.clientEntityId) }),
+        reason: null,
+        requestId: context.requestId,
+        ipHash: hashAuditIp(this.options.auditIpKey, context.ip),
+      });
+      return { statusCode: 200, body: asJson(response) };
+    }));
+    return result.body as unknown as VariantSetSyncResponse;
+  }
+
+  async listVariantSets(actor: Actor, classId: string): Promise<VariantSetListResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "class.read", access);
+    requireActiveClass(access);
+    const result = await this.options.pool.query<VariantSetRow>(
+      `select id, class_id, client_entity_id, parent_question_id, source_content_hash,
+              cache_key, spec_version, generator_version, status, payload, payload_hash, updated_at
+         from class_variant_sets where class_id = $1 and status = 'approved'
+        order by updated_at desc limit 500`,
+      [classId],
+    );
+    return { items: result.rows.map(variantSetView) };
+  }
+
   async createAssignment(
     actor: Actor,
     classId: string,
@@ -555,10 +762,24 @@ export class LearningService {
         );
         if (!member.rowCount) throw new ApiError(400, "target_not_in_class", "The student is not an active member of this class");
       }
+      if (new Set(input.questionIds).size !== input.questionIds.length) {
+        throw new ApiError(400, "duplicate_question", "Assignment question ids must be unique");
+      }
+      if (input.publish && (!input.questionIds.length || !input.questionItems?.length)) {
+        throw new ApiError(400, "question_snapshot_required", "Published assignments need at least one complete question snapshot");
+      }
+      if (input.questionItems?.length) {
+        const ids = new Set(input.questionIds);
+        if (input.questionItems.length !== ids.size || new Set(input.questionItems.map((item) => item.id)).size !== ids.size
+          || input.questionItems.some((item) => !ids.has(item.id))) {
+          throw new ApiError(400, "question_snapshot_mismatch", "Question snapshots must match assignment question ids");
+        }
+      }
       const snapshot = JSON.stringify({
         targetType: input.targetType,
         targetId,
         questionIds: input.questionIds,
+        questionItems: input.questionItems ?? [],
         knowledgePointKeys: input.knowledgePointKeys,
         target: input.target,
       });
@@ -642,8 +863,8 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
-      const assignment = await tx.query<{ id: string; class_id: string; status: AssignmentRow["status"]; membership_id: string }>(
-        `select a.id, a.class_id, a.status, m.id as membership_id
+      const assignment = await tx.query<{ id: string; class_id: string; status: AssignmentRow["status"]; membership_id: string; published_snapshot: Record<string, unknown> | null }>(
+        `select a.id, a.class_id, a.status, a.published_snapshot, m.id as membership_id
            from assignments a
            join memberships m on m.class_id = a.class_id and m.user_id = $1 and m.status = 'active'
           where a.id = $2 and a.status = 'published'
@@ -657,25 +878,58 @@ export class LearningService {
       );
       const target = assignment.rows[0];
       if (!target) throw new ApiError(404, "assignment_not_found", "Assignment was not found");
+      const published = parseSnapshot(target.published_snapshot);
+      const questionIds = Array.isArray(published.questionIds)
+        ? published.questionIds.filter((id): id is string => typeof id === "string") : [];
+      const answerCheck = validateSubmissionAnswers(input.answers, questionIds);
+      if (answerCheck.missingQuestionIds.length) {
+        throw new ApiError(400, "assignment_incomplete", "Every assignment question needs an answer before submission");
+      }
+      // Serialize the first submission and later corrections for this member.
+      // Locking only the latest submission would not protect the first insert,
+      // because there is no row to lock yet.
+      await tx.query("select id from memberships where id = $1 for update", [target.membership_id]);
+      const prior = await tx.query<SubmissionRow>(
+        `select id, assignment_id, client_entity_id, status, submitted_at, submission_version,
+                previous_submission_id, answers, student_user_id
+           from submissions where membership_id = $1 and assignment_id = $2
+          order by submission_version desc limit 1 for update`,
+        [target.membership_id, assignmentId],
+      );
+      const latest = prior.rows[0];
+      if (latest?.client_entity_id === input.clientEntityId) return {
+        statusCode: 201,
+        body: asJson(submissionView(latest)),
+      };
+      if (latest && latest.status !== "returned") {
+        throw new ApiError(409, "submission_already_active", "A new submission is allowed only after teacher return");
+      }
+      const version = (latest?.submission_version ?? 0) + 1;
       const inserted = await tx.query<SubmissionRow>(
         `insert into submissions(
            id, assignment_id, membership_id, student_user_id, client_entity_id,
-           answers, status, submitted_at, created_at
-         ) values ($1, $2, $3, $4, $5, $6::jsonb, 'submitted', $7, $7)
+           answers, status, submitted_at, created_at, submission_version, previous_submission_id
+         ) values ($1, $2, $3, $4, $5, $6::jsonb, 'submitted', $7, $7, $8, $9)
          on conflict (membership_id, client_entity_id) do nothing
-         returning id, assignment_id, client_entity_id, status, submitted_at`,
-        [randomUUID(), assignmentId, target.membership_id, actor.userId, input.clientEntityId, JSON.stringify(input.answers), now],
+         returning id, assignment_id, client_entity_id, status, submitted_at, submission_version,
+                   previous_submission_id, answers, student_user_id`,
+        [randomUUID(), assignmentId, target.membership_id, actor.userId, input.clientEntityId,
+          JSON.stringify(input.answers), now, version, latest?.id ?? null],
       );
       let submission = inserted.rows[0];
       if (!submission) {
         const existing = await tx.query<SubmissionRow>(
-          `select id, assignment_id, client_entity_id, status, submitted_at
+          `select id, assignment_id, client_entity_id, status, submitted_at,
+                  submission_version, previous_submission_id, answers, student_user_id
              from submissions where membership_id = $1 and client_entity_id = $2`,
           [target.membership_id, input.clientEntityId],
         );
         submission = existing.rows[0];
       }
       if (!submission) throw new Error("Submission was not returned");
+      if (submission.assignment_id !== assignmentId) {
+        throw new ApiError(409, "client_entity_conflict", "Submission id was already used for another assignment");
+      }
       await tx.query(
         `insert into review_cases(id, submission_id, class_id, status, revision, created_at, updated_at)
          values ($1, $2, $3, 'pending', 1, $4, $4)
@@ -706,14 +960,102 @@ export class LearningService {
     assertAllowed(actor, "report.read", access);
     const result = await this.options.pool.query<ReviewCaseRow>(
       `select rc.id, rc.submission_id, s.assignment_id, rc.class_id, rc.status,
-              rc.current_score, rc.revision, s.submitted_at, rc.updated_at
+              rc.current_score, rc.revision, s.submitted_at, rc.updated_at,
+              u.display_name as student_display_name,
+              s.answers, s.submission_version, previous.answers as previous_answers
          from review_cases rc
          join submissions s on s.id = rc.submission_id
+         join users u on u.id = s.student_user_id
+         join memberships m on m.id = s.membership_id
+         left join submissions previous on previous.id = s.previous_submission_id
         where rc.class_id = $1 and rc.status = 'pending'
         order by rc.updated_at asc limit 200`,
       [classId],
     );
     return { items: result.rows.map(reviewView) };
+  }
+
+  async listOwnSubmissions(actor: Actor, assignmentId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
+    if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
+              rc.status as review_status, rc.current_score, rc.current_per_question_scores,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
+         left join review_cases rc on rc.submission_id = s.id
+        where a.id = $2 and s.student_user_id = $1
+          and ($3::uuid is null or (s.submission_version, s.id) > (
+            select cursor_submission.submission_version, cursor_submission.id
+              from submissions cursor_submission
+             where cursor_submission.id = $3
+               and cursor_submission.assignment_id = $2
+               and cursor_submission.student_user_id = $1
+          ))
+        order by s.submission_version asc, s.id asc limit 501`,
+      [actor.userId, assignmentId, cursor],
+    );
+    return submissionPage(result.rows);
+  }
+
+  async listOwnClassSubmissions(actor: Actor, classId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
+    if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "class.read", access);
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
+              rc.status as review_status, rc.current_score, rc.current_per_question_scores,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
+         left join review_cases rc on rc.submission_id = s.id
+        where a.class_id = $2 and s.student_user_id = $1
+          and ($3::uuid is null or (s.submitted_at, s.id) < (
+            select cursor_submission.submitted_at, cursor_submission.id
+              from submissions cursor_submission
+              join assignments cursor_assignment on cursor_assignment.id = cursor_submission.assignment_id
+             where cursor_submission.id = $3
+               and cursor_submission.student_user_id = $1
+               and cursor_assignment.class_id = $2
+          ))
+        order by s.submitted_at desc, s.id desc limit 501`,
+      [actor.userId, classId, cursor],
+    );
+    return submissionPage(result.rows);
+  }
+
+  async listClassSubmissions(actor: Actor, classId: string, cursor: string | null = null): Promise<SubmissionListResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "report.read", access);
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, u.display_name as student_display_name,
+              s.submission_version, s.previous_submission_id, rc.status as review_status,
+              rc.current_score, rc.current_per_question_scores,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id
+         join users u on u.id = s.student_user_id
+         left join review_cases rc on rc.submission_id = s.id
+        where a.class_id = $1
+          and ($2::uuid is null or (s.submitted_at, s.id) < (
+            select cursor_submission.submitted_at, cursor_submission.id
+              from submissions cursor_submission
+              join assignments cursor_assignment on cursor_assignment.id = cursor_submission.assignment_id
+             where cursor_submission.id = $2 and cursor_assignment.class_id = $1
+          ))
+        order by s.submitted_at desc, s.id desc limit 501`,
+      [classId, cursor],
+    );
+    return submissionPage(result.rows);
   }
 
   async decideReviewCase(
@@ -731,7 +1073,7 @@ export class LearningService {
       const currentResult = await tx.query<ReviewCaseRow & { owner_teacher_id: string; class_status: ClassAccessRow["status"] }>(
         `select rc.id, rc.submission_id, s.assignment_id, rc.class_id, rc.status,
                 rc.current_score, rc.revision, s.submitted_at, rc.updated_at,
-                c.owner_teacher_id, c.status as class_status
+                s.answers, c.owner_teacher_id, c.status as class_status
            from review_cases rc
            join submissions s on s.id = rc.submission_id
            join classes c on c.id = rc.class_id
@@ -757,6 +1099,10 @@ export class LearningService {
       if (current.status === "pending" && input.decision !== "approve" && input.decision !== "return" && input.decision !== "rejudge") {
         throw new ApiError(400, "validation_error", "Review decision is invalid");
       }
+      const scoredQuestionIds = Array.isArray(current.answers)
+        ? current.answers.map((answer) => answer.questionId)
+        : [];
+      const perQuestionScores = validatePerQuestionScores(input.perQuestionScores, scoredQuestionIds);
       const nextStatus = input.decision === "approve" ? "approved" : input.decision === "return" ? "returned" : "rejudged";
       const nextRevision = current.revision + 1;
       await tx.query(
@@ -766,7 +1112,7 @@ export class LearningService {
          ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11, $12::jsonb, $13)`,
         [randomUUID(), reviewId, actor.userId, nextRevision, input.decision, current.status,
           nextStatus, current.current_score === null ? null : Number(current.current_score),
-          input.score, JSON.stringify(input.perQuestionScores), input.reason.trim(),
+          input.score, JSON.stringify(perQuestionScores), input.reason.trim(),
           JSON.stringify(input.annotation), now],
       );
       const updated = await tx.query<ReviewCaseRow>(
@@ -778,7 +1124,7 @@ export class LearningService {
                   current_score, revision,
                   (select submitted_at from submissions where id = submission_id) as submitted_at,
                   updated_at`,
-        [reviewId, nextStatus, input.score, JSON.stringify(input.perQuestionScores), nextRevision, now, current.assignment_id],
+        [reviewId, nextStatus, input.score, JSON.stringify(perQuestionScores), nextRevision, now, current.assignment_id],
       );
       const row = updated.rows[0];
       if (!row) throw new Error("Review update did not return a row");

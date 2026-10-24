@@ -3,19 +3,22 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "3.2.0",
-    stateVersion: 8,
+    appVersion: "4.1.0",
+    stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "3.2.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.1.0");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
-  const STATE_VERSION = Math.max(8, Number(VERSION_SOURCE.stateVersion) || 8);
+  const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
   const DAY = 24 * 60 * 60 * 1000;
   const MASTERY_RULES = Object.freeze({
     experimental: true,
     independentHintMaximum: 1,
     masteredIndependentDates: 2,
+    // Product rule, not a standardized educational threshold: a midnight
+    // crossing alone is not evidence of delayed retention.
+    minimumRetentionIntervalHours: 24,
     masteredTransferEvidence: 1,
     weakHintMinimum: 3,
     weakModelingBelow: 50
@@ -29,13 +32,23 @@
     standardizedAssessmentRule: false
   });
   const ERROR_TYPE_DEFINITIONS = Object.freeze([
-    { code: "reading", label: "审题错误", aliases: /审题|读题|看错|条件遗漏|信息提取/u },
-    { code: "concept", label: "概念错误", aliases: /概念|前概念|认知/u },
-    { code: "modeling", label: "建模错误", aliases: /建模|研究对象|过程划分|受力分析/u },
-    { code: "law-condition", label: "规律条件错误", aliases: /规律|定律|公式|适用条件|条件错误/u },
-    { code: "calculation-unit", label: "计算\/单位错误", aliases: /计算|运算|单位|有效数字|方向|符号|正负/u },
-    { code: "graph-experiment", label: "图像\/实验错误", aliases: /图像|图表|实验|电路图|受力图|光路图/u }
+    { code: "concept", label: "概念理解", aliases: /概念|前概念|认知/u },
+    { code: "modeling", label: "研究对象\/建模", aliases: /建模|研究对象|过程划分|受力分析|理想化/u },
+    { code: "law-condition", label: "规律选择或适用条件", aliases: /规律|定律|适用条件|条件错误|公式选错|选错公式/u },
+    { code: "graph-representation", label: "图像与表征", aliases: /图像|图表|坐标|表征|电路图|受力图|光路图/u },
+    { code: "formula-algebra", label: "公式与代数", aliases: /公式|代数|变形|联立|运算步骤/u },
+    { code: "unit-direction", label: "单位\/方向\/符号", aliases: /单位|有效数字|方向|符号|正负/u },
+    { code: "experiment-data", label: "实验与数据处理", aliases: /实验|器材|控制变量|数据处理|拟合|误差/u },
+    { code: "reading-calculation", label: "审题或计算疏漏", aliases: /审题|读题|看错|条件遗漏|信息提取|计算|运算|粗心/u }
   ]);
+  const LEGACY_ERROR_TYPE_LABELS = Object.freeze({
+    "审题错误": "审题或计算疏漏",
+    "概念错误": "概念理解",
+    "建模错误": "研究对象/建模",
+    "规律条件错误": "规律选择或适用条件",
+    "计算/单位错误": "单位/方向/符号",
+    "图像/实验错误": "图像与表征"
+  });
   const CLOSED_LOOP_BADGES = Object.freeze([
     { id: "closed-loop-3", days: 3, title: "稳定起步" },
     { id: "closed-loop-7", days: 7, title: "一周闭环" },
@@ -1113,6 +1126,10 @@
     min: { dimension: "T", factor: 60 },
     h: { dimension: "T", factor: 3600 },
     "m/s": { dimension: "speed", factor: 1 },
+    "m/s²": { dimension: "acceleration", factor: 1 },
+    "m²": { dimension: "area", factor: 1 },
+    "cm²": { dimension: "area", factor: 0.0001 },
+    "mm²": { dimension: "area", factor: 0.000001 },
     "km/h": { dimension: "speed", factor: 1 / 3.6 },
     kg: { dimension: "M", factor: 1 },
     g: { dimension: "M", factor: 0.001 },
@@ -1164,6 +1181,7 @@
   function normalizeErrorType(value) {
     const normalized = String(value || "").trim().replaceAll("／", "/").slice(0, 80);
     if (!normalized) return "";
+    if (LEGACY_ERROR_TYPE_LABELS[normalized]) return LEGACY_ERROR_TYPE_LABELS[normalized];
     const exact = ERROR_TYPE_DEFINITIONS.find((item) => {
       return normalized === item.label || normalized === item.label.replace("错误", "");
     });
@@ -1180,7 +1198,7 @@
 
   function normalizeAttemptEvidence(attempt = {}) {
     const normalizedErrorType = normalizeErrorType(attempt.errorType);
-    const knowledgePointId = String(attempt.knowledgePointId || topicKeyForQuestion(attempt) || "").trim();
+    const knowledgePointId = String(topicKeyForQuestion(attempt) || attempt.knowledgePointId || "").trim();
     return {
       ...attempt,
       knowledgePointId,
@@ -1197,7 +1215,22 @@
   // open response can be stored and shown to a teacher without silently
   // becoming a zero score in any student metric.
   function isPendingManualReview(attempt = {}) {
-    return String(attempt?.grading?.status || "") === "review-required";
+    return attempt?.grading?.legacyReview?.status === "pending"
+      || String(attempt?.grading?.status || "") === "review-required";
+  }
+
+  // Opt-in only: preserve original grading and raw evidence; never regrade all
+  // history merely because the installed grading engine changed.
+  function markLegacyGradingForReview(state, attemptIds = [], reason = "旧评分规则需要核验") {
+    const ids = new Set(attemptIds);
+    const marked = [];
+    (state.attempts || []).forEach((attempt) => {
+      if (!ids.has(attempt.id) || attempt.grading?.manualReview || attempt.grading?.gradingVersion === GRADING_VERSION) return;
+      attempt.grading = { ...attempt.grading, legacyReview: { status: "pending", reason: String(reason).slice(0, 500), markedAt: new Date().toISOString(), originalGradingVersion: attempt.grading?.gradingVersion || "legacy-unversioned" } };
+      (state.variantAttempts || []).filter((record) => record.attemptId === attempt.id).forEach((record) => { record.verificationStatus = "pending-manual-review"; });
+      marked.push(attempt.id);
+    });
+    return marked;
   }
 
   function isAutoScoredAttempt(attempt = {}) {
@@ -1276,6 +1309,151 @@
       && question.contentReviewStatus !== "教师已退回");
   }
 
+  function normalizeVariantQuestion(value = {}, index = 0) {
+    if (!value || typeof value !== "object") return null;
+    const rawRole = String(value.variantRole || "");
+    const role = ["core", "near", "far", "counter"].includes(rawRole)
+      ? rawRole
+      : ["reverse", "context"].includes(rawRole) ? "far"
+        : ["near", "far", "counter"][index] || "near";
+    const legacyTechnique = rawRole === "reverse" ? "reverse" : rawRole === "context" ? "context" : "";
+    const content = String(value.content || "").trim().slice(0, 60000);
+    const answer = String(value.answer || "").trim().slice(0, 30000);
+    const solution = String(value.solution || "").trim().slice(0, 60000);
+    if (!value.id || !content || !answer || !solution) return null;
+    const validation = value.validation && typeof value.validation === "object"
+      ? {
+        ...value.validation,
+        passed: value.validation.passed === true,
+        verificationStatus: String(value.validation.verificationStatus || (value.validation.passed ? "validated" : "failed")),
+        failedReasons: Array.isArray(value.validation.failedReasons) ? value.validation.failedReasons.slice(0, 50) : []
+      }
+      : { passed: false, verificationStatus: "unverified", checks: {}, failedReasons: ["缺少独立质量门禁记录"] };
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      sourceQuestionId: String(value.sourceQuestionId || "").slice(0, 200),
+      sourceCandidateId: String(value.sourceCandidateId || "").slice(0, 200),
+      variantRole: role,
+      variantRoleLabel: String(({ core: "母题", near: "近迁移", far: "远迁移", counter: "反例辨析" }[role])).slice(0, 80),
+      variantTechnique: String(value.variantTechnique || legacyTechnique || ({ near: "condition", far: "context", counter: "counterexample", core: "parameter" }[role])).slice(0, 80),
+      sequence: Math.max(1, Math.min(3, Number(value.sequence) || index + 1)),
+      title: String(value.title || `专项变式 ${index + 1}`).slice(0, 240),
+      content,
+      answer,
+      solution,
+      options: Array.isArray(value.options) ? value.options.slice(0, 12) : [],
+      examPoints: Array.isArray(value.examPoints) ? value.examPoints.slice(0, 20) : [],
+      knowledgePoints: Array.isArray(value.knowledgePoints) ? value.knowledgePoints.slice(0, 20) : [],
+      questionType: normalizeQuestionType(value.questionType),
+      knowledgePointId: String(value.knowledgePointId || value.topicKey || "").slice(0, 200),
+      modelDefinitionId: String(value.modelDefinitionId || value.modelFamilyId || "").slice(0, 200),
+      modelFamilyId: String(value.modelFamilyId || value.modelDefinitionId || "").slice(0, 200),
+      transferGroupId: String(value.transferGroupId || value.retestGroupId || "").slice(0, 200),
+      independenceGroupId: String(value.independenceGroupId || value.modelDefinitionId || value.modelFamilyId || "").slice(0, 200),
+      changeSummary: String(value.changeSummary || "").slice(0, 2000),
+      relationToParent: String(value.relationToParent || "").slice(0, 2000),
+      source: String(value.source || "应用内变式").slice(0, 300),
+      approvalStatus: String(value.approvalStatus || "pending-teacher-review").slice(0, 80),
+      reviewRequired: value.reviewRequired !== false,
+      validation,
+      fullTextIncluded: true
+    };
+  }
+
+  function normalizeVariantSet(value = {}) {
+    if (!value || typeof value !== "object" || !value.id || !value.parentQuestionId) return null;
+    const variants = (Array.isArray(value.variants) ? value.variants : [])
+      .slice(0, 3)
+      .map(normalizeVariantQuestion)
+      .filter(Boolean);
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      cacheKey: String(value.cacheKey || "").slice(0, 600),
+      parentQuestionId: String(value.parentQuestionId).slice(0, 200),
+      sourceContentHash: String(value.sourceContentHash || "").slice(0, 160),
+      specVersion: String(value.specVersion || "variant_generation_v1").slice(0, 80),
+      generatorVersion: String(value.generatorVersion || "legacy").slice(0, 80),
+      variants,
+      status: String(value.status || (variants.length >= 2 ? "pending-review" : "unavailable")).slice(0, 80),
+      approvalStatus: String(value.approvalStatus || "pending-teacher-review").slice(0, 80),
+      reviewRequired: value.reviewRequired !== false,
+      stale: value.stale === true,
+      createdAt: String(value.createdAt || new Date().toISOString()),
+      updatedAt: String(value.updatedAt || value.createdAt || new Date().toISOString())
+    };
+  }
+
+  function normalizeVariantAttempt(value = {}) {
+    if (!value || typeof value !== "object" || !value.id || !value.attemptId || !value.variantQuestionId) return null;
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      variantSetId: String(value.variantSetId || "").slice(0, 240),
+      parentQuestionId: String(value.parentQuestionId || "").slice(0, 200),
+      variantQuestionId: String(value.variantQuestionId).slice(0, 240),
+      profileId: String(value.profileId || "student-default").slice(0, 200),
+      variantRole: ["core", "near", "far", "counter"].includes(String(value.variantRole))
+        ? String(value.variantRole)
+        : ["reverse", "context"].includes(String(value.variantRole)) ? "far" : "near",
+      variantTechnique: String(value.variantTechnique || (value.variantRole === "reverse" ? "reverse" : value.variantRole === "context" ? "context" : "")).slice(0, 80),
+      attemptId: String(value.attemptId).slice(0, 240),
+      hintLevel: Math.max(0, Math.min(5, Number(value.hintLevel) || 0)),
+      gradingStatus: String(value.gradingStatus || "review-required").slice(0, 80),
+      verificationStatus: String(value.verificationStatus || "practice-only").slice(0, 80),
+      solutionViewed: value.solutionViewed === true || Number(value.hintLevel) >= 5,
+      completedAt: String(value.completedAt || value.createdAt || new Date().toISOString())
+    };
+  }
+
+  function normalizeVariantPreset(value = {}) {
+    if (!value || typeof value !== "object" || !value.id) return null;
+    return {
+      ...value,
+      id: String(value.id).slice(0, 200),
+      name: String(value.name || "常用变式组卷参数").slice(0, 120),
+      parentCount: Math.max(1, Math.min(30, Number(value.parentCount) || 3)),
+      variantsPerParent: Math.max(2, Math.min(3, Number(value.variantsPerParent) || 3)),
+      difficultyRatios: value.difficultyRatios && typeof value.difficultyRatios === "object"
+        ? value.difficultyRatios
+        : { basic: 50, advanced: 35, challenge: 15 },
+      includeWrong: value.includeWrong !== false,
+      includeReverse: value.includeReverse !== false,
+      includeContext: value.includeContext !== false,
+      updatedAt: String(value.updatedAt || new Date().toISOString())
+    };
+  }
+
+  function normalizeFeynmanExplanation(value = {}) {
+    if (!value || typeof value !== "object" || !value.id || !value.questionId) return null;
+    const explanation = String(value.explanation || "").trim().slice(0, 12000);
+    if (!explanation) return null;
+    const evidenceIds = Array.isArray(value.evidenceIds)
+      ? [...new Set(value.evidenceIds.map(String).filter(Boolean))].slice(0, 100)
+      : [];
+    return {
+      ...value,
+      id: String(value.id).slice(0, 240),
+      profileId: String(value.profileId || "student-default").slice(0, 200),
+      questionId: String(value.questionId).slice(0, 240),
+      knowledgePointId: String(value.knowledgePointId || value.topicKey || "").slice(0, 200),
+      topic: String(value.topic || "待分类").slice(0, 160),
+      explanation,
+      researchObject: String(value.researchObject || "").trim().slice(0, 2000),
+      lawConditions: String(value.lawConditions || "").trim().slice(0, 4000),
+      analogy: String(value.analogy || "").trim().slice(0, 6000),
+      prediction: String(value.prediction || "").trim().slice(0, 6000),
+      predictionReason: String(value.predictionReason || "").trim().slice(0, 6000),
+      retestQuestionId: String(value.retestQuestionId || "").slice(0, 240),
+      unclearPoint: String(value.unclearPoint || "").trim().slice(0, 6000),
+      evidenceIds,
+      verificationStatus: String(value.verificationStatus || "student-reflection-only").slice(0, 80),
+      createdAt: String(value.createdAt || new Date().toISOString()),
+      updatedAt: String(value.updatedAt || value.createdAt || new Date().toISOString())
+    };
+  }
+
   function defaultState() {
     return {
       version: STATE_VERSION,
@@ -1306,6 +1484,10 @@
       experimentRecords: [],
       temporaryLearningGroups: [],
       assessmentSessions: [],
+      variantSets: [],
+      variantAttempts: [],
+      variantPresets: [],
+      feynmanExplanations: [],
       settings: {
         dailyGoal: 5,
         preferredStage: "全部",
@@ -1343,6 +1525,22 @@
       // merged, deleted or reassigned during this migration.
       migrated.version = 8;
       if (!Array.isArray(migrated.importedReports)) migrated.importedReports = [];
+    }
+    if (version < 9) {
+      // v9 adds complete generated-variant sets and their evidence links. Old
+      // transferNotes/experimentRecords remain untouched and are not promoted
+      // to verified transfer evidence without their original verification.
+      migrated.version = 9;
+      if (!Array.isArray(migrated.variantSets)) migrated.variantSets = [];
+      if (!Array.isArray(migrated.variantAttempts)) migrated.variantAttempts = [];
+      if (!Array.isArray(migrated.variantPresets)) migrated.variantPresets = [];
+    }
+    if (version < 10) {
+      // v10 adds student Feynman self-explanations and canonical transfer
+      // roles. Existing transferNotes, variant sets and attempts are retained;
+      // normalizeState maps legacy reverse/context roles without changing IDs.
+      migrated.version = 10;
+      if (!Array.isArray(migrated.feynmanExplanations)) migrated.feynmanExplanations = [];
     }
     return migrated;
   }
@@ -1428,6 +1626,18 @@
       assessmentSessions: Array.isArray(migrated.assessmentSessions)
         ? migrated.assessmentSessions.slice(-200).map(normalizeAssessmentSession)
         : [],
+      variantSets: Array.isArray(migrated.variantSets)
+        ? migrated.variantSets.slice(-1000).map(normalizeVariantSet).filter(Boolean)
+        : [],
+      variantAttempts: Array.isArray(migrated.variantAttempts)
+        ? migrated.variantAttempts.slice(-10000).map(normalizeVariantAttempt).filter(Boolean)
+        : [],
+      variantPresets: Array.isArray(migrated.variantPresets)
+        ? migrated.variantPresets.slice(-100).map(normalizeVariantPreset).filter(Boolean)
+        : [],
+      feynmanExplanations: Array.isArray(migrated.feynmanExplanations)
+        ? migrated.feynmanExplanations.slice(-5000).map(normalizeFeynmanExplanation).filter(Boolean)
+        : [],
       settings: { ...fallback.settings, ...(migrated.settings || {}) }
     };
   }
@@ -1439,9 +1649,15 @@
       if (!raw) return defaultState();
       return normalizeState(JSON.parse(raw));
     } catch (error) {
-      console.warn("学习闭环数据读取失败，已使用空白档案。", error);
-      return defaultState();
+      if (!repository.storageFault?.().readOnly) repository.enterReadOnlyFault?.(error, "read");
+      throw error;
     }
+  }
+
+  let lastSavePromise = Promise.resolve({ saved: true, revision: "initial" });
+
+  function awaitLastSave() {
+    return lastSavePromise;
   }
 
   function saveState(value) {
@@ -1449,7 +1665,8 @@
     normalized.updatedAt = new Date().toISOString();
     const repository = storageRepository();
     if (typeof repository.stageLearningState === "function") {
-      Promise.resolve(repository.stageLearningState(STORAGE_KEY, normalized)).catch((error) => {
+      lastSavePromise = Promise.resolve(repository.stageLearningState(STORAGE_KEY, normalized));
+      lastSavePromise.catch((error) => {
         try {
           globalThis.dispatchEvent?.(new CustomEvent("physics-storage-error", {
             detail: { message: "数据未保存", errorCode: String(error?.name || "storage-write-failed") }
@@ -1457,7 +1674,8 @@
         } catch (_dispatchError) { /* host may not implement CustomEvent */ }
       });
     } else {
-      repository.setItem(STORAGE_KEY, JSON.stringify(normalized));
+      lastSavePromise = Promise.resolve(repository.setItem(STORAGE_KEY, JSON.stringify(normalized)))
+        .then((outcome) => outcome || { saved: true, fallback: "localStorage" });
     }
     return normalized;
   }
@@ -1684,6 +1902,8 @@
     state.examRecords = state.examRecords.filter((record) => record.profileId !== profileId);
     state.growthRecords = state.growthRecords.filter((record) => record.profileId !== profileId);
     state.experimentRecords = state.experimentRecords.filter((record) => record.profileId !== profileId);
+    state.variantAttempts = (state.variantAttempts || []).filter((record) => record.profileId !== profileId);
+    state.feynmanExplanations = (state.feynmanExplanations || []).filter((record) => record.profileId !== profileId);
     state.learningPlans = state.learningPlans.filter((plan) => plan.profileId !== profileId);
     state.assessmentSessions = (Array.isArray(state.assessmentSessions) ? state.assessmentSessions : [])
       .filter((session) => session.profileId !== profileId);
@@ -1882,6 +2102,9 @@
 
   function normalizeChoice(value) {
     const text = String(value || "").toUpperCase();
+    if (/^\s*(?:选|答案(?:为|是)?\s*[:：]?)?\s*[A-D](?:\s*[、,，/]?\s*[A-D])*\s*[。.]?\s*$/.test(text)) {
+      return [...new Set(text.match(/[A-D]/g) || [])].sort().join("");
+    }
     const explicit = text.match(/(?:^|选|答案(?:为|是)?)\s*([A-D](?:\s*[、,，/]\s*[A-D])*)/);
     if (explicit) return [...new Set(explicit[1].match(/[A-D]/g) || [])].sort().join("");
     const tokens = [];
@@ -1892,6 +2115,7 @@
   }
 
   function expectedChoice(answer) {
+    if (/^\s*[A-D](?:\s*[、,，/]?\s*[A-D])*\s*$/i.test(String(answer || ""))) return normalizeChoice(answer);
     const match = String(answer || "").match(/选\s*([A-D](?:\s*[、,，/]\s*[A-D])*)/i);
     return match ? normalizeChoice(match[1]) : "";
   }
@@ -1899,6 +2123,7 @@
   function normalizeScientificText(value) {
     const superscript = { "⁻": "-", "⁺": "+", "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9" };
     return String(value || "")
+      .replace(/[−﹣－]/g, "-")
       .replace(/[⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (character) => superscript[character])
       .replace(/×\s*10\s*\^?\s*([+-]?\d+)/gi, "e$1")
       .replace(/(\d)\s*·\s*(\d)/g, "$1.$2")
@@ -1907,17 +2132,15 @@
 
   function extractQuantities(value) {
     const normalized = normalizeScientificText(value);
-    const pattern = /([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?)\s*(kg\/m(?:\^?3|³)|g\/cm(?:\^?3|³)|km\/h|m\/s(?:\^?2|²)?|cm(?:\^?3|³)|m(?:\^?3|³)|kPa|Pa|kJ|J|kW|W|mA|A|V|Ω|Hz|kg|km|cm|mm|m|min|s|%|℃)?/gi;
+    // Preserve unknown units and case: N and n must not silently become unitless.
+    const pattern = /([-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?)\s*([A-Za-zΩ℃%]+(?:\^?[-+]?\d+)?(?:\/[A-Za-z]+(?:\^?[-+]?\d+)?)?)?/g;
     const quantities = [];
     let match;
     while ((match = pattern.exec(normalized))) {
       const number = Number(match[1]);
       if (!Number.isFinite(number)) continue;
       let unit = match[2] || "";
-      unit = unit
-        .replace(/m\^?2|m²/g, "m²")
-        .replace(/m\^?3|m³/g, "m³")
-        .replace(/cm\^?3|cm³/g, "cm³");
+      unit = unit.replace(/\^?2/g, "²").replace(/\^?3/g, "³");
       quantities.push({ value: number, unit });
     }
     return quantities;
@@ -1988,7 +2211,70 @@
     return expectedCount === 1 && text.length <= 40 ? [text] : [];
   }
 
+  const GRADING_VERSION = "physics-structured-v1";
+
   function gradeFinalAnswer(question, response) {
+    return {
+      ...(question.answerSchema ? gradeStructuredAnswer(question, response) : gradeFinalAnswerLegacy(question, response)),
+      gradingVersion: GRADING_VERSION,
+      questionContentVersion: question.questionContentVersion || question.contentVersion || null,
+      answerSchemaVersion: question.answerSchema?.answerSchemaVersion || null,
+      rawResponse: typeof response === "string" ? response : JSON.parse(JSON.stringify(response ?? null))
+    };
+  }
+
+  function gradeStructuredAnswer(question, response) {
+    const schema = question.answerSchema;
+    const pending = (reason, type = "manual") => ({ status: "review-required", score: null, summary: "答案规范或作答结构需要确认，暂不自动评分。", issues: [{ type, location: "答案规范", reason, next: "逐项核对答案规范与原始作答。" }], expected: question.answer || "" });
+    if (schema.answerSchemaVersion !== 1 || !Array.isArray(schema.parts) || !schema.parts.length) return pending("不支持或缺少答案规范版本/小问");
+    const parts = response?.parts;
+    const ids = schema.parts.map((part) => part.id);
+    if (ids.some((id) => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) return pending("答案规范小问 ID 无效或重复");
+    if (!Array.isArray(parts) || parts.length !== ids.length || new Set(parts.map((part) => part?.id)).size !== ids.length || parts.some((part) => !ids.includes(part?.id))) return pending("作答缺少小问、包含重复 ID 或未知小问", "part-structure");
+    const issues = [];
+    let matched = 0;
+    const directions = { right: "right", left: "left", up: "up", down: "down", "向右": "right", "向左": "left", "向上": "up", "向下": "down" };
+    for (const part of schema.parts) {
+      const actual = parts.find((item) => item.id === part.id);
+      if (part.kind === "choice") {
+        if (!Array.isArray(part.expectedOptionIds) || !part.expectedOptionIds.length || !Array.isArray(actual.optionIds)) return pending("选项 ID 数组缺失", "part-structure");
+        const expectedIds = [...new Set(part.expectedOptionIds)].sort();
+        const actualIds = [...new Set(actual.optionIds)].sort();
+        if (JSON.stringify(expectedIds) === JSON.stringify(actualIds)) matched++;
+        else issues.push({ type: "choice", location: part.id, reason: "选项集合不一致", next: "核对本小问选项。" });
+        continue;
+      }
+      if (part.kind !== "quantity") return pending("解释、判断或未知类型需要人工评分规范");
+      const expected = part.expected;
+      const tolerance = part.tolerance;
+      const quantityKinds = { force: "force", mass: "M", area: "area", pressure: "pressure", speed: "speed", acceleration: "acceleration", length: "L", time: "T", volume: "volume", energy: "energy", power: "power", voltage: "voltage", current: "current", resistance: "resistance", density: "density", frequency: "frequency" };
+      if (!expected || typeof expected.value !== "number" || !Number.isFinite(expected.value) || !unitDefinitions[expected.unit]
+        || !tolerance || !Number.isFinite(tolerance.absolute) || !Number.isFinite(tolerance.relative) || tolerance.absolute < 0 || tolerance.relative < 0) return pending("期望物理量、支持单位或题目级容差缺失");
+      if (!quantityKinds[part.quantity] || quantityKinds[part.quantity] !== unitDefinitions[expected.unit].dimension) return pending("物理量身份与期望单位不一致或尚未定义");
+      const value = typeof actual.value === "number" ? actual.value : /^[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?$/.test(normalizeScientificText(actual.value).trim()) ? Number(normalizeScientificText(actual.value).trim()) : NaN;
+      if (!Number.isFinite(value)) return pending("数值不是可确认的有限数值", "missing-value");
+      if (!actual.unit && part.unitRequired !== false) return pending("未填写要求的单位", "missing-unit");
+      const unit = actual.unit || expected.unit;
+      if (!unitDefinitions[unit]) { issues.push({ type: "unknown-unit", location: part.id, reason: `未支持的单位：${unit}`, next: "确认单位拼写及物理量。" }); continue; }
+      const expectedValue = comparableValue(expected);
+      const actualValue = comparableValue({ value, unit });
+      if (expectedValue.dimension !== actualValue.dimension) { issues.push({ type: "unit", location: part.id, reason: "单位所属物理量不一致", next: "使用同物理量的单位。" }); continue; }
+      if (part.directionRequired) {
+        const expectedDirection = directions[part.expectedDirection];
+        const actualDirection = directions[actual.direction];
+        if (!expectedDirection || !actualDirection) return pending("方向缺失或方向含义未定义", "direction");
+        if (actualDirection !== expectedDirection) { issues.push({ type: "direction", location: part.id, reason: "方向与要求相反或不一致", next: "核对坐标及方向定义。" }); continue; }
+      }
+      // Absolute tolerance is expressed in the expected unit; compare in SI.
+      const allowedError = Math.max(tolerance.absolute * unitDefinitions[expected.unit].factor, tolerance.relative * Math.abs(expectedValue.value));
+      if (Math.abs(actualValue.value - expectedValue.value) <= allowedError) matched++;
+      else issues.push({ type: Math.sign(value) !== Math.sign(expected.value) ? "sign" : "value", location: part.id, reason: "数值或正负号超出本题容差", next: "核对数值、坐标与单位换算。" });
+    }
+    const score = matched / schema.parts.length;
+    return { status: matched === schema.parts.length ? "correct" : matched ? "partial" : "incorrect", score, summary: `按小问 ID 核对 ${matched}/${schema.parts.length} 项。`, issues, expected: question.answer || "" };
+  }
+
+  function gradeFinalAnswerLegacy(question, response) {
     const answer = String(question.answer || "");
     const questionType = normalizeQuestionType(question.questionType || question.examQuestionType);
     if (/实验/u.test(questionType)) {
@@ -2003,6 +2289,9 @@
     const expected = expectedChoice(answer);
     const actualChoice = normalizeChoice(response);
     if (expected) {
+      if (/不选|不是|非[ABCD]|排除|不能选|not\s/iu.test(String(response || ""))) {
+        return { status: "review-required", score: null, summary: "作答含否定或排除选项的表述，需要确认最终选项。", issues: [{ type: "manual", location: "最终选项", reason: "不能把提到的选项当成已选择", next: "明确填写最终选项。" }], expected };
+      }
       const correct = actualChoice === expected;
       return {
         status: correct ? "correct" : "incorrect",
@@ -2056,6 +2345,25 @@
 
     const expectedQuantities = extractQuantities(answer);
     const actualQuantities = extractQuantities(response);
+    if (expectedQuantities.some((item) => item.unit && !unitDefinitions[item.unit])) {
+      return { status: "review-required", score: null, summary: "参考答案单位尚未支持，需要人工确认。", issues: [{ type: "unknown-unit", location: "参考答案", reason: "未知单位不能作为自动评分依据", next: "确认单位定义。" }], expected: answer };
+    }
+    // Only a single, explicit scalar result is safe to infer from old free text.
+    // Explanations, multi-part results and vector direction need an answer schema.
+    const scalarText = normalizeScientificText(answer).trim();
+    const simpleScalar = /^\s*(?:[A-Za-z][A-Za-z0-9_]*\s*=\s*)?[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?\s*(?:[A-Za-zΩ℃%]+(?:\^?[-+]?\d+)?(?:\/[A-Za-z]+(?:\^?[-+]?\d+)?)?)?\s*[。.]?\s*$/.test(scalarText);
+    if (!simpleScalar || expectedQuantities.length !== 1 || /解释|论述|证明|判断/u.test(questionType)) {
+      return { status: "review-required", score: null, summary: "该题没有可确定逐项核对的答案规范，需要人工复核结论、方向和各小问。", issues: [{ type: "manual", location: "完整作答", reason: "自由文本不构成可靠的结构化评分规范", next: "按评分要点逐项复核。" }], expected: answer };
+    }
+    const responseScalar = normalizeScientificText(response).trim();
+    const expectedSymbol = scalarText.match(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*=/)?.[1];
+    const actualSymbol = responseScalar.match(/^\s*([A-Za-z][A-Za-z0-9_]*)\s*=/)?.[1];
+    if ((expectedSymbol && actualSymbol && expectedSymbol !== actualSymbol) || (!expectedQuantities[0].unit && actualQuantities.some((item) => item.unit))) {
+      return { status: "review-required", score: null, summary: "物理量身份或参考单位不明确，需要人工确认。", issues: [{ type: "quantity", location: "最终答案", reason: "不同物理量不能仅按数字比较", next: "说明物理量及其单位。" }], expected: answer };
+    }
+    if (!/^\s*(?:[A-Za-z][A-Za-z0-9_]*\s*=\s*)?[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:e[-+]?\d+)?\s*(?:[A-Za-zΩ℃%]+(?:\^?[-+]?\d+)?(?:\/[A-Za-z]+(?:\^?[-+]?\d+)?)?)?\s*[。.]?\s*$/.test(responseScalar) || actualQuantities.length !== 1) {
+      return { status: "review-required", score: null, summary: "作答不是一个可唯一核对的数值结果，需要确认数值对应的结论。", issues: [{ type: "manual", location: "最终答案", reason: "包含解释、否定、方向或额外数值", next: "确认每项结果及其物理含义。" }], expected: answer };
+    }
     if (!expectedQuantities.length) {
       return {
         status: "review-required",
@@ -2147,7 +2455,7 @@
       .filter((line) => line.includes("=") && line.split("=").length === 2);
     const dimensionResults = equationCandidates.map((equation) => ({
       equation,
-      result: validateDimension(equation)
+      result: validateDimension(equation, { symbols: { ...(question.dimensionSymbols || {}), ...(model.dimensionSymbols || {}) } })
     }));
     const conservationRelevant = /机械能|动量|电荷|碰撞|能量|守恒/.test([
       question.topic,
@@ -2164,8 +2472,8 @@
       question.topic,
       ...(question.examPoints || [])
     ].join(" "));
-    const hasUnitIssue = issues.some((issue) => issue.type === "unit" || issue.type === "missing-unit");
-    const hasSignIssue = issues.some((issue) => issue.type === "sign");
+    const hasUnitIssue = issues.some((issue) => ["unit", "missing-unit", "unknown-unit"].includes(issue.type));
+    const hasSignIssue = issues.some((issue) => issue.type === "sign" || (issue.type === "direction" && grading.status !== "review-required"));
     const numericComparable = expectedQuantities.length > 0;
 
     return [
@@ -2200,7 +2508,8 @@
         label: "方程量纲",
         status: !dimensionResults.length
           ? "manual"
-          : dimensionResults.every((item) => item.result.valid) ? "pass" : "fail",
+          : dimensionResults.some((item) => item.result.valid === false) ? "fail"
+            : dimensionResults.every((item) => item.result.valid === true) ? "pass" : "manual",
         detail: !dimensionResults.length
           ? "未提取到可由内置符号表解析的方程。"
           : dimensionResults.map((item) => `${item.equation}：${item.result.status}`).join("；")
@@ -2209,10 +2518,10 @@
         key: "magnitude",
         label: "数值与数量级",
         status: numericComparable
-          ? grading.status === "correct" ? "pass" : grading.status === "partial" ? "evidence" : "fail"
+          ? grading.status === "correct" ? "pass" : grading.status === "partial" ? "evidence" : grading.status === "review-required" ? "manual" : "fail"
           : "manual",
         detail: numericComparable
-          ? "按参考结果进行同量纲数值比较；允许 1.5% 的数值舍入误差。"
+          ? question.answerSchema ? "按答案规范中每个小问的物理量、单位和容差核对。" : "单一数值按同量纲比较；旧题兼容规则允许 1.5% 舍入误差。"
           : "没有可唯一提取的参考数值，不能自动判断数量级。"
       },
       {
@@ -2352,6 +2661,227 @@
     return attempt;
   }
 
+  function feynmanSelfCheck(input = {}) {
+    const object = String(input.researchObject || "").trim();
+    const conditions = String(input.lawConditions || "").trim();
+    const prediction = String(input.prediction || "").trim();
+    const reason = String(input.predictionReason || "").trim();
+    return {
+      boundary: "仅检查讲解要素是否已填写；内容是否正确仍需与题目条件和解析核对，不能据此判定掌握。",
+      items: [
+        { key: "researchObject", label: "研究对象", status: object ? "待与解析核对" : "待补充", prompt: "对象是谁？系统边界包含哪些物体？" },
+        { key: "lawConditions", label: "规律适用条件", status: conditions ? "待与解析核对" : "待补充", prompt: "该规律成立需要什么条件？题目是否满足？" },
+        { key: "predictionReason", label: "预测依据", status: prediction && reason ? "待与解析核对" : "待补充", prompt: "条件改变后会怎样？依据哪个关系式或物理过程？" }
+      ]
+    };
+  }
+
+  function selectFeynmanRetestQuestion(questions = [], sourceQuestionId = "", knowledgePointId = "", grade = "", attempts = []) {
+    const source = questions.find((question) => question.id === sourceQuestionId);
+    const topicKey = String(knowledgePointId || (source && topicKeyForQuestion(source)) || "");
+    if (!topicKey || !source) return null;
+    const previouslyAnswered = new Set((Array.isArray(attempts) ? attempts : []).map((attempt) => attempt.questionId));
+    return questions.filter((question) => question.id !== sourceQuestionId
+      && question.grade === grade
+      && topicKeyForQuestion(question) === topicKey
+      && isPublishedQuestion(question)
+      && String(question.content || "").trim()
+      && String(question.answer || "").trim()
+      && String(question.solution || "").trim())
+      .sort((left, right) => {
+        const rank = (question) => (previouslyAnswered.has(question.id) ? 0 : 2)
+          + (source.modelDefinitionId && question.modelDefinitionId && source.modelDefinitionId !== question.modelDefinitionId ? 1 : 0);
+        return rank(right) - rank(left) || String(left.id).localeCompare(String(right.id));
+      })[0] || null;
+  }
+
+  function recordFeynmanExplanation(state, input = {}) {
+    const profileId = String(input.profileId || state.activeProfileId || "");
+    if (!state.profiles.some((profile) => profile.id === profileId)) throw new Error("未找到学生档案。");
+    const questionId = String(input.questionId || "").trim();
+    const explanation = String(input.explanation || "").trim();
+    if (!questionId) throw new Error("请选择要讲解的题目或知识点。");
+    if (explanation.length < 12) throw new Error("请至少用一句完整的话说明对象、规律或因果关系。");
+    const relatedAttemptIds = (state.attempts || [])
+      .filter((attempt) => attempt.profileId === profileId && attempt.questionId === questionId)
+      .map((attempt) => attempt.id)
+      .filter(Boolean)
+      .slice(-20);
+    const record = normalizeFeynmanExplanation({
+      id: createId("feynman"),
+      profileId,
+      questionId,
+      knowledgePointId: String(input.knowledgePointId || input.topicKey || ""),
+      topic: String(input.topic || "待分类"),
+      explanation,
+      researchObject: input.researchObject,
+      lawConditions: input.lawConditions,
+      analogy: input.analogy,
+      prediction: input.prediction,
+      predictionReason: input.predictionReason,
+      retestQuestionId: input.retestQuestionId,
+      unclearPoint: input.unclearPoint,
+      evidenceIds: Array.isArray(input.evidenceIds) && input.evidenceIds.length
+        ? input.evidenceIds
+        : relatedAttemptIds,
+      verificationStatus: "student-reflection-only",
+      createdAt: new Date().toISOString()
+    });
+    state.feynmanExplanations = Array.isArray(state.feynmanExplanations) ? state.feynmanExplanations : [];
+    state.feynmanExplanations.push(record);
+    if (state.feynmanExplanations.length > 5000) {
+      state.feynmanExplanations.splice(0, state.feynmanExplanations.length - 5000);
+    }
+    return record;
+  }
+
+  function saveVariantSet(state, input) {
+    const normalized = normalizeVariantSet(input);
+    if (!normalized) throw new Error("变式题组结构不完整，未保存。 ");
+    if (normalized.variants.length && normalized.variants.length < 2) {
+      throw new Error("正式变式题组至少需要 2 道完整题。 ");
+    }
+    state.variantSets = Array.isArray(state.variantSets) ? state.variantSets : [];
+    state.variantSets.forEach((set) => {
+      if (set.parentQuestionId === normalized.parentQuestionId
+        && set.id !== normalized.id
+        && set.sourceContentHash !== normalized.sourceContentHash) {
+        set.stale = true;
+        set.status = set.status === "approved" ? "stale" : set.status;
+        set.updatedAt = new Date().toISOString();
+      }
+    });
+    const index = state.variantSets.findIndex((set) => set.id === normalized.id || (normalized.cacheKey && set.cacheKey === normalized.cacheKey));
+    const saved = { ...normalized, updatedAt: new Date().toISOString() };
+    if (index >= 0) state.variantSets[index] = saved;
+    else state.variantSets.push(saved);
+    if (state.variantSets.length > 1000) state.variantSets.splice(0, state.variantSets.length - 1000);
+    return saved;
+  }
+
+  function variantSetForParent(state, parentQuestionId, sourceContentHash = "") {
+    const matches = (Array.isArray(state.variantSets) ? state.variantSets : [])
+      .filter((set) => set.parentQuestionId === parentQuestionId && set.stale !== true)
+      .filter((set) => !sourceContentHash || set.sourceContentHash === sourceContentHash)
+      .sort((first, second) => new Date(second.updatedAt || second.createdAt) - new Date(first.updatedAt || first.createdAt));
+    return matches[0] || null;
+  }
+
+  function decideVariantReview(state, setId, decision = {}) {
+    const set = (state.variantSets || []).find((item) => item.id === setId);
+    if (!set) throw new Error("未找到待审核变式题组。 ");
+    const action = ["approve", "reject", "pending"].includes(decision.action) ? decision.action : "pending";
+    const selected = new Set(Array.isArray(decision.variantIds) && decision.variantIds.length
+      ? decision.variantIds.map(String)
+      : set.variants.map((variant) => variant.id));
+    set.variants = set.variants.map((variant) => {
+      if (!selected.has(variant.id)) return variant;
+      if (action === "approve" && variant.validation?.passed !== true) {
+        throw new Error(`变式“${variant.title}”未通过质量门禁，不能批准。`);
+      }
+      return {
+        ...variant,
+        approvalStatus: action === "approve" ? "teacher-approved" : action === "reject" ? "teacher-rejected" : "pending-teacher-review",
+        reviewRequired: action !== "approve",
+        teacherReview: {
+          action,
+          reviewedBy: String(decision.reviewedBy || "local-teacher").slice(0, 120),
+          comment: String(decision.comment || "").slice(0, 2000),
+          reviewedAt: new Date().toISOString()
+        }
+      };
+    });
+    const approvedCount = set.variants.filter((variant) => ["system-validated", "teacher-approved"].includes(variant.approvalStatus) && variant.validation?.passed).length;
+    const pendingCount = set.variants.filter((variant) => variant.approvalStatus === "pending-teacher-review").length;
+    set.approvalStatus = approvedCount >= 2 ? "teacher-approved" : pendingCount ? "pending-teacher-review" : "rejected";
+    set.status = approvedCount >= 2 ? "approved" : pendingCount ? "pending-review" : "rejected";
+    set.reviewRequired = pendingCount > 0;
+    set.updatedAt = new Date().toISOString();
+    return set;
+  }
+
+  function recordVariantAttempt(state, input = {}) {
+    const set = (state.variantSets || []).find((item) => item.id === input.variantSetId);
+    if (!set || set.stale === true) throw new Error("变式题组不存在或母题已更新。 ");
+    const variant = set.variants.find((item) => item.id === input.variantQuestionId);
+    if (!variant) throw new Error("未找到本次变式题。 ");
+    const approved = ["system-validated", "teacher-approved"].includes(variant.approvalStatus)
+      && variant.validation?.passed === true;
+    if (!approved) throw new Error("该变式尚未通过质量门禁和必要审核，不能进入正式训练。 ");
+    const hintLevel = Math.max(0, Math.min(5, Number(input.hintLevel) || 0));
+    const solutionViewed = input.solutionViewed === true || hintLevel >= 5;
+    const attempt = recordAttempt(state, {
+      ...input,
+      question: variant,
+      questionId: variant.id,
+      topic: variant.topic,
+      knowledgePointId: variant.knowledgePointId,
+      modelDefinitionId: variant.modelDefinitionId,
+      modelFamilyId: variant.modelFamilyId,
+      independenceGroupId: variant.independenceGroupId,
+      questionType: variant.questionType,
+      stage: variant.stage,
+      hintLevel,
+      transferType: variant.variantRole
+    });
+    const gradingStatus = String(attempt.grading?.status || "review-required");
+    const verifiedTransfer = gradingStatus === "correct" && hintLevel <= 1 && !solutionViewed;
+    const link = normalizeVariantAttempt({
+      id: createId("variant-attempt"),
+      variantSetId: set.id,
+      parentQuestionId: set.parentQuestionId,
+      variantQuestionId: variant.id,
+      profileId: attempt.profileId,
+      variantRole: variant.variantRole,
+      variantTechnique: variant.variantTechnique || "",
+      attemptId: attempt.id,
+      hintLevel,
+      gradingStatus,
+      completedAt: attempt.completedAt,
+      verificationStatus: verifiedTransfer ? "verified-transfer" : gradingStatus === "review-required" ? "pending-manual-review" : "practice-only",
+      solutionViewed,
+      independentCorrect: verifiedTransfer,
+      validationVersion: variant.validation?.version || 1,
+      sourceContentHash: set.sourceContentHash,
+      createdAt: attempt.createdAt
+    });
+    state.variantAttempts = Array.isArray(state.variantAttempts) ? state.variantAttempts : [];
+    state.variantAttempts.push(link);
+    if (state.variantAttempts.length > 10000) state.variantAttempts.splice(0, state.variantAttempts.length - 10000);
+    return { attempt, variantAttempt: link };
+  }
+
+  function variantSetProgress(state, setId, profileId = state.activeProfileId) {
+    const set = (state.variantSets || []).find((item) => item.id === setId) || null;
+    if (!set) return { set: null, completed: 0, total: 0, results: [], complete: false };
+    const records = (state.variantAttempts || []).filter((item) => item.variantSetId === setId && item.profileId === profileId);
+    const latestByQuestion = new Map();
+    records.forEach((record) => {
+      const previous = latestByQuestion.get(record.variantQuestionId);
+      if (!previous || new Date(record.completedAt) > new Date(previous.completedAt)) latestByQuestion.set(record.variantQuestionId, record);
+    });
+    const trainable = trainableVariants(set);
+    const results = trainable.map((variant) => ({ variant, record: latestByQuestion.get(variant.id) || null }));
+    const completed = results.filter((item) => item.record).length;
+    return { set, completed, total: trainable.length, results, complete: trainable.length >= 2 && completed === trainable.length };
+  }
+
+  function trainableVariants(set) {
+    return (Array.isArray(set?.variants) ? set.variants : []).filter((variant) =>
+      variant?.validation?.passed === true
+      && ["system-validated", "teacher-approved"].includes(variant.approvalStatus));
+  }
+
+  function saveVariantPreset(state, input = {}) {
+    const normalized = normalizeVariantPreset({ ...input, id: input.id || createId("variant-preset"), updatedAt: new Date().toISOString() });
+    if (!normalized) throw new Error("组卷参数无效。 ");
+    state.variantPresets = Array.isArray(state.variantPresets) ? state.variantPresets : [];
+    const index = state.variantPresets.findIndex((preset) => preset.id === normalized.id);
+    if (index >= 0) state.variantPresets[index] = normalized;
+    else state.variantPresets.push(normalized);
+    return normalized;
+  }
+
   function completeManualReview(state, attemptId, review = {}) {
     const attempt = state.attempts.find((item) => item.id === attemptId);
     if (!attempt || !isPendingManualReview(attempt)) {
@@ -2374,6 +2904,7 @@
       reviewedBy: String(review.reviewedBy || "teacher").slice(0, 120),
       manualReview: true
     };
+    if (attempt.grading.legacyReview) attempt.grading.legacyReview = { ...attempt.grading.legacyReview, status: "reviewed" };
     attempt.teacherReviewStatus = "completed";
     attempt.updatedAt = new Date().toISOString();
     (state.assessmentSessions || [])
@@ -2391,6 +2922,7 @@
   }
 
   function automaticReviewRating(attempt = {}) {
+    if (isPendingManualReview(attempt)) return 1;
     const status = String(attempt?.grading?.status || "");
     if (status === "correct") {
       return Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum ? 2 : 1;
@@ -2523,6 +3055,23 @@
   function evidenceTimestamp(value) {
     const timestamp = new Date(value || 0).getTime();
     return Number.isFinite(timestamp) ? timestamp : 0;
+  }
+
+  function retainedLowHintDates(attempts) {
+    const minimumInterval = MASTERY_RULES.minimumRetentionIntervalHours * 60 * 60 * 1000;
+    const selected = [];
+    const dates = new Set();
+    attempts.slice().sort((a, b) => evidenceTimestamp(a.completedAt || a.createdAt)
+      - evidenceTimestamp(b.completedAt || b.createdAt)).forEach((attempt) => {
+      const value = attempt.completedAt || attempt.createdAt;
+      const timestamp = evidenceTimestamp(value);
+      const date = timestamp > 0 ? localDateKey(value) : "";
+      if (!date || dates.has(date)) return;
+      if (selected.length && timestamp - selected.at(-1).timestamp < minimumInterval) return;
+      selected.push({ date, timestamp, evidenceId: attempt.id });
+      dates.add(date);
+    });
+    return selected;
   }
 
   function countedLabels(values) {
@@ -2705,7 +3254,9 @@
         && record.type === "transfer"
         && String(record.response || "").trim().length >= 10
         && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
-    });
+    }).concat((state.variantAttempts || [])
+      .filter((record) => record.profileId === profileId && record.verificationStatus === "verified-transfer")
+      .map((record) => ({ ...record, questionId: record.parentQuestionId, type: "verified-variant" })));
     const catalog = topicCatalog(eligibleQuestions, profile?.grade || "");
     const topicEntries = new Map();
     const addTopic = (label, explicitKey = "") => {
@@ -2773,9 +3324,7 @@
           || record.modelFamilyId || question.modelFamilyId || "legacy-unclassified");
       };
       const independentGroups = new Set(independentCorrect.map(independenceGroupFor));
-      const independentDates = [...new Set(independentCorrect
-        .map((attempt) => localDateKey(attempt.completedAt || attempt.createdAt))
-        .filter(Boolean))];
+      const independentDates = retainedLowHintDates(independentCorrect);
       const successfulTransferAttempts = independentCorrect.filter((attempt) => {
         return String(attempt.transferType || "").trim().length > 0;
       });
@@ -2819,18 +3368,19 @@
 
       let code = "insufficient";
       let status = "证据不足";
-      if ((topicAttempts.length >= 2 || diagnosticRisk) && (
+      if (evidenceSummary.scoredCount >= 3 && (
         diagnosticRisk || latestWeak || (accuracy !== null && accuracy < 60)
         || (evidenceSummary.scoredCount > 0 && averageHint >= 3)
       )) {
         code = "reinforce";
         status = "需巩固";
-      } else if (independentDates.length >= MASTERY_RULES.masteredIndependentDates
+      } else if (evidenceSummary.scoredCount >= 3
+        && independentDates.length >= MASTERY_RULES.masteredIndependentDates
         && transferSuccessCount >= MASTERY_RULES.masteredTransferEvidence
         && independentGroups.size >= 2) {
         code = "transferable";
         status = "可迁移";
-      } else if (evidenceSummary.scoredCount >= 2 && independentCorrect.length >= 1
+      } else if (evidenceSummary.scoredCount >= 3 && independentCorrect.length >= 1
         && accuracy !== null && accuracy >= 70 && averageHint <= 2) {
         code = "basic";
         status = "基本掌握";
@@ -2840,14 +3390,14 @@
       if (modelingRecordNeedsCheck) reasons.push("需要检查建模记录，不能单独作为知识点薄弱证据");
       if (!sampleSize) reasons.push("尚无作答、诊断或迁移证据");
       else reasons.push(`共有 ${sampleSize} 条证据，其中正式作答 ${topicAttempts.length} 次，已评分 ${evidenceSummary.scoredCount} 次${evidenceSummary.pendingReviewCount ? `，待人工复核 ${evidenceSummary.pendingReviewCount} 次` : ""}`);
-      if (independentDates.length) reasons.push(`低提示独立正确分布在 ${independentDates.length} 个日期`);
-      if (independentCorrect.length) reasons.push(`独立正确证据来自 ${independentGroups.size} 个独立模型组；同模板参数变式只计为一个独立组`);
+      if (independentDates.length) reasons.push(`符合至少 ${MASTERY_RULES.minimumRetentionIntervalHours} 小时间隔规则的低提示正确日期 ${independentDates.length} 个`);
+      if (independentCorrect.length) reasons.push(`低提示正确证据来自 ${independentGroups.size} 个独立模型组；同模板参数变式只计为一个独立组`);
       if (transferSuccessCount) reasons.push(`有 ${transferSuccessCount} 条迁移成功证据`);
       if (transferSuccessCount && independentGroups.size < 2) reasons.push("迁移证据仍来自同一模板/模型组，暂不判为可迁移");
       if (diagnosticReviewRequired) reasons.push("历史规则诊断结果，需教师复核后才能解释为稳定误概念风险");
       else if (diagnosticRisk) reasons.push("最近前概念诊断仍显示待验证风险");
       if (latestWeak) reasons.push("最近作答存在错误或高提示依赖");
-      if (sampleSize > 0 && sampleSize < 2) reasons.push("样本量不足，不作稳定能力结论");
+      if (evidenceSummary.scoredCount < 3) reasons.push("已评分证据不足 3 条，可补充练习，但不作薄弱或稳定结论");
 
       return {
         topic,
@@ -2995,13 +3545,19 @@
   }
 
   function transferEvidence(state, questionId, profileId = state.activeProfileId) {
-    return state.experimentRecords.filter((record) => {
+    const legacy = state.experimentRecords.filter((record) => {
       return record?.type === "transfer"
         && record.questionId === questionId
         && record.profileId === profileId
         && String(record.response || "").trim().length >= 10
         && ["教师已通过", "自动判定正确"].includes(record.verificationStatus);
     });
+    const variants = (state.variantAttempts || []).filter((record) => {
+      return record?.parentQuestionId === questionId
+        && record.profileId === profileId
+        && record.verificationStatus === "verified-transfer";
+    });
+    return [...legacy, ...variants];
   }
 
   function questionMasteryEvidence(state, questionId, profileId = state.activeProfileId, now = Date.now()) {
@@ -3010,16 +3566,14 @@
       .sort((a, b) => new Date(a.completedAt || a.createdAt) - new Date(b.completedAt || b.createdAt));
     const latest = attempts.at(-1) || null;
     const independentCorrect = attempts.filter((attempt) => {
-      return attempt.grading?.status === "correct"
+      return isValidAccuracyEvidence(attempt) && attempt.grading?.status === "correct"
         && Number(attempt.hintLevel || 0) <= MASTERY_RULES.independentHintMaximum;
     });
-    const independentDates = [...new Set(independentCorrect
-      .map((attempt) => localDateKey(attempt.completedAt || attempt.createdAt))
-      .filter(Boolean))];
+    const independentDates = retainedLowHintDates(independentCorrect);
     const transfers = transferEvidence(state, questionId, profileId);
     const review = reviewsForProfile(state, profileId).find((item) => item.questionId === questionId) || null;
     const reviewDue = Boolean(review && new Date(review.dueAt).getTime() <= now);
-    const latestWeak = Boolean(latest && (
+    const latestWeak = Boolean(latest && !isPendingManualReview(latest) && (
       !["correct", "review-required"].includes(latest.grading?.status)
       || Number(latest.hintLevel || 0) >= MASTERY_RULES.weakHintMinimum
     ));
@@ -3042,17 +3596,17 @@
       code = reviewDue ? "due" : "mastered";
     }
     if (latestWeak) {
-      status = "薄弱";
-      code = "weak";
+      status = "待订正";
+      code = "correction";
     }
 
     const reasons = [];
     if (modelingRecordNeedsCheck) reasons.push("需要检查建模记录，不能单独作为知识点薄弱证据");
     if (!attempts.length) reasons.push("尚无正式作答记录");
     else reasons.push(`已完成 ${attempts.length} 次正式作答`);
-    if (independentCorrect.length) reasons.push(`${independentCorrect.length} 次低提示独立正确`);
-    if (independentDates.length) reasons.push(`分布在 ${independentDates.length} 个日期`);
-    if (transfers.length) reasons.push(`完成 ${transfers.length} 道迁移记录（尚需人工核对质量）`);
+    if (independentCorrect.length) reasons.push(`${independentCorrect.length} 次低提示正确`);
+    if (independentDates.length) reasons.push(`符合至少 ${MASTERY_RULES.minimumRetentionIntervalHours} 小时间隔规则的日期 ${independentDates.length} 个`);
+    if (transfers.length) reasons.push(`完成 ${transfers.length} 条已核验迁移证据`);
     if (latestWeak) reasons.push("近期存在错误或高提示依赖");
     if (reviewDue) reasons.push("已到间隔复习时间");
 
@@ -3181,6 +3735,21 @@
     });
   }
 
+  // A pending submission does not erase an earlier scored correction need.
+  // It is shown separately until a teacher has scored that submission.
+  function questionCorrectionState(attempts = [], profileId = "", questionId = "") {
+    const records = attempts.filter((attempt) => attempt?.profileId === profileId
+      && attempt.questionId === questionId);
+    const latestScored = records.filter(isValidAccuracyEvidence).at(-1) || null;
+    const pending = records.filter(isPendingManualReview);
+    return {
+      needsCorrection: Boolean(latestScored && latestScored.grading?.status !== "correct"),
+      latestScoredEvidenceId: latestScored?.id || null,
+      pendingReviewCount: pending.length,
+      pendingEvidenceIds: pending.map((attempt) => attempt.id).filter(Boolean)
+    };
+  }
+
   function summarizeLearning(state, questions = [], profileId = state.activeProfileId) {
     const attempts = state.attempts.filter((attempt) => attempt.profileId === profileId);
     const evidenceSummary = summarizeAttemptEvidence(attempts);
@@ -3261,7 +3830,7 @@
     });
     const topicRisk = new Map(topicPerformance(state, profileId).map((item, index) => [
       item.topicKey || topicKeyForLabel(item.topic),
-      item.scoredCount
+      item.scoredCount >= 3
         ? Math.max(0, 40 - item.averageScore * 0.4) + Math.max(0, 3 - index)
         : 0
     ]));
@@ -3310,7 +3879,7 @@
         const examWeakCount = examWeakness.get(questionTopicKey) || 0;
         if (examWeakCount) {
           score += Math.min(45, 20 + examWeakCount * 5);
-          reasons.push(`最近试卷将“${question.topic}”标为薄弱项`);
+          reasons.push(`最近试卷记录提示复核“${question.topic}”，仍需足量已评分作答核实`);
         }
         const focusKey = String(options.focusTopicKey || "").trim();
         if (focusKey || (options.focusTopic && options.focusTopic !== "自动依据学情")) {
@@ -3563,12 +4132,30 @@
     result.collections.experimentRecords = mergeImportedCollection(
       state, "experimentRecords", payload.experimentRecords, profile.id, "experiment"
     );
+    result.collections.feynmanExplanations = mergeImportedCollection(
+      state, "feynmanExplanations", payload.feynmanExplanations, profile.id, "feynman", normalizeFeynmanExplanation
+    );
     result.collections.learningPlans = mergeImportedCollection(
       state, "learningPlans", payload.learningPlans, profile.id, "learning-plan"
     );
     result.collections.assessmentSessions = mergeImportedCollection(
       state, "assessmentSessions", payload.assessmentSessions, profile.id, "placement", normalizeAssessmentSession
     );
+    result.collections.variantAttempts = mergeImportedCollection(
+      state, "variantAttempts", payload.variantAttempts, profile.id, "variant-attempt", normalizeVariantAttempt
+    );
+    const importedVariantSets = (Array.isArray(payload.variantSets) ? payload.variantSets : [])
+      .map(normalizeVariantSet)
+      .filter(Boolean);
+    let variantSetsAdded = 0;
+    importedVariantSets.forEach((set) => {
+      const existing = (state.variantSets || []).find((item) => item.id === set.id || (set.cacheKey && item.cacheKey === set.cacheKey));
+      if (!existing) {
+        state.variantSets.push({ ...set, importedForProfileId: profile.id, importedAt: new Date().toISOString() });
+        variantSetsAdded += 1;
+      }
+    });
+    result.collections.variantSets = { added: importedVariantSets.slice(0, variantSetsAdded), skipped: [], conflicts: [], errors: [] };
     const reviewRecords = payload.reviews && typeof payload.reviews === "object"
       ? Object.values(payload.reviews).map((review) => ({ ...review, id: review.id || review.questionId }))
       : [];
@@ -3658,7 +4245,10 @@
       counts[item.status] = (counts[item.status] || 0) + 1;
       return counts;
     }, { "证据不足": 0, "需巩固": 0, "基本掌握": 0, "可迁移": 0 });
-    const strongest = topics.slice().sort((a, b) => (b.averageScore ?? -1) - (a.averageScore ?? -1) || b.attempts - a.attempts).slice(0, 3);
+    const sufficientlyScoredTopics = topics.filter((topic) => topic.scoredCount >= 3);
+    const strongest = sufficientlyScoredTopics.slice()
+      .sort((a, b) => (b.averageScore ?? -1) - (a.averageScore ?? -1) || b.attempts - a.attempts)
+      .slice(0, 3);
     const exams = state.examRecords
       .filter((record) => record.profileId === profileId)
       .sort((a, b) => new Date(a.examDate).getTime() - new Date(b.examDate).getTime());
@@ -3669,31 +4259,14 @@
       current.count += 1;
       examWeakCounts.set(topicKey, current);
     }));
-    const combinedWeak = new Map(topics.map((topic) => [topic.topicKey || topicKeyForLabel(topic.topic), {
+    const combinedWeak = new Map(sufficientlyScoredTopics.map((topic) => [topic.topicKey || topicKeyForLabel(topic.topic), {
       ...topic,
       evidenceSource: "practice",
       examMentions: examWeakCounts.get(topic.topicKey || topicKeyForLabel(topic.topic))?.count || 0
     }]));
-    examWeakCounts.forEach(({ label, count }, topicKey) => {
-      if (combinedWeak.has(topicKey)) return;
-      combinedWeak.set(topicKey, {
-        topic: label,
-        topicKey,
-        attempts: 0,
-        scoredCount: 0,
-        correct: 0,
-        scoreTotal: 0,
-        hintTotal: 0,
-        modelTotal: 0,
-        accuracy: null,
-        averageScore: null,
-        averageHint: 0,
-        modeling: 0,
-        evidenceSource: "exam-record",
-        examMentions: count
-      });
-    });
     const weakest = [...combinedWeak.values()]
+      .filter((topic) => topic.accuracy < 70 || topic.averageHint >= 3
+        || (topic.examMentions > 0 && topic.accuracy < 80))
       .sort((a, b) => {
         const aRisk = (a.scoredCount ? 100 - a.averageScore : (a.pendingReviewCount ? 0 : 35)) + a.examMentions * 15;
         const bRisk = (b.scoredCount ? 100 - b.averageScore : (b.pendingReviewCount ? 0 : 35)) + b.examMentions * 15;
@@ -3718,7 +4291,7 @@
       if (topic.accuracy !== null && topic.accuracy < 60) causes.push("近期已评分正确率较低");
       priorities.push(`${topic.topic}：${causes.join("、") || "需要增加独立提取练习"}`);
     });
-    if (!priorities.length) priorities.push("先完成一组独立作答，形成可分析证据");
+    if (!priorities.length) priorities.push("优先补充每个知识点至少 3 条已评分作答，再判断薄弱或相对稳定");
     return {
       generatedAt: new Date().toISOString(),
       profile,
@@ -3831,10 +4404,26 @@
         : null;
       const historicalAccuracy = accuracyOf(orderedScored);
       const recentAccuracy = accuracyOf(recent.length ? recent : orderedScored.slice(-3));
-      const earlierAccuracy = accuracyOf(earlier);
-      const trend = historicalAccuracy == null || orderedScored.length < 3 || recentAccuracy == null || earlierAccuracy == null
+      const pairedBefore = [];
+      const pairedAfter = [];
+      const usedBefore = new Set();
+      for (const after of recent) {
+        const match = earlier.find((before) => !usedBefore.has(before.id)
+          && dateValue(before) < dateValue(after)
+          && localDateKey(before.completedAt || before.createdAt) !== localDateKey(after.completedAt || after.createdAt)
+          && isComparableQuestionPair(questionMap.get(before.questionId), questionMap.get(after.questionId)));
+        if (!match) continue;
+        usedBefore.add(match.id);
+        pairedBefore.push(match);
+        pairedAfter.push(after);
+      }
+      const pairedPreAccuracy = accuracyOf(pairedBefore);
+      const pairedPostAccuracy = accuracyOf(pairedAfter);
+      const trend = orderedScored.length < 3
         ? "insufficient"
-        : recentAccuracy > earlierAccuracy ? "improving" : recentAccuracy < earlierAccuracy ? "declining" : "stable";
+        : !pairedBefore.length ? "unmatched"
+          : pairedPostAccuracy > pairedPreAccuracy ? "improving"
+            : pairedPostAccuracy < pairedPreAccuracy ? "declining" : "stable";
       const repeatedErrorCount = [...group.errorCounts.values()]
         .reduce((sum, count) => sum + Math.max(0, count - 1), 0);
       const lastPracticeAt = ordered.length ? (ordered.at(-1).completedAt || ordered.at(-1).createdAt || null) : null;
@@ -3852,6 +4441,14 @@
         accuracy: group.scoredCount ? Math.round(group.correctCount / group.scoredCount * 100) : null,
         recentAccuracy,
         historicalAccuracy,
+        pairedPreAccuracy,
+        pairedPostAccuracy,
+        matchedPairCount: pairedBefore.length,
+        matchedEvidenceIds: pairedBefore.map((item) => item.id)
+          .concat(pairedAfter.map((item) => item.id)).filter(Boolean),
+        comparisonReason: trend === "unmatched"
+          ? "题目未配平：尚无不同题目、跨日期且知识点、难度、模型或等价组可比的前后证据。"
+          : trend === "insufficient" ? "本知识点不足 3 条已评分证据。" : "",
         wrongCount: group.wrongCount,
         repeatedErrorCount,
         lastPracticeAt,
@@ -3889,6 +4486,94 @@
       boundary: sampleStatus === "insufficient"
         ? "当前样本不足，暂不做稳定结论；待人工复核记录不计入正确率。"
         : "本诊断仅基于软件已保存的作答记录，属于描述性学习反馈，不是标准化测评或人格判断。"
+    };
+  }
+
+  function buildStudentFormativeReport(state, questions = [], profileId = state.activeProfileId) {
+    const diagnosis = buildStudentLearningDiagnosis(state, questions, profileId);
+    const knowledgePoints = diagnosis.knowledgePoints || [];
+    const stable = knowledgePoints
+      .filter((item) => item.scoredCount >= 3 && item.accuracy >= 80 && item.trend !== "declining")
+      .slice(0, 3);
+    const needsWork = knowledgePoints
+      .filter((item) => item.scoredCount >= 3 && (item.accuracy < 70 || item.repeatedErrorCount > 0))
+      .slice(0, 3);
+    const insufficient = knowledgePoints
+      .filter((item) => item.scoredCount < 3)
+      .slice(0, 5);
+    const repeatedErrors = knowledgePoints
+      .filter((item) => item.repeatedErrorCount > 0)
+      .slice(0, 3)
+      .map((item) => ({
+        knowledgePointId: item.knowledgePointId,
+        label: item.label,
+        repeatedErrorCount: item.repeatedErrorCount,
+        dominantErrorTypes: item.dominantErrorTypes,
+        evidenceIds: item.scoredEvidenceIds
+      }));
+    const recentTrend = knowledgePoints
+      .filter((item) => item.trend !== "insufficient")
+      .slice(0, 5)
+      .map((item) => ({
+        knowledgePointId: item.knowledgePointId,
+        label: item.label,
+        trend: item.trend,
+        historicalAccuracy: item.historicalAccuracy,
+        recentAccuracy: item.recentAccuracy,
+        pairedPreAccuracy: item.pairedPreAccuracy,
+        pairedPostAccuracy: item.pairedPostAccuracy,
+        matchedPairCount: item.matchedPairCount,
+        comparisonReason: item.comparisonReason,
+        evidenceIds: item.matchedEvidenceIds.length ? item.matchedEvidenceIds : item.scoredEvidenceIds
+      }));
+    const nextActions = [];
+    const dueCount = reviewsForProfile(state, profileId)
+      .filter((review) => new Date(review.dueAt || 0).getTime() <= Date.now()).length;
+    if (dueCount) nextActions.push({
+      actionId: "review.due",
+      label: `先完成 ${dueCount} 道到期复习`,
+      reason: "到期复习来自既有复习调度，必须重新真实作答后才会更新间隔。",
+      evidenceIds: reviewsForProfile(state, profileId).filter((review) => new Date(review.dueAt || 0).getTime() <= Date.now()).map((review) => review.questionId)
+    });
+    needsWork.forEach((item) => {
+      if (nextActions.length >= 3) return;
+      nextActions.push({
+        actionId: "training.topic",
+        knowledgePointId: item.knowledgePointId,
+        label: `用 3 题巩固“${item.label}”`,
+        reason: `已评分 ${item.scoredCount} 题，正确 ${item.correctCount} 题${item.repeatedErrorCount ? `，重复错误 ${item.repeatedErrorCount} 次` : ""}。`,
+        evidenceIds: item.scoredEvidenceIds
+      });
+    });
+    if (!nextActions.length) nextActions.push({
+      actionId: "practice.collect-evidence",
+      label: "完成一组独立作答，补充可评分证据",
+      reason: diagnosis.overall.scoredCount < 3
+        ? "当前样本不足，暂不做稳定结论。"
+        : "当前没有达到产品规则的明确薄弱项，继续保持广覆盖练习。",
+      evidenceIds: []
+    });
+    return {
+      profileId,
+      generatedAt: new Date().toISOString(),
+      currentLearning: knowledgePoints.slice(0, 8).map((item) => ({
+        knowledgePointId: item.knowledgePointId,
+        label: item.label,
+        submittedCount: item.submittedCount,
+        scoredCount: item.scoredCount,
+        lastPracticeAt: item.lastPracticeAt,
+        evidenceIds: item.evidenceIds
+      })),
+      stable,
+      needsWork,
+      insufficient,
+      repeatedErrors,
+      recentTrend,
+      nextActions: nextActions.slice(0, 3),
+      overall: diagnosis.overall,
+      sampleStatus: diagnosis.sampleStatus,
+      boundary: diagnosis.boundary,
+      evidenceRule: "正确率只使用已评分证据；待人工复核不进入分母。知识点至少有 3 条已评分证据后才进入相对稳定或需巩固候选。本规则是形成性产品规则，不是标准化测评阈值。"
     };
   }
 
@@ -4179,7 +4864,14 @@
 
     const analysis = studentAnalysis(state, eligible, profileId);
     const requestedTopic = String(options.focusTopic || "").trim();
-    const requestedKey = String(options.focusTopicKey || (requestedTopic.startsWith("kp:") ? requestedTopic : "")).trim();
+    const selectedQuestion = requestedTopic && requestedTopic !== "自动依据学情"
+      ? eligible.find((question) => question.topic === requestedTopic)
+      : null;
+    if (requestedTopic && requestedTopic !== "自动依据学情" && !selectedQuestion && !options.focusTopicKey) {
+      throw new Error("所选知识点没有该年级已发布完整题，请重新选择。");
+    }
+    const requestedKey = String(options.focusTopicKey
+      || (requestedTopic.startsWith("kp:") ? requestedTopic : selectedQuestion ? topicKeyForQuestion(selectedQuestion) : "")).trim();
     const focusTopicKey = requestedKey && requestedKey !== "自动依据学情"
       ? requestedKey
       : analysis.weakest[0]?.topicKey || topicKeyForQuestion(eligible[0]);
@@ -4252,8 +4944,13 @@
     pool.forEach((question) => addQuestion(question, "专项复测", `补充${focusTopic}的不同模型证据`));
 
     const sourceWeak = analysis.weakest.find((item) => item.topicKey === focusTopicKey);
-    const evidenceReason = sourceWeak?.examMentions
-      ? `最近试卷记录将该知识点标记为薄弱项 ${sourceWeak.examMentions} 次`
+    const examMentions = (state.examRecords || [])
+      .filter((record) => record.profileId === profileId)
+      .slice(-10)
+      .reduce((count, record) => count + (record.weakTopicKeys || record.weakTopics || [])
+        .filter((key) => resolveKnowledgePointIdentity({ knowledgePointId: key, label: key }).id === focusTopicKey).length, 0);
+    const evidenceReason = examMentions
+      ? `最近试卷记录提到该知识点 ${examMentions} 次；${sourceWeak?.scoredCount >= 3 ? "结合应用内已评分作答制定专项" : "应用内已评分证据不足，先诊断，不作稳定薄弱结论"}`
       : sourceWeak?.attempts
         ? `已有 ${sourceWeak.attempts} 次作答，${sourceWeak.scoredCount ? `平均得分 ${sourceWeak.averageScore}%` : "尚无可评分证据"}`
         : "当前证据不足，先用少量题完成诊断，不作能力结论";
@@ -4362,6 +5059,40 @@
       confirmationStatus: "teacher-confirmed",
       teacherConfirmedBy: String(plan.teacherConfirmedBy || "local-teacher").slice(0, 120),
       teacherConfirmedAt: new Date().toISOString(),
+      approvedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    state.learningPlans.push(saved);
+    return saved;
+  }
+
+  function saveSelfDirectedLearningPlan(state, plan) {
+    if (!plan || plan.profileId !== state.activeProfileId) {
+      throw new Error("学生只能为当前本人档案建立自主训练方案。");
+    }
+    if (!Array.isArray(plan.questionIds) || !plan.questionIds.length || plan.questionIds.length > 7) {
+      throw new Error("自主专项方案题量必须为1至7题。");
+    }
+    const teacherPlan = state.learningPlans.find((item) => item.profileId === plan.profileId
+      && item.status === "active"
+      && item.confirmationStatus === "teacher-confirmed");
+    if (teacherPlan) {
+      throw new Error("当前有教师已确认的专项方案，请先完成该方案。自主训练不会覆盖教师任务。");
+    }
+    state.learningPlans.forEach((item) => {
+      if (item.profileId === plan.profileId
+        && item.status === "active"
+        && item.confirmationStatus === "student-self-directed") {
+        item.status = "replaced";
+        item.updatedAt = new Date().toISOString();
+      }
+    });
+    const saved = {
+      ...plan,
+      status: "active",
+      confirmationStatus: "student-self-directed",
+      teacherConfirmedBy: "",
+      teacherConfirmedAt: "",
       approvedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -5087,7 +5818,7 @@
     return ["M", "L", "T", "I"].every((key) => (first[key] || 0) === (second[key] || 0));
   }
 
-  function parseDimensionTerm(term) {
+  function parseDimensionTerm(term, symbols) {
     let normalized = term.replace(/\s+/g, "").replace(/[·×]/g, "*").replace(/²/g, "^2").replace(/³/g, "^3");
     normalized = normalized.replace(/^\+/, "");
     if (!normalized) return { dimension: {}, unknown: [] };
@@ -5101,14 +5832,14 @@
         return;
       }
       if (/^[-+]?\d+(?:\.\d+)?$/.test(factor)) return;
-      const match = factor.match(/^([A-Za-z]+|rho|lambda)(?:\^([-+]?\d+))?$/);
+      const match = factor.match(/^([A-Za-z][A-Za-z0-9]*)(?:\^([-+]?\d+))?$/);
       if (!match) {
         unknown.push(factor);
         return;
       }
       const symbol = match[1];
       const power = Number(match[2] || 1) * (operator === "/" ? -1 : 1);
-      const source = quantityDimensions[symbol];
+      const source = symbols[symbol];
       if (!source) {
         unknown.push(symbol);
         return;
@@ -5118,9 +5849,9 @@
     return { dimension, unknown };
   }
 
-  function parseDimensionSide(side) {
-    const terms = side.replace(/\s+/g, "").split(/(?=[+-])/).filter(Boolean);
-    const parsed = terms.map((term) => parseDimensionTerm(term.replace(/^[+-]/, "")));
+  function parseDimensionSide(side, symbols) {
+    const terms = side.replace(/\s+/g, "").split(/(?<!\^)(?=[+-])/).filter(Boolean);
+    const parsed = terms.map((term) => parseDimensionTerm(term.replace(/^[+-]/, ""), symbols));
     const unknown = parsed.flatMap((item) => item.unknown);
     if (unknown.length) return { dimension: {}, unknown };
     const dimension = parsed[0]?.dimension || {};
@@ -5135,7 +5866,20 @@
     return entries.length ? entries.map(([key, value]) => value === 1 ? key : `${key}^${value}`).join(" ") : "1";
   }
 
-  function validateDimension(equation) {
+  function validateDimension(equation, context = {}) {
+    const symbols = { ...quantityDimensions };
+    delete symbols.p;
+    delete symbols.E;
+    const semanticDimensions = {
+      pressure: quantityDimensions.p, momentum: quantityDimensions.momentum,
+      energy: quantityDimensions.E, electricField: quantityDimensions.field,
+      speed: quantityDimensions.v
+    };
+    Object.entries(context.symbols || context.dimensionSymbols || {}).forEach(([symbol, definition]) => {
+      const dimension = typeof definition === "string" ? semanticDimensions[definition] || quantityDimensions[definition] : definition;
+      if (dimension && typeof dimension === "object" && Object.keys(dimension).every((key) => ["M", "L", "T", "I"].includes(key) && Number.isFinite(dimension[key]))) symbols[symbol] = dimension;
+      else delete symbols[symbol];
+    });
     const normalized = String(equation || "")
       .replace(/ρ/g, "rho")
       .replace(/λ/g, "lambda")
@@ -5145,11 +5889,11 @@
     if (parts.length !== 2) {
       return { valid: false, status: "无法校验", message: "请输入一个只含一个等号的方程，例如 F=m*a。" };
     }
-    const left = parseDimensionSide(parts[0]);
-    const right = parseDimensionSide(parts[1]);
+    const left = parseDimensionSide(parts[0], symbols);
+    const right = parseDimensionSide(parts[1], symbols);
     const unknown = [...left.unknown, ...right.unknown];
     if (unknown.length) {
-      return { valid: false, status: "符号待定义", message: `暂不认识这些符号或表达式：${[...new Set(unknown)].join("、")}。` };
+      return { valid: null, status: "符号待定义", message: `请先说明这些符号或表达式的含义：${[...new Set(unknown)].join("、")}。` };
     }
     if (left.inconsistentSum || right.inconsistentSum) {
       return { valid: false, status: "量纲不一致", message: "同一侧相加减的各项量纲不一致。" };
@@ -5199,6 +5943,7 @@
 
   function generateAssignment(questions, options = {}) {
     const count = Math.max(1, Math.min(50, Number(options.count) || 10));
+    const preferredQuestionIds = new Set(Array.isArray(options.preferredQuestionIds) ? options.preferredQuestionIds.map(String) : []);
     const candidates = questions.filter((question) => {
       const topicMatch = !options.topic || options.topic === "全部" || question.topic === options.topic;
       const difficultyMatch = !options.difficulty || options.difficulty === "全部" || question.difficulty === options.difficulty;
@@ -5208,11 +5953,35 @@
     });
     const ranked = candidates.sort((a, b) => {
       const difficultyOrder = { 基础: 1, 进阶: 2, 挑战: 3 };
-      return (difficultyOrder[a.difficulty] || 2) - (difficultyOrder[b.difficulty] || 2)
+      return (preferredQuestionIds.has(a.id) ? -1 : 0) - (preferredQuestionIds.has(b.id) ? -1 : 0)
+        || (difficultyOrder[a.difficulty] || 2) - (difficultyOrder[b.difficulty] || 2)
         || a.title.localeCompare(b.title, "zh-CN");
     });
     const selected = [];
-    if (ranked.length) {
+    const ratios = options.difficulty === "全部" && options.difficultyRatios && typeof options.difficultyRatios === "object"
+      ? ["基础", "进阶", "挑战"].map((difficulty) => ({ difficulty, weight: Math.max(0, Number(options.difficultyRatios[difficulty]) || 0) }))
+      : [];
+    const ratioTotal = ratios.reduce((sum, item) => sum + item.weight, 0);
+    if (ranked.length && ratioTotal > 0) {
+      const quotas = ratios.map((item) => {
+        const exact = count * item.weight / ratioTotal;
+        return { ...item, exact, quota: Math.floor(exact), fraction: exact - Math.floor(exact) };
+      });
+      let remainingQuota = count - quotas.reduce((sum, item) => sum + item.quota, 0);
+      quotas.slice().sort((a, b) => b.fraction - a.fraction).forEach((item) => {
+        if (remainingQuota <= 0) return;
+        quotas.find((entry) => entry.difficulty === item.difficulty).quota += 1;
+        remainingQuota -= 1;
+      });
+      quotas.forEach(({ difficulty, quota }) => {
+        const pool = ranked.filter((question) => question.difficulty === difficulty && !selected.includes(question));
+        const take = Math.min(quota, pool.length);
+        if (!take) return;
+        const step = pool.length / take;
+        for (let index = 0; index < take; index += 1) selected.push(pool[Math.min(pool.length - 1, Math.floor(index * step))]);
+      });
+      ranked.filter((question) => !selected.includes(question)).slice(0, Math.max(0, count - selected.length)).forEach((question) => selected.push(question));
+    } else if (ranked.length) {
       const step = ranked.length / Math.min(count, ranked.length);
       for (let index = 0; index < Math.min(count, ranked.length); index += 1) {
         selected.push(ranked[Math.min(ranked.length - 1, Math.floor(index * step))]);
@@ -5225,6 +5994,7 @@
       grade: options.grade || "全部",
       topic: options.topic || "全部",
       difficulty: options.difficulty || "全部",
+      difficultyRatios: ratioTotal > 0 ? Object.fromEntries(ratios.map((item) => [item.difficulty, item.weight])) : null,
       questionIds: selected.map((question) => question.id),
       questionCount: selected.length,
       reviewStatus: "教师待审核",
@@ -5394,6 +6164,9 @@
       growthRecords: state.growthRecords.filter((record) => record.profileId === profile.id),
       diagnosticAttempts: state.diagnosticAttempts.filter((record) => record.profileId === profile.id),
       experimentRecords: state.experimentRecords.filter((record) => record.profileId === profile.id),
+      feynmanExplanations: (state.feynmanExplanations || []).filter((record) => record.profileId === profile.id),
+      variantSets: (state.variantSets || []).filter((set) => (state.variantAttempts || []).some((record) => record.profileId === profile.id && record.variantSetId === set.id)),
+      variantAttempts: (state.variantAttempts || []).filter((record) => record.profileId === profile.id),
       learningPlans: state.learningPlans.filter((record) => record.profileId === profile.id),
       assessmentSessions: (state.assessmentSessions || []).filter((record) => record.profileId === profile.id),
       analysis: {
@@ -5458,6 +6231,9 @@
     const profile = state.profiles.find((item) => item.id === requestedProfileId);
     if (!profile) throw new Error("云同步学生 ID 无法匹配本机档案，未发送任何数据。");
     if (!profile.portableProfileId) throw new Error("学生缺少稳定跨设备 ID，未发送任何数据。");
+    if (!["under14", "14plus"].includes(profile.minorAgeBand)) {
+      throw new Error("学生年龄段尚未确认，不能假定已满 14 周岁；云同步未发送任何数据。");
+    }
     if (profile.guardianConsentStatus === "withdrawn") {
       throw new Error("该学生已撤回数据授权，不能继续云同步。");
     }
@@ -5497,7 +6273,7 @@
           knowledgePointIds: [syncClientEntityId(attempt.topicKey || topicKeyForLabel(attempt.topic), "topic-unknown")],
           questionType: syncQuestionType(attempt.questionType || question.questionType),
           modelFamilyId: attempt.modelFamilyId ? syncClientEntityId(attempt.modelFamilyId) : null,
-          variantRole: ["near", "far", "counter", "review"].includes(attempt.transferType) ? attempt.transferType : "core",
+          variantRole: ["near", "reverse", "context", "far", "counter", "review"].includes(attempt.transferType) ? attempt.transferType : "core",
           difficulty: syncDifficulty(attempt.difficulty || question.difficulty),
           startedAt: Number.isFinite(startedAt.getTime()) ? startedAt.toISOString() : new Date().toISOString(),
           completedAt: Number.isFinite(completedAt.getTime()) ? completedAt.toISOString() : new Date().toISOString(),
@@ -5563,6 +6339,7 @@
 
   window.PHYSICS_LEARNING_ENGINE = Object.freeze({
     version: APP_VERSION,
+    gradingVersion: GRADING_VERSION,
     storageKey: STORAGE_KEY,
     masteryRules: MASTERY_RULES,
     interventionComparisonRule: INTERVENTION_COMPARISON_RULE,
@@ -5577,6 +6354,7 @@
     normalizeState,
     loadState,
     saveState,
+    awaitLastSave,
     activeProfile,
     normalizeProfile,
     normalizeAssessmentSession,
@@ -5599,9 +6377,23 @@
     createHintLadder,
     socraticPrompts,
     gradeFinalAnswer,
+    markLegacyGradingForReview,
     verifyPhysicsAnswer,
     scoreModeling,
     recordAttempt,
+    normalizeVariantSet,
+    normalizeVariantAttempt,
+    normalizeFeynmanExplanation,
+    saveVariantSet,
+    variantSetForParent,
+    decideVariantReview,
+    recordVariantAttempt,
+    recordFeynmanExplanation,
+    feynmanSelfCheck,
+    selectFeynmanRetestQuestion,
+    variantSetProgress,
+    trainableVariants,
+    saveVariantPreset,
     completeManualReview,
     automaticReviewRating,
     scheduleReview,
@@ -5613,6 +6405,7 @@
     masteryProfile,
     masterySummary,
     topicPerformance,
+    questionCorrectionState,
     topicEvidenceProfile,
     knowledgePointEvidenceSummary,
     masteryDisplayLabel,
@@ -5631,6 +6424,7 @@
     growthTimeline,
     studentAnalysis,
     buildStudentLearningDiagnosis,
+    buildStudentFormativeReport,
     dailyTest,
     generatePlacementDiagnostic,
     placementSessionForProfile,
@@ -5646,6 +6440,7 @@
     buildTargetedLearningPlan,
     buildComparableInterventionOutcome,
     saveTargetedLearningPlan,
+    saveSelfDirectedLearningPlan,
     buildTeacherPrescription,
     buildTieredAssignmentDraft,
     transferVariants,

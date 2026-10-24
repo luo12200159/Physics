@@ -246,15 +246,15 @@ engine.recordAttempt(state, {
   errorType: "公式选错"
 });
 assert.equal(state.attempts[0].questionType, "单项选择题");
-assert.equal(state.attempts[0].errorType, "规律条件错误");
+assert.equal(state.attempts[0].errorType, "规律选择或适用条件");
 assert.equal(state.attempts[0].errorTypeCode, "law-condition");
 [
-  ["审题偏差", "审题错误"],
-  ["前概念混淆", "概念错误"],
-  ["研究对象选择不当", "建模错误"],
-  ["公式选错", "规律条件错误"],
-  ["有效数字错误", "计算/单位错误"],
-  ["实验图表读取错误", "图像/实验错误"]
+  ["审题偏差", "审题或计算疏漏"],
+  ["前概念混淆", "概念理解"],
+  ["研究对象选择不当", "研究对象/建模"],
+  ["公式选错", "规律选择或适用条件"],
+  ["有效数字错误", "单位/方向/符号"],
+  ["实验图表读取错误", "图像与表征"]
 ].forEach(([input, expected]) => assert.equal(engine.normalizeErrorType(input), expected));
 const summary = engine.summarizeLearning(state, [choiceQuestion]);
 assert.equal(summary.completed, 1);
@@ -371,7 +371,7 @@ engine.recordAttempt(masteryState, {
   model,
   selfExplanation: "尚未分清竖直分运动。"
 });
-assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).status, "薄弱");
+assert.equal(engine.questionMasteryEvidence(masteryState, masteryQuestion.id).status, "待订正");
 
 const abilityState = engine.defaultState();
 const abilityQuestions = [
@@ -464,12 +464,12 @@ assert.equal(motionEvidence.sampleSize, 3);
 assert.equal(motionEvidence.latestEvidenceDate, "2026-07-03");
 assert.equal(motionEvidence.transferSuccessCount, 1);
 assert.equal(motionEvidence.questionTypes.find((item) => item.label === "计算题").count, 2);
-assert.equal(circuitEvidence.status, "需巩固");
+assert.equal(circuitEvidence.status, "证据不足");
 assert.deepEqual(
   Array.from(circuitEvidence.errorTypes, (item) => item.label).sort(),
-  ["概念错误", "计算/单位错误"].sort()
+  ["概念理解", "单位/方向/符号"].sort()
 );
-assert.equal(opticsEvidence.status, "基本掌握");
+assert.equal(opticsEvidence.status, "证据不足");
 assert.equal(opticsEvidence.sampleSize, 2);
 assert.equal(soundEvidence.status, "证据不足");
 assert.equal(soundEvidence.sampleSize, 0);
@@ -611,7 +611,7 @@ const migratedState = engine.normalizeState({
   }]
 });
 assert.equal(migratedState.attempts[0].questionType, "多项选择题");
-assert.equal(migratedState.attempts[0].errorType, "审题错误");
+assert.equal(migratedState.attempts[0].errorType, "审题或计算疏漏");
 
 const audit = engine.auditQuestion({
   title: "水平面上物体的受力与加速度",

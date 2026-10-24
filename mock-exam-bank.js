@@ -5,28 +5,7 @@
   const JUNIOR_BASIS = "依据《义务教育物理课程标准（2022年版）》相关内容要求，结合长沙初中物理常见综合复习知识结构编写。";
   const SENIOR_BASIS = "依据《普通高中物理课程标准（2017年版2020年修订）》相关内容要求，结合湖南高考物理复习知识结构编写。";
 
-  function formatDetailedSolution(definition) {
-    const existing = String(definition.solution || "").trim();
-    if (/^【考察点】/.test(existing)) return existing;
-    const points = definition.examPoints?.length ? definition.examPoints : [definition.topic];
-    const fragments = existing
-      .split(/\r?\n/)
-      .flatMap((line) => line.split(/(?<=[。；])\s*/))
-      .map((line) => line.replace(/^(?:第\s*)?\d+(?:\s*步)?[.、：:]\s*/, "").trim())
-      .filter(Boolean);
-    const reasoning = [
-      `先明确题目条件、研究对象和所求结论，本题主要考察${points.join("、")}。`,
-      ...fragments,
-      `整理上述推理，按题目要求写出结论：${definition.answer}`
-    ];
-    return [
-      `【考察点】${points.join("、")}`,
-      "【分步解析】",
-      ...reasoning.map((line, index) => `${index + 1}. ${line}`),
-      `【最终结论】${definition.answer}`,
-      "【结果复核】核对设问、公式或规律的适用条件、单位、方向和数量级；选择题同时核对其余选项。"
-    ].join("\n");
-  }
+  const formatDetailedSolution = (definition) => window.PHYSICS_SOLUTION_FORMAT.formatDetailedSolution(definition, "mock");
 
   const juniorDefinitions = [
     {
@@ -723,6 +702,7 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
       return {
         ...definition,
         solution: formatDetailedSolution(definition),
+        ...window.PHYSICS_SOLUTION_FORMAT.contentMetadata(definition, "mock"),
         stage: exam.stage,
         grade: exam.grade,
         source: "物理研习室原创模拟卷",
@@ -802,7 +782,7 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
 
   window.PHYSICS_MOCK_EXAM_BANK = Object.freeze({
     version: 2,
-    contentVersion: "2026.07.29-detailed-solutions-r2",
+    contentVersion: window.PHYSICS_SOLUTION_FORMAT.CONTENT_VERSION,
     verifiedAt: "2026-07-29",
     title: "长沙中考与湖南高考原创物理综合训练题库",
     copyrightNote: COPYRIGHT_NOTE,

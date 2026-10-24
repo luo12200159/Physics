@@ -11,10 +11,25 @@ const ClientEntityIdSchema = Type.String({
 const DeviceIdSchema = Type.String({ pattern: "^[0-9a-f]{64}$" });
 const JsonObjectSchema = Type.Record(Type.String({ minLength: 1, maxLength: 120 }), Type.Unknown());
 const JsonArraySchema = Type.Array(Type.Unknown(), { maxItems: 2_000 });
+const PerQuestionScoreSchema = StrictObject({
+  questionId: ClientEntityIdSchema,
+  score: Type.Union([Type.Number({ minimum: 0, maximum: 100 }), Type.Null()]),
+});
+const PerQuestionScoresSchema = Type.Array(PerQuestionScoreSchema, { maxItems: 100 });
 
 export const ClassLearningParamsSchema = StrictObject({ classId: UuidSchema });
 export const AssignmentParamsSchema = StrictObject({ assignmentId: UuidSchema });
 export const ReviewCaseParamsSchema = StrictObject({ reviewId: UuidSchema });
+export const SubmissionListQuerySchema = StrictObject({ cursor: Type.Optional(UuidSchema) });
+
+const VariantRoleSchema = Type.Union([
+  Type.Literal("near"),
+  Type.Literal("far"),
+  Type.Literal("counter"),
+  // Accepted for v3.4.1 clients; new clients normalize these to far.
+  Type.Literal("reverse"),
+  Type.Literal("context"),
+]);
 
 export const ProfileSyncSchema = StrictObject({
   clientEntityId: ClientEntityIdSchema,
@@ -42,6 +57,8 @@ export const LearningAttemptSyncSchema = StrictObject({
     Type.Literal("diagnostic"),
     Type.Literal("core"),
     Type.Literal("near"),
+    Type.Literal("reverse"),
+    Type.Literal("context"),
     Type.Literal("far"),
     Type.Literal("counter"),
     Type.Literal("review"),
@@ -86,6 +103,77 @@ export const SyncLearningRequestSchema = StrictObject({
   attempts: Type.Array(LearningAttemptSyncSchema, { maxItems: 100 }),
 });
 
+export const VariantQuestionSyncSchema = StrictObject({
+  id: ClientEntityIdSchema,
+  variantRole: VariantRoleSchema,
+  variantTechnique: Type.Optional(Type.Union([
+    Type.Literal("parameter"),
+    Type.Literal("condition"),
+    Type.Literal("reverse"),
+    Type.Literal("representation"),
+    Type.Literal("context"),
+    Type.Literal("counterexample"),
+  ])),
+  title: Type.String({ minLength: 1, maxLength: 240 }),
+  content: Type.String({ minLength: 12, maxLength: 60_000 }),
+  options: Type.Array(JsonObjectSchema, { maxItems: 12 }),
+  stage: Type.Union([Type.Literal("初中"), Type.Literal("高中")]),
+  grade: Type.String({ minLength: 1, maxLength: 40 }),
+  topic: Type.String({ minLength: 1, maxLength: 160 }),
+  knowledgePointId: ClientEntityIdSchema,
+  questionType: Type.String({ minLength: 1, maxLength: 80 }),
+  difficulty: Type.Union([Type.Literal("基础"), Type.Literal("进阶"), Type.Literal("挑战")]),
+  changeSummary: Type.String({ minLength: 1, maxLength: 2_000 }),
+  relationToParent: Type.String({ minLength: 1, maxLength: 2_000 }),
+  answer: Type.String({ minLength: 1, maxLength: 30_000 }),
+  solution: Type.String({ minLength: 20, maxLength: 60_000 }),
+  solutionDetail: JsonObjectSchema,
+  validation: JsonObjectSchema,
+  source: Type.Union([Type.Literal("应用内 AI 生成变式"), Type.Literal("应用内已审核题模变式")]),
+  approvalStatus: Type.Union([Type.Literal("teacher-approved"), Type.Literal("system-validated")]),
+});
+
+export const VariantSetSyncItemSchema = StrictObject({
+  clientEntityId: ClientEntityIdSchema,
+  parentQuestionId: ClientEntityIdSchema,
+  sourceContentHash: Type.String({ pattern: "^[0-9a-f]{16}$" }),
+  cacheKey: Type.String({ minLength: 8, maxLength: 600 }),
+  specVersion: Type.Literal("variant_generation_v1"),
+  generatorVersion: Type.String({ minLength: 1, maxLength: 40 }),
+  status: Type.Literal("approved"),
+  variants: Type.Array(VariantQuestionSyncSchema, { minItems: 2, maxItems: 3 }),
+  updatedAt: DateTimeSchema,
+});
+
+export const SyncVariantSetsRequestSchema = StrictObject({
+  deviceId: DeviceIdSchema,
+  clientEventId: Type.Optional(UuidSchema),
+  sets: Type.Array(VariantSetSyncItemSchema, { minItems: 1, maxItems: 20 }),
+});
+
+export const VariantSetViewSchema = StrictObject({
+  clientEntityId: ClientEntityIdSchema,
+  classId: UuidSchema,
+  parentQuestionId: ClientEntityIdSchema,
+  sourceContentHash: Type.String({ pattern: "^[0-9a-f]{16}$" }),
+  cacheKey: Type.String({ minLength: 8, maxLength: 600 }),
+  specVersion: Type.String({ minLength: 1, maxLength: 80 }),
+  generatorVersion: Type.String({ minLength: 1, maxLength: 40 }),
+  status: Type.Literal("approved"),
+  variants: Type.Array(VariantQuestionSyncSchema, { minItems: 2, maxItems: 3 }),
+  updatedAt: DateTimeSchema,
+});
+
+export const VariantSetSyncResponseSchema = StrictObject({
+  accepted: Type.Integer({ minimum: 0 }),
+  duplicates: Type.Integer({ minimum: 0 }),
+  items: Type.Array(VariantSetViewSchema, { maxItems: 20 }),
+});
+
+export const VariantSetListResponseSchema = StrictObject({
+  items: Type.Array(VariantSetViewSchema, { maxItems: 500 }),
+});
+
 export const ExamRecordSyncSchema = StrictObject({
   clientEntityId: ClientEntityIdSchema,
   profileClientEntityId: ClientEntityIdSchema,
@@ -112,6 +200,16 @@ export const AssignmentRequestSchema = StrictObject({
   targetType: Type.Union([Type.Literal("class"), Type.Literal("group"), Type.Literal("student")]),
   targetId: Type.Optional(Type.Union([UuidSchema, Type.Null()])),
   questionIds: Type.Array(ClientEntityIdSchema, { maxItems: 100 }),
+  questionItems: Type.Optional(Type.Array(StrictObject({
+    id: ClientEntityIdSchema,
+    title: Type.String({ minLength: 1, maxLength: 240 }),
+    content: Type.String({ minLength: 1, maxLength: 30_000 }),
+    questionType: Type.String({ minLength: 1, maxLength: 80 }),
+    options: Type.Array(Type.String({ maxLength: 2_000 }), { maxItems: 12 }),
+    knowledgePointId: Type.String({ maxLength: 160 }),
+    difficulty: Type.String({ maxLength: 40 }),
+    correctAnswer: Type.Optional(Type.String({ maxLength: 2_000 })),
+  }), { maxItems: 100 })),
   knowledgePointKeys: Type.Array(ClientEntityIdSchema, { maxItems: 100 }),
   target: Type.String({ minLength: 1, maxLength: 1_000 }),
   publish: Type.Optional(Type.Boolean()),
@@ -119,13 +217,19 @@ export const AssignmentRequestSchema = StrictObject({
 
 export const SubmissionRequestSchema = StrictObject({
   clientEntityId: ClientEntityIdSchema,
-  answers: JsonArraySchema,
+  answers: Type.Array(StrictObject({
+    questionId: ClientEntityIdSchema,
+    response: Type.String({ minLength: 1, maxLength: 30_000 }),
+    steps: Type.Optional(Type.String({ maxLength: 30_000 })),
+    startedAt: Type.Optional(DateTimeSchema),
+    hintViewCount: Type.Optional(Type.Integer({ minimum: 0, maximum: 100 })),
+  }), { minItems: 1, maxItems: 100 }),
 });
 
 export const ReviewDecisionRequestSchema = StrictObject({
   decision: Type.Union([Type.Literal("approve"), Type.Literal("return"), Type.Literal("rejudge")]),
   score: Type.Number({ minimum: 0, maximum: 100 }),
-  perQuestionScores: JsonArraySchema,
+  perQuestionScores: PerQuestionScoresSchema,
   reason: Type.String({ minLength: 1, maxLength: 1_000 }),
   annotation: JsonObjectSchema,
 });
@@ -163,6 +267,15 @@ export const AssignmentViewSchema = StrictObject({
   targetType: Type.Union([Type.Literal("class"), Type.Literal("group"), Type.Literal("student")]),
   targetId: Type.Union([UuidSchema, Type.Null()]),
   questionIds: Type.Array(ClientEntityIdSchema, { maxItems: 100 }),
+  questionItems: Type.Array(StrictObject({
+    id: ClientEntityIdSchema,
+    title: Type.String({ minLength: 1, maxLength: 240 }),
+    content: Type.String({ minLength: 1, maxLength: 30_000 }),
+    questionType: Type.String({ minLength: 1, maxLength: 80 }),
+    options: Type.Array(Type.String({ maxLength: 2_000 }), { maxItems: 12 }),
+    knowledgePointId: Type.String({ maxLength: 160 }),
+    difficulty: Type.String({ maxLength: 40 }),
+  }), { maxItems: 100 }),
   knowledgePointKeys: Type.Array(ClientEntityIdSchema, { maxItems: 100 }),
   target: Type.String({ maxLength: 1_000 }),
   createdAt: DateTimeSchema,
@@ -179,6 +292,20 @@ export const SubmissionViewSchema = StrictObject({
   clientEntityId: ClientEntityIdSchema,
   status: Type.Union([Type.Literal("submitted"), Type.Literal("underReview"), Type.Literal("returned"), Type.Literal("accepted")]),
   submittedAt: DateTimeSchema,
+  answers: Type.Optional(SubmissionRequestSchema.properties.answers),
+  studentUserId: Type.Optional(UuidSchema),
+  studentDisplayName: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+  version: Type.Optional(Type.Integer({ minimum: 1 })),
+  previousSubmissionId: Type.Optional(Type.Union([UuidSchema, Type.Null()])),
+  reviewStatus: Type.Optional(Type.Union([Type.Literal("pending"), Type.Literal("approved"), Type.Literal("returned"), Type.Literal("rejudged")])),
+  score: Type.Optional(Type.Union([Type.Number({ minimum: 0, maximum: 100 }), Type.Null()])),
+  perQuestionScores: Type.Optional(PerQuestionScoresSchema),
+  feedback: Type.Optional(Type.Union([Type.String({ maxLength: 1_000 }), Type.Null()])),
+});
+
+export const SubmissionListResponseSchema = StrictObject({
+  items: Type.Array(SubmissionViewSchema, { maxItems: 500 }),
+  nextCursor: Type.Optional(Type.Union([UuidSchema, Type.Null()])),
 });
 
 export const ReviewCaseViewSchema = StrictObject({
@@ -191,6 +318,10 @@ export const ReviewCaseViewSchema = StrictObject({
   revision: Type.Integer({ minimum: 1 }),
   submittedAt: DateTimeSchema,
   updatedAt: DateTimeSchema,
+  studentDisplayName: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+  answers: Type.Optional(SubmissionRequestSchema.properties.answers),
+  submissionVersion: Type.Optional(Type.Integer({ minimum: 1 })),
+  previousAnswers: Type.Optional(SubmissionRequestSchema.properties.answers),
 });
 
 export const ReviewCaseListResponseSchema = StrictObject({
@@ -226,12 +357,18 @@ export const ReportSnapshotListResponseSchema = StrictObject({
 export type ClassLearningParams = Static<typeof ClassLearningParamsSchema>;
 export type AssignmentParams = Static<typeof AssignmentParamsSchema>;
 export type ReviewCaseParams = Static<typeof ReviewCaseParamsSchema>;
+export type SubmissionListQuery = Static<typeof SubmissionListQuerySchema>;
 export type SyncLearningRequest = Static<typeof SyncLearningRequestSchema>;
+export type SyncVariantSetsRequest = Static<typeof SyncVariantSetsRequestSchema>;
+export type VariantSetSyncResponse = Static<typeof VariantSetSyncResponseSchema>;
+export type VariantSetListResponse = Static<typeof VariantSetListResponseSchema>;
+export type VariantSetView = Static<typeof VariantSetViewSchema>;
 export type SyncExamRecordsRequest = Static<typeof SyncExamRecordsRequestSchema>;
 export type LearningSyncResponse = Static<typeof LearningSyncResponseSchema>;
 export type ExamSyncResponse = Static<typeof ExamSyncResponseSchema>;
 export type AssignmentRequest = Static<typeof AssignmentRequestSchema>;
 export type SubmissionRequest = Static<typeof SubmissionRequestSchema>;
+export type SubmissionListResponse = Static<typeof SubmissionListResponseSchema>;
 export type ReviewDecisionRequest = Static<typeof ReviewDecisionRequestSchema>;
 export type ReportSnapshotRequest = Static<typeof ReportSnapshotRequestSchema>;
 export type AssignmentView = Static<typeof AssignmentViewSchema>;

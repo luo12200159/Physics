@@ -59,6 +59,7 @@ declare module "fastify" {
 const mutableMethods = new Set(["POST", "PATCH", "DELETE"]);
 const idempotencyExemptRoutes = new Set([
   "POST /v1/auth/login",
+  "POST /v1/auth/register",
   "POST /v1/auth/refresh",
   "POST /v1/auth/reauthenticate",
   // Anonymous class creation has no authenticated actor/idempotency row. The

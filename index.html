@@ -84,9 +84,11 @@
       </div>
 
       <div class="sidebar-actions">
-        <button class="text-button" id="fullBackupButton" type="button">完整备份（含附件）</button>
+        <label for="fullBackupPassword">完整备份密码（至少 12 字符；不保存在应用中）</label>
+        <input id="fullBackupPassword" type="password" minlength="12" autocomplete="new-password" aria-label="完整备份加密或恢复密码" />
+        <button class="text-button" id="fullBackupButton" type="button">加密完整备份（含附件）</button>
         <label class="text-button file-label" for="fullRestoreInput">恢复完整备份</label>
-        <input id="fullRestoreInput" class="visually-hidden" type="file" accept=".pslab,application/zip" />
+        <input id="fullRestoreInput" class="visually-hidden" type="file" accept=".pslab,application/octet-stream,application/zip" />
         <button class="text-button" id="exportButton" type="button">轻量导出 JSON</button>
         <label class="text-button file-label" for="importInput">导入轻量 JSON</label>
         <input id="importInput" class="visually-hidden" type="file" accept="application/json,.json" />
@@ -222,7 +224,7 @@
             <div>
               <span class="progress-kicker">LEARNING EVIDENCE</span>
               <h2 id="analysisTitle" tabindex="-1">学情分析</h2>
-              <p>仅依据本应用内的题目、错题、掌握标记、方法视频和举一反三记录进行描述，不替代正式测评。</p>
+              <p>仅依据本应用内的题目、真实作答、错题、方法视频和专项变式证据进行描述，不替代正式测评。</p>
             </div>
             <button class="secondary-button" data-analysis-view="wrong" type="button">打开错题集</button>
           </header>
@@ -230,7 +232,7 @@
             <article><span>知识点证据覆盖</span><strong id="analysisMasteryRate">0/0</strong><small>已有证据知识点 ÷ 可评估知识点</small></article>
             <article><span>错题</span><strong id="analysisWrongCount">0</strong><small>当前错题集题数</small></article>
             <article><span>知识点</span><strong id="analysisTopicCount">0</strong><small>题库内不同知识点</small></article>
-            <article><span>变式记录</span><strong id="analysisTransferCount">0</strong><small>已保存举一反三记录</small></article>
+            <article><span>变式作答</span><strong id="analysisTransferCount">0</strong><small>完整变式作答与兼容旧记录</small></article>
           </div>
           <div class="analysis-content-grid">
             <article class="analysis-card priority-card">
@@ -564,10 +566,12 @@
 
     <dialog class="modal sync-modal" id="syncModal" aria-label="长沙互联网物理题源"></dialog>
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="version-config.js"></script>
     <script src="activation-public-key.js"></script>
     <script src="storage-repository.js"></script>
     <script src="activation.js"></script>
     <script src="curriculum-taxonomy.js"></script>
+    <script src="solution-format.js"></script>
     <script src="curriculum-bank.js"></script>
     <script src="exam-question-index.js"></script>
     <script src="mock-exam-bank.js"></script>
@@ -583,8 +587,10 @@
     <script src="content-catalog.js"></script>
     <script src="classroom-config.js"></script>
     <script src="classroom-client.js"></script>
-    <script src="learning-engine.js"></script>
-    <script src="physics-visuals.js"></script>
+  <script src="learning-engine.js"></script>
+  <script src="physics-visuals.js"></script>
+  <script src="motion-representation-drafts.js"></script>
+  <script src="variant-generator.js"></script>
     <script src="teacher-mode-lock.js"></script>
     <script src="vendor/jsQR.js"></script>
     <script src="app.js"></script>

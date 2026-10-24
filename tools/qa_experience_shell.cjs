@@ -77,7 +77,7 @@ async function run() {
     assert.equal(await page.locator(".main").isVisible(), false);
     assert.deepEqual(
       await page.locator(".student-bottom-nav button strong").allTextContents(),
-      ["今日", "练习", "错题", "我的"]
+      ["首页", "课程", "训练", "学情", "我的"]
     );
     assert.match(await page.locator(".today-intro").innerText(), /15 分钟/);
 

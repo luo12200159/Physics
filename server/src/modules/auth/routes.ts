@@ -6,6 +6,7 @@ import {
   ChangePasswordRequestSchema,
   ChangePasswordResponseSchema,
   LoginRequestSchema,
+  RegisterRequestSchema,
   ReauthenticateRequestSchema,
   ReauthenticateResponseSchema,
   RefreshRequestSchema,
@@ -13,6 +14,7 @@ import {
   UpdateDisplayNameResponseSchema,
   type ChangePasswordRequest,
   type LoginRequest,
+  type RegisterRequest,
   type ReauthenticateRequest,
   type RefreshRequest,
   type UpdateDisplayNameRequest,
@@ -60,6 +62,26 @@ export function registerAuthRoutes(app: FastifyInstance, service: AuthService): 
   }, async (request, reply) => {
     const response = await service.login(request.body, { ip: request.ip });
     return reply.status(200).send(response);
+  });
+
+  app.post<{ Body: RegisterRequest }>("/v1/auth/register", {
+    schema: {
+      body: RegisterRequestSchema,
+      response: {
+        201: AuthResponseSchema,
+        400: ApiErrorBodySchema,
+        409: ApiErrorBodySchema,
+        429: ApiErrorBodySchema,
+        500: ApiErrorBodySchema,
+        503: ApiErrorBodySchema,
+      },
+    },
+  }, async (request, reply) => {
+    const response = await service.register(request.body, {
+      ip: request.ip,
+      requestId: String(request.id),
+    });
+    return reply.status(201).send(response);
   });
 
   app.post<{ Body: RefreshRequest }>("/v1/auth/refresh", {

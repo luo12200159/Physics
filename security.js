@@ -9,6 +9,8 @@
     attachmentsPerQuestionBytes: 80 * MiB,
     videoBytes: 200 * MiB,
     libraryMediaBytes: 2 * 1024 * MiB,
+    completeBackupBytes: 500 * MiB,
+    androidExportBytes: 100 * MiB,
     importBytes: 250 * MiB,
     questionCount: 5000,
     stringLength: 120000
@@ -29,7 +31,7 @@
     document: { max: limits.documentBytes, kinds: ["jpeg", "png", "gif", "webp", "pdf", "zip", "ole"] },
     attachment: { max: limits.attachmentBytes, kinds: ["jpeg", "png", "gif", "webp", "pdf", "zip", "ole"] },
     video: { max: limits.videoBytes, kinds: ["mp4", "webm", "mov"] },
-    backup: { max: limits.importBytes, kinds: ["zip", "json"] }
+    backup: { max: limits.completeBackupBytes + 64, kinds: ["zip", "json"] }
   });
 
   function startsWithBytes(bytes, expected) {

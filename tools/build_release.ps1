@@ -17,6 +17,11 @@ if (-not (Test-Path -LiteralPath $versionSourcePath)) { throw "缺少统一版�
 $versionSource = Get-Content -LiteralPath $versionSourcePath -Raw -Encoding UTF8 | ConvertFrom-Json
 $canonicalVersion = [string]$versionSource.appVersion
 if ($canonicalVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'version.json 的 appVersion 无效。' }
+$versionConfigPath = Join-Path $projectDirectory 'version-config.js'
+$versionConfigJson = ConvertTo-Json -InputObject $versionSource -Compress
+$versionConfigContents = "// Generated from version.json; release builds regenerate this file.`n" +
+    "globalThis.PHYSICS_STUDIO_VERSION = Object.freeze($versionConfigJson);`n"
+[IO.File]::WriteAllText($versionConfigPath, $versionConfigContents, (New-Object Text.UTF8Encoding($false)))
 if ($Version -and $Version -ne $canonicalVersion) { throw "Version 必须与 version.json 一致：$canonicalVersion" }
 $Version = $canonicalVersion
 if (-not $ReleaseDirectory) {
@@ -261,10 +266,12 @@ try {
         "/resource:$(Join-Path $projectDirectory 'learning-lab.css'),PhysicsStudio.Payload.LearningLabStyles",
         "/resource:$(Join-Path $projectDirectory 'experience-shell.css'),PhysicsStudio.Payload.ExperienceStyles",
         "/resource:$(Join-Path $projectDirectory 'activation.css'),PhysicsStudio.Payload.ActivationStyles",
+        "/resource:$(Join-Path $projectDirectory 'version-config.js'),PhysicsStudio.Payload.VersionConfig",
         "/resource:$(Join-Path $projectDirectory 'activation-public-key.js'),PhysicsStudio.Payload.ActivationPublicKey",
         "/resource:$(Join-Path $projectDirectory 'activation.js'),PhysicsStudio.Payload.ActivationScript",
         "/resource:$(Join-Path $projectDirectory 'storage-repository.js'),PhysicsStudio.Payload.StorageRepository",
         "/resource:$(Join-Path $projectDirectory 'curriculum-taxonomy.js'),PhysicsStudio.Payload.CurriculumTaxonomy",
+        "/resource:$(Join-Path $projectDirectory 'solution-format.js'),PhysicsStudio.Payload.SolutionFormat",
         "/resource:$(Join-Path $projectDirectory 'curriculum-bank.js'),PhysicsStudio.Payload.CurriculumBank",
         "/resource:$(Join-Path $projectDirectory 'exam-question-index.js'),PhysicsStudio.Payload.ExamQuestionIndex",
         "/resource:$(Join-Path $projectDirectory 'mock-exam-bank.js'),PhysicsStudio.Payload.MockExamBank",
@@ -291,7 +298,9 @@ try {
          "/resource:$(Join-Path $projectDirectory 'classroom-client.js'),PhysicsStudio.Payload.ClassroomClient",
          "/resource:$(Join-Path $projectDirectory 'question-answer-service.js'),PhysicsStudio.Payload.QuestionAnswerService",
          "/resource:$(Join-Path $projectDirectory 'learning-engine.js'),PhysicsStudio.Payload.LearningEngine",
-         "/resource:$(Join-Path $projectDirectory 'physics-visuals.js'),PhysicsStudio.Payload.PhysicsVisuals",
+        "/resource:$(Join-Path $projectDirectory 'physics-visuals.js'),PhysicsStudio.Payload.PhysicsVisuals",
+        "/resource:$(Join-Path $projectDirectory 'motion-representation-drafts.js'),PhysicsStudio.Payload.MotionRepresentationDrafts",
+        "/resource:$(Join-Path $projectDirectory 'variant-generator.js'),PhysicsStudio.Payload.VariantGenerator",
         "/resource:$(Join-Path $projectDirectory 'teacher-mode-lock.js'),PhysicsStudio.Payload.TeacherModeLock",
         "/resource:$(Join-Path $projectDirectory 'app.js'),PhysicsStudio.Payload.Script",
         "/resource:$(Join-Path $projectDirectory 'learning-lab.js'),PhysicsStudio.Payload.LearningLab",
@@ -351,6 +360,7 @@ $rootSourceFiles = @(
     '.gitignore',
     'ActivationManager.cs',
     'activation.css',
+    'version-config.js',
     'activation-public-key.js',
     'activation.js',
     'storage-repository.js',
@@ -363,6 +373,7 @@ $rootSourceFiles = @(
     'classroom-client.js',
     'question-answer-service.js',
     'curriculum-bank.js',
+    'solution-format.js',
     'curriculum-taxonomy.js',
     'document-import.js',
     'exam-question-index.js',
@@ -375,6 +386,8 @@ $rootSourceFiles = @(
     'Launcher.cs',
     'learning-engine.js',
     'physics-visuals.js',
+    'motion-representation-drafts.js',
+    'variant-generator.js',
     'teacher-mode-lock.js',
     'learning-lab.css',
     'learning-lab.js',
@@ -397,7 +410,7 @@ $rootSourceFiles = @(
 foreach ($relativePath in $rootSourceFiles) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $relativePath) -Destination $sourceStage
 }
-foreach ($directoryName in @('assets', 'schemas', 'tools', 'vendor')) {
+foreach ($directoryName in @('assets', 'docs', 'schemas', 'tools', 'vendor')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $directoryName) -Destination $sourceStage -Recurse
 }
 
@@ -426,7 +439,7 @@ New-Item -ItemType Directory -Path $androidStage | Out-Null
 foreach ($relativePath in @('AndroidManifest.xml', 'README.md', '安装说明.txt')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory "android\$relativePath") -Destination $androidStage
 }
-foreach ($directoryName in @('res', 'src', 'tools')) {
+foreach ($directoryName in @('app-student', 'app-teacher', 'res', 'src', 'tools')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory "android\$directoryName") -Destination $androidStage -Recurse
 }
 

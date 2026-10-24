@@ -13,6 +13,14 @@
     return parsed > 0 ? parsed : fallback;
   }
 
+  function parameter(value, fallback, name, minimum = -Infinity, exclusive = false) {
+    const parsed = value === undefined ? fallback : Number(value);
+    if (value === null || value === "" || !Number.isFinite(parsed) || (exclusive ? parsed <= minimum : parsed < minimum)) {
+      throw new RangeError(`${name} 参数不在支持范围内`);
+    }
+    return parsed;
+  }
+
   function clamp(value, minimum, maximum) {
     return Math.max(minimum, Math.min(maximum, number(value, minimum)));
   }
@@ -71,11 +79,11 @@
   }
 
   function kinematics(input = {}) {
-    const x0 = number(input.x0);
-    const v0 = number(input.v0);
-    const a = number(input.a);
-    const duration = Math.max(0.1, positive(input.duration, 5));
-    const t = clamp(input.t, 0, duration);
+    const x0 = parameter(input.x0, 0, "x0");
+    const v0 = parameter(input.v0, 0, "v0");
+    const a = parameter(input.a, 0, "a");
+    const duration = parameter(input.duration, 5, "duration", 0, true);
+    const t = clamp(parameter(input.t, 0, "t"), 0, duration);
     const position = x0 + v0 * t + 0.5 * a * t ** 2;
     const velocity = v0 + a * t;
     const sampleCount = 60;
@@ -105,36 +113,61 @@
       const points = samples.map((sample) => `${format(sx(sample.t), 2)},${format(sy(sample[key]), 2)}`).join(" ");
       const zeroY = sy(0);
       const cursorX = sx(t);
-      return `<g class="kinematics-panel kinematics-${key}"><text class="visual-title" x="${offset + panelWidth / 2}" y="24" text-anchor="middle">${title}</text><rect class="visual-frame" x="${offset}" y="${top}" width="${panelWidth}" height="${panelHeight}" rx="8"></rect><path class="visual-axis" d="M${offset + padX},${format(zeroY, 2)} H${offset + panelWidth - padX} M${offset + padX},${top + padY} V${top + panelHeight - padY}"></path><polyline class="kinematics-line" points="${points}"></polyline><line class="visual-cursor" x1="${format(cursorX, 2)}" y1="${top + padY}" x2="${format(cursorX, 2)}" y2="${top + panelHeight - padY}"></line><text class="visual-scale-label" x="${offset + 5}" y="${top + 16}">${format(maximum)}</text><text class="visual-scale-label" x="${offset + 5}" y="${top + panelHeight - 6}">${format(minimum)}</text></g>`;
+      const cursorValue = key === "x" ? position : key === "v" ? velocity : a;
+      const cursorY = sy(cursorValue);
+      return `<g class="kinematics-panel kinematics-${key}"><text class="visual-title" x="${offset + panelWidth / 2}" y="24" text-anchor="middle">${title}</text><rect class="visual-frame" x="${offset}" y="${top}" width="${panelWidth}" height="${panelHeight}" rx="8"></rect><path class="visual-axis" d="M${offset + padX},${format(zeroY, 2)} H${offset + panelWidth - padX} M${offset + padX},${top + padY} V${top + panelHeight - padY}"></path><polyline class="kinematics-line" points="${points}" filter="url(#feynman-chart-shadow)"></polyline><line class="visual-cursor" x1="${format(cursorX, 2)}" y1="${top + padY}" x2="${format(cursorX, 2)}" y2="${top + panelHeight - padY}"></line><circle class="visual-live-point" cx="${format(cursorX, 2)}" cy="${format(cursorY, 2)}" r="5"></circle><text class="visual-scale-label" x="${offset + 5}" y="${top + 16}">${format(maximum)}</text><text class="visual-scale-label" x="${offset + 5}" y="${top + panelHeight - 6}">${format(minimum)}</text></g>`;
     };
-    const svg = `<svg class="physics-visual kinematics-diagram" viewBox="0 0 ${width} ${height}" role="img" aria-label="匀变速运动 x-t 图、v-t 图和 a-t 图，同步时刻 ${format(t)} 秒">${graph("x", "x-t 图", 5)}${graph("v", "v-t 图", 250)}${graph("a", "a-t 图", 495)}</svg>`;
+    const svg = `<svg class="physics-visual kinematics-diagram" viewBox="0 0 ${width} ${height}" role="img" aria-label="匀变速运动 x-t 图、v-t 图和 a-t 图，同步时刻 ${format(t)} 秒"><defs><linearGradient id="feynman-kinematics-gradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#43b88a"></stop><stop offset="1" stop-color="#075d43"></stop></linearGradient><filter id="feynman-chart-shadow" x="-20%" y="-30%" width="140%" height="160%"><feDropShadow dx="0" dy="3" stdDeviation="2.5" flood-color="#0b4e3a" flood-opacity=".28"></feDropShadow></filter></defs>${graph("x", "x-t 图", 5)}${graph("v", "v-t 图", 250)}${graph("a", "a-t 图", 495)}</svg>`;
     return { x0, v0, a, t, duration, position, velocity, acceleration: a, samples, svg };
   }
 
   function circuit(input = {}) {
-    const voltage = positive(input.voltage, 12);
+    const voltage = parameter(input.voltage, 12, "voltage", 0);
     const resistances = (Array.isArray(input.resistances) && input.resistances.length
-      ? input.resistances : [10, 20]).slice(0, 2).map((value) => positive(value, 1));
+      ? input.resistances : [10, 20]).slice(0, 2).map((value) => parameter(value, 1, "resistance", 0, true));
     while (resistances.length < 2) resistances.push(1);
     const mode = input.mode === "parallel" ? "parallel" : "series";
-    const totalResistance = mode === "series"
-      ? resistances.reduce((sum, value) => sum + value, 0)
-      : 1 / resistances.reduce((sum, value) => sum + 1 / value, 0);
+    // Electrical nodes and physical terminal coordinates are shared by calculation and SVG.
+    const nodes = mode === "series" ? ["left", "middle", "right"] : ["left", "right"];
+    const components = [
+      { id: "source", type: "source", nodes: ["left", "right"], terminals: [[310, 225], [335, 225]], voltage },
+      ...resistances.map((resistance, index) => ({
+        id: `R${index + 1}`, type: "resistor", resistance,
+        nodes: mode === "parallel" ? ["left", "right"] : index ? ["middle", "right"] : ["left", "middle"],
+        terminals: mode === "series" ? [[index ? 385 : 195, 70], [index ? 485 : 295, 70]] : [[285, 105 + index * 80], [395, 105 + index * 80]],
+      })),
+    ];
+    const resistorComponents = components.filter((component) => component.type === "resistor");
+    const parallel = resistorComponents.every((component) => component.nodes.join() === components[0].nodes.join());
+    const totalResistance = parallel
+      ? 1 / resistorComponents.reduce((sum, component) => sum + 1 / component.resistance, 0)
+      : resistorComponents.reduce((sum, component) => sum + component.resistance, 0);
     const totalCurrent = voltage / totalResistance;
-    const branchCurrents = mode === "series"
+    const branchCurrents = !parallel
       ? resistances.map(() => totalCurrent)
       : resistances.map((resistance) => voltage / resistance);
-    const branchVoltages = mode === "series"
+    const branchVoltages = !parallel
       ? resistances.map((resistance, index) => resistance * branchCurrents[index])
       : resistances.map(() => voltage);
     const branchPowers = resistances.map((resistance, index) => branchCurrents[index] ** 2 * resistance);
     const totalPower = voltage * totalCurrent;
-    const labels = resistances.map((resistance, index) => `<text x="${index ? 438 : 245}" y="${mode === "series" ? 77 : 102 + index * 80}" text-anchor="middle">R${index + 1}=${format(resistance)}Ω · I${index + 1}=${format(branchCurrents[index])}A</text>`).join("");
-    const diagram = mode === "series"
-      ? `<path class="circuit-wire" d="M90,70 H195 M295,70 H385 M485,70 H570 V220 H350 M290,220 H90 V70"></path><rect class="circuit-resistor" x="195" y="48" width="100" height="44" rx="5"></rect><rect class="circuit-resistor" x="385" y="48" width="100" height="44" rx="5"></rect>`
-      : `<path class="circuit-wire" d="M90,50 H570 V225 H350 M290,225 H90 V50 M170,50 V105 H520 V50 M170,105 V185 H520 V105"></path><rect class="circuit-resistor" x="385" y="82" width="110" height="42" rx="5"></rect><rect class="circuit-resistor" x="385" y="162" width="110" height="42" rx="5"></rect>`;
-    const svg = `<svg class="physics-visual circuit-diagram" viewBox="0 0 660 280" role="img" aria-label="${mode === "series" ? "串联" : "并联"}直流电路，总电流 ${format(totalCurrent)} 安"><path class="circuit-wire battery-branch" d="M290,225 H350"></path><line class="battery-long" x1="310" y1="195" x2="310" y2="250"></line><line class="battery-short" x1="335" y1="205" x2="335" y2="240"></line>${diagram}${labels}<text x="322" y="274" text-anchor="middle">U=${format(voltage)}V · R总=${format(totalResistance)}Ω · P总=${format(totalPower)}W</text></svg>`;
-    return { voltage, resistances, mode, totalResistance, totalCurrent, branchCurrents, branchVoltages, branchPowers, totalPower, svg };
+    resistorComponents.forEach((component, index) => Object.assign(component, { current: branchCurrents[index], voltage: branchVoltages[index], power: branchPowers[index] }));
+    const wire = (id, node, points) => ({ id, nodes: [node, node], endpoints: [points[0], points[points.length - 1]], segments: points.slice(1).map((point, index) => [points[index], point]), path: points.map((point, index) => `${index ? "L" : "M"}${point.join(",")}`).join(" ") });
+    const wires = mode === "series" ? [
+      wire("left", "left", [[310,225],[90,225],[90,70],components[1].terminals[0]]),
+      wire("middle", "middle", [components[1].terminals[1],components[2].terminals[0]]),
+      wire("right", "right", [components[2].terminals[1],[570,70],[570,225],[335,225]]),
+    ] : [
+      wire("left-bus", "left", [[310,225],[90,225],[90,105],components[1].terminals[0]]),
+      wire("left-branch", "left", [[90,185],components[2].terminals[0]]),
+      wire("right-bus", "right", [components[1].terminals[1],[570,105],[570,225],[335,225]]),
+      wire("right-branch", "right", [components[2].terminals[1],[570,185]]),
+    ];
+    const topology = { nodes, components, wires };
+    const labels = resistorComponents.map((component, index) => `<text x="${(component.terminals[0][0] + component.terminals[1][0]) / 2}" y="${component.terminals[0][1] - 29}" text-anchor="middle">R${index + 1}=${format(component.resistance)}Ω · I${index + 1}=${format(component.current)}A</text>`).join("");
+    const diagram = wires.map((item) => `<path class="circuit-wire" data-wire-id="${item.id}" d="${item.path}"></path>`).join("") + resistorComponents.map((component) => `<rect class="circuit-resistor" data-component-id="${component.id}" x="${component.terminals[0][0]}" y="${component.terminals[0][1] - 21}" width="${component.terminals[1][0] - component.terminals[0][0]}" height="42" rx="5"></rect>`).join("");
+    const svg = `<svg class="physics-visual circuit-diagram" viewBox="0 0 660 280" role="img" aria-label="${mode === "series" ? "串联" : "并联"}直流电路，总电流 ${format(totalCurrent)} 安"><defs><linearGradient id="feynman-resistor-gradient" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#f7f0c5"></stop><stop offset=".5" stop-color="#d8ba59"></stop><stop offset="1" stop-color="#9c7421"></stop></linearGradient><filter id="feynman-circuit-shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="5" stdDeviation="4" flood-color="#173f32" flood-opacity=".24"></feDropShadow></filter></defs><g filter="url(#feynman-circuit-shadow)"><g data-component-id="source"><line class="battery-long" x1="${components[0].terminals[0][0]}" y1="${components[0].terminals[0][1] - 30}" x2="${components[0].terminals[0][0]}" y2="${components[0].terminals[0][1] + 25}"></line><line class="battery-short" x1="${components[0].terminals[1][0]}" y1="${components[0].terminals[1][1] - 20}" x2="${components[0].terminals[1][0]}" y2="${components[0].terminals[1][1] + 15}"></line></g>${diagram}</g>${labels}<text x="322" y="274" text-anchor="middle">U=${format(voltage)}V · R总=${format(totalResistance)}Ω · P总=${format(totalPower)}W</text></svg>`;
+    return { voltage, resistances, mode, totalResistance, totalCurrent, branchCurrents, branchVoltages, branchPowers, totalPower, topology, svg };
   }
 
   function scatterSvg(points, fit) {
@@ -218,23 +251,19 @@
   }
 
   function newtonSecondLaw(input = {}) {
-    const mass = positive(input.mass, 2);
-    const appliedForce = number(input.appliedForce, 10);
-    const opposingForce = Math.max(0, number(input.opposingForce, 2));
+    const mass = parameter(input.mass, 2, "mass", 0, true);
+    const appliedForce = parameter(input.appliedForce, 10, "appliedForce");
+    const opposingForce = parameter(input.opposingForce, 2, "opposingForce", 0);
     const netForce = appliedForce - opposingForce;
     const acceleration = netForce / mass;
-    const t = Math.max(0, number(input.t, 1));
-    const x0 = number(input.x0);
-    const v0 = number(input.v0);
-    const velocity = v0 + acceleration * t;
-    const position = x0 + v0 * t + 0.5 * acceleration * t ** 2;
+    const motion = kinematics({ x0: input.x0, v0: input.v0, a: acceleration, t: input.t === undefined ? 1 : input.t, duration: input.duration });
+    const { t, velocity, position } = motion;
     const force = forceDiagram({ forces: [
       { label: "F", x: appliedForce, y: 0 },
       { label: "f", x: -opposingForce, y: 0 },
       { label: "N", x: 0, y: mass * 9.8 },
       { label: "mg", x: 0, y: -mass * 9.8 },
     ] });
-    const motion = kinematics({ x0, v0, a: acceleration, t, duration: positive(input.duration, 5) });
     return { model: "newton", mass, appliedForce, opposingForce, netForce, acceleration, t, velocity, position, force, motion, svg: `<div class="physics-visual-pair">${force.svg}${motion.svg}</div>` };
   }
 
@@ -254,9 +283,9 @@
     const chartHeight = 175;
     const bar = (x, value, label, className) => {
       const rendered = value / Math.max(initialEnergy, EPSILON) * chartHeight;
-      return `<g class="energy-bar ${className}"><rect x="${x}" y="${230 - rendered}" width="80" height="${format(rendered, 2)}" rx="5"></rect><text x="${x + 40}" y="252" text-anchor="middle">${label}</text><text x="${x + 40}" y="${Math.max(28, 220 - rendered)}" text-anchor="middle">${format(value)} J</text></g>`;
+      return `<g class="energy-bar ${className}" filter="url(#feynman-energy-shadow)"><rect x="${x}" y="${230 - rendered}" width="80" height="${format(rendered, 2)}" rx="5"></rect><path class="energy-highlight" d="M${x + 7},${230 - rendered + 7} H${x + 73}"></path><text x="${x + 40}" y="252" text-anchor="middle">${label}</text><text x="${x + 40}" y="${Math.max(28, 220 - rendered)}" text-anchor="middle">${format(value)} J</text></g>`;
     };
-    const svg = `<svg class="physics-visual energy-diagram" viewBox="0 0 560 280" role="img" aria-label="机械能转化，动能 ${format(kineticEnergy)} 焦，势能 ${format(potentialEnergy)} 焦，耗散 ${format(dissipatedEnergy)} 焦"><path class="visual-axis" d="M45,230 H525"></path>${bar(70, potentialEnergy, "重力势能", "potential")}${bar(190, kineticEnergy, "动能", "kinetic")}${bar(310, dissipatedEnergy, "耗散", "dissipated")}${bar(430, initialEnergy, "初始总能", "total")}</svg>`;
+    const svg = `<svg class="physics-visual energy-diagram" viewBox="0 0 560 280" role="img" aria-label="机械能转化，动能 ${format(kineticEnergy)} 焦，势能 ${format(potentialEnergy)} 焦，耗散 ${format(dissipatedEnergy)} 焦"><defs><filter id="feynman-energy-shadow" x="-30%" y="-20%" width="160%" height="150%"><feDropShadow dx="5" dy="6" stdDeviation="4" flood-color="#133d31" flood-opacity=".22"></feDropShadow></filter></defs><path class="visual-axis" d="M45,230 H525"></path>${bar(70, potentialEnergy, "重力势能", "potential")}${bar(190, kineticEnergy, "动能", "kinetic")}${bar(310, dissipatedEnergy, "耗散", "dissipated")}${bar(430, initialEnergy, "初始总能", "total")}</svg>`;
     return { model: "energy", mass, g, initialHeight, height, dissipationRatio, initialEnergy, potentialEnergy, releasedEnergy, dissipatedEnergy, kineticEnergy, mechanicalEnergy, speed, svg };
   }
 
@@ -293,10 +322,10 @@
   }
 
   function waveModel(input = {}) {
-    const speed = positive(input.speed, 20);
-    const frequency = positive(input.frequency, 5);
-    const amplitude = positive(input.amplitude, 1);
-    const time = number(input.time);
+    const speed = parameter(input.speed, 20, "speed", 0);
+    const frequency = parameter(input.frequency, 5, "frequency", 0, true);
+    const amplitude = parameter(input.amplitude, 1, "amplitude", 0);
+    const time = parameter(input.time, 0, "time");
     const wavelength = speed / frequency;
     const period = 1 / frequency;
     const width = 700;
@@ -304,17 +333,24 @@
     const left = 45;
     const right = 665;
     const centerY = 140;
-    const visibleLength = wavelength * 2;
+    const scaleMode = input.scaleMode === "auto" ? "auto" : "fixed";
+    const visibleLength = scaleMode === "auto" ? Math.max(wavelength * 2, 1) : parameter(input.visibleLength, 8, "visibleLength", 0, true);
+    const amplitudeRange = scaleMode === "auto" ? Math.max(amplitude, 1) : parameter(input.amplitudeRange, 5, "amplitudeRange", 0, true);
+    const amplitudePixels = amplitude / amplitudeRange * 72;
     const points = Array.from({ length: 121 }, (_, index) => {
       const distance = visibleLength * index / 120;
-      const displacement = amplitude * Math.sin(2 * Math.PI * (distance / wavelength - frequency * time));
+      // v=0 implies lambda=0 for positive f: no spatial traveling-wave profile is defined.
+      const displacement = wavelength > 0 ? amplitude * Math.sin(2 * Math.PI * (distance / wavelength - frequency * time)) : 0;
       const x = left + index / 120 * (right - left);
-      const y = centerY - displacement / amplitude * 72;
+      const y = centerY - displacement / amplitudeRange * 72;
       return `${format(x, 2)},${format(y, 2)}`;
     }).join(" ");
-    const lambdaPixels = (right - left) / 2;
-    const svg = `<svg class="physics-visual wave-diagram" viewBox="0 0 ${width} ${height}" role="img" aria-label="机械波，波速 ${format(speed)} 米每秒，频率 ${format(frequency)} 赫兹，波长 ${format(wavelength)} 米"><defs><marker id="physics-wave-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z"></path></marker></defs><path class="visual-axis" d="M${left},${centerY} H${right}"></path><polyline class="wave-line" points="${points}"></polyline><line class="wave-amplitude" x1="${left + 18}" y1="${centerY}" x2="${left + 18}" y2="${centerY - 72}"></line><text x="${left + 25}" y="${centerY - 38}">A=${format(amplitude)}</text><path class="wave-wavelength" d="M${left},245 V258 M${left},252 H${left + lambdaPixels} M${left + lambdaPixels},245 V258"></path><text x="${left + lambdaPixels / 2}" y="274" text-anchor="middle">λ=${format(wavelength)}m</text><line class="wave-direction" x1="520" y1="38" x2="635" y2="38" marker-end="url(#physics-wave-arrow)"></line><text x="515" y="30">传播方向 v=${format(speed)}m/s</text></svg>`;
-    return { model: "wave", speed, frequency, amplitude, time, wavelength, period, svg };
+    const lambdaPixels = (right - left) * wavelength / visibleLength;
+    const wavelengthMarker = wavelength <= visibleLength
+      ? `<path class="wave-wavelength" d="M${left},245 V258 M${left},252 H${left + lambdaPixels} M${left + lambdaPixels},245 V258"></path><text x="${left + lambdaPixels / 2}" y="274" text-anchor="middle">λ=${format(wavelength)}m</text>`
+      : `<text x="350" y="274" text-anchor="middle">λ=${format(wavelength)}m（超出当前显示范围）</text>`;
+    const svg = `<svg class="physics-visual wave-diagram" viewBox="0 0 ${width} ${height}" role="img" aria-label="机械波，波速 ${format(speed)} 米每秒，频率 ${format(frequency)} 赫兹，波长 ${format(wavelength)} 米"><defs><marker id="physics-wave-arrow" markerWidth="8" markerHeight="8" refX="7" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z"></path></marker><linearGradient id="feynman-wave-gradient" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#64cf9f"></stop><stop offset=".48" stop-color="#097551"></stop><stop offset="1" stop-color="#e08749"></stop></linearGradient><filter id="feynman-wave-shadow" x="-10%" y="-30%" width="120%" height="160%"><feDropShadow dx="0" dy="5" stdDeviation="3" flood-color="#0a503a" flood-opacity=".3"></feDropShadow></filter></defs><path class="visual-axis" d="M${left},${centerY} H${right}"></path><polyline class="wave-line" points="${points}" filter="url(#feynman-wave-shadow)"></polyline><line class="wave-amplitude" x1="${left + 18}" y1="${centerY}" x2="${left + 18}" y2="${centerY - amplitudePixels}"></line><text x="${left + 25}" y="${centerY - 38}">A=${format(amplitude)}</text>${wavelengthMarker}<line class="wave-direction" x1="520" y1="38" x2="635" y2="38" marker-end="url(#physics-wave-arrow)"></line><text x="515" y="30">传播方向 v=${format(speed)}m/s</text><text x="45" y="20">${scaleMode === "auto" ? "自动缩放" : "固定尺度"} · y/m: ±${format(amplitudeRange)} · x/m: 0–${format(visibleLength)}</text>${speed === 0 ? `<text x="350" y="225" text-anchor="middle">v=0、f&gt;0：不显示传播波形</text>` : ""}</svg>`;
+    return { model: "wave", speed, frequency, amplitude, time, wavelength, period, scaleMode, visibleLength, amplitudeRange, svg };
   }
 
   function metadataText(value) {

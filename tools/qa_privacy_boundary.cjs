@@ -13,6 +13,7 @@ const context = {
 };
 context.window = context;
 context.globalThis = context;
+context.PHYSICS_STUDIO_VERSION = versionSource;
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(path.join(root, "learning-engine.js"), "utf8"), context);
 context.PhysicsStudioStorageRepository = { getJson: () => null, setJson: () => {} };

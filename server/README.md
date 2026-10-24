@@ -5,7 +5,7 @@
 - 班级业务服务：Fastify + PostgreSQL + Redis，默认开发端口 `8788`。教师建班、邀请码、成员关系、删除班级和学习同步都以该服务的持久化结果为准。
 - 受控 AI 网关：`physics-ai-gateway.mjs`，默认开发端口 `8787`。它不承担班级功能。
 
-v3.2.0 客户端支持优先请求受控服务的 `POST /v1/physics/tutor-turn`，但仓库内的兼容网关当前只实现 `POST /v1/physics/solve`。没有自行扩展并部署 `tutor-turn` 时，客户端会自动回退本地五级提示；文档不把该降级路径描述为已完成联网多轮推理。
+v4.0.0 继续提供 `POST /v1/physics/solve`、`POST /v1/physics/tutor-turn` 与 `POST /v1/physics/generate-variants`。变式生成与交叉验证使用独立请求；缺少网关时客户端只使用可核验本地题模或审核题族，不把泛化文字任务描述为完整变式。
 
 客户端不再把 `127.0.0.1:8787` 猜作班级服务。Windows/Android 安装包必须在构建时注入已部署的 HTTPS 班级服务地址，或由用户在“在线班级连接”中明确填写。
 
@@ -52,7 +52,7 @@ pnpm run dev
 
 ```powershell
 .\tools\build_release.ps1 -ClassroomServerUrl https://classroom.example.com
-.\android\tools\build_android.ps1 -ClassroomServerUrl https://classroom.example.com
+.\android\tools\build_dual_android.ps1 -ClassroomServerUrl https://classroom.example.com
 ```
 
 ## 班级接口
@@ -60,8 +60,9 @@ pnpm run dev
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `GET` | `/health/live` | 服务存活检查 |
-| `POST` | `/v1/classes/anonymous` | 无预先账号建班；返回仅绑定该班级的 owner capability |
-| `POST` | `/v1/classes` | 已登录应用用户建班 |
+| `POST` | `/v1/auth/register` | 注册 student 或 teacher 账号；生产环境启用限流 |
+| `POST` | `/v1/classes/anonymous` | 仅显式开发/局域网模式允许；生产环境拒绝匿名建班 |
+| `POST` | `/v1/classes` | 已登录 teacher/administrator 建班；student 返回 403 |
 | `GET` | `/v1/classes` | 列出当前身份可访问的活动班级 |
 | `GET` | `/v1/classes/:classId` | 读取有权访问的班级 |
 | `DELETE` | `/v1/classes/:classId` | owner 删除班级并吊销邀请码、owner capability 和成员关系 |
@@ -70,12 +71,14 @@ pnpm run dev
 | `POST` | `/v1/invites/join` | 已登录 student 用邀请码加入 |
 | `GET` | `/v1/classes/:classId/roster` | owner 查看花名册 |
 | `PATCH` | `/v1/memberships/:membershipId` | owner 管理成员 |
+| `POST` | `/v1/classes/:classId/variant-sets/sync` | owner/教师同步已批准变式集，按稳定键去重 |
+| `GET` | `/v1/classes/:classId/variant-sets` | 有权成员增量读取已批准变式集 |
 
-除健康检查和两个匿名入口外，写请求需带项目既有的 `Idempotency-Key`。匿名学生的重复加入由 `(class_id, user_id)` 数据库唯一约束和服务逻辑做成幂等，不重复生成 membership。
+除健康检查、注册和两个匿名入口外，写请求需带项目既有的 `Idempotency-Key`。匿名学生的重复加入由 `(class_id, user_id)` 数据库唯一约束和服务逻辑做成幂等，不重复生成 membership。正式云部署应保持匿名建班关闭；局域网原生主机的 owner capability 仍只作用于单个班级。
 
 ## 数据库迁移
 
-`migrations/002_classes.ts` 建立班级、成员和邀请码表；`008_class_membership_integrity.ts` 加强成员/分组完整性；`009_class_owner_capabilities.ts` 保存匿名教师的不可逆 capability 摘要。原始 owner token 只在创建响应中返回一次，不写入数据库。
+`migrations/002_classes.ts` 建立班级、成员和邀请码表；`008_class_membership_integrity.ts` 加强成员/分组完整性；`009_class_owner_capabilities.ts` 保存匿名教师的不可逆 capability 摘要；`010_variant_training.ts` 保存教师批准的班级变式集并建立班级内稳定去重约束。原始 owner token 只在创建响应中返回一次，不写入数据库。
 
 升级现有数据库使用 `pnpm run migrate:up`。不要只修改 TypeScript model 而跳过迁移。
 
@@ -87,4 +90,4 @@ pnpm run dev
 node .\physics-ai-gateway.mjs
 ```
 
-AI 网关接口为 `/v1/physics/health`、`/v1/physics/solve` 和 `/v1/physics/document-analysis`。模型输出保留人工复核边界，不能直接成为正式学情结论。
+AI 网关接口为 `/v1/physics/health`、`/v1/physics/solve`、`/v1/physics/tutor-turn`、`/v1/physics/generate-variants` 和 `/v1/physics/document-analysis`。模型输出保留人工复核边界，不能直接成为正式学情结论或未经审核的正式训练题。
