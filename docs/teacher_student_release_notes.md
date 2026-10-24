@@ -24,5 +24,8 @@
 - 两包的 SHA-256 记录在 `发布/Android/费曼物理学生端-SHA256.txt` 和 `发布/Android/费曼物理教师端-SHA256.txt`；安装前须核对实际下载文件。
   - 学生端 APK：`AD4A21EDF08CCDA2BE26B45B5738C4780024DCFAF24113A73951F0A7268C702E`
   - 教师端 APK：`90EBCFD26AFDEF673125CEFA1310BB945D32729CECFE5A42181BAB386B36B6D6`
+- `发布/费曼物理-安装程序-v4.1.0.exe`：校验值见 `发布/SHA256.txt`。该 Windows 安装器未代码签名，且未完成本版 Android/服务端的完整作业订正协议，不能视为同等功能的正式教师端。
+- `发布/费曼物理-Windows-v4.1.0.zip`：校验值见同目录的 `.zip.sha256.txt` 文件；ZIP 内另含安装器、安装说明及安装器 SHA-256。
+- `发布/费曼物理-源码-v4.1.0.zip`：校验值见同目录的 `.zip.sha256.txt` 文件；如需追踪修改历史，优先使用本仓库源码。
 
 详细接口见 `teacher_student_api_contract.md`；测试边界见 `teacher_student_test_report.md`。发布前需在真实教师/学生设备与具备容器环境的 CI 中完成剩余验收。

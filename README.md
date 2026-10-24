@@ -5,6 +5,15 @@
 
 项目继续保留 Windows 版；Android 两个独立包分别使用 `com.physicsstudio.student` 和 `com.physicsstudio.teacher`，可安装在同一设备上。
 
+## 下载 v4.1.0 开发候选
+
+- [Android 学生端 APK](发布/Android/费曼物理学生端-Android-v4.1.0.apk)
+- [Android 教师端 APK](发布/Android/费曼物理教师端-Android-v4.1.0.apk)
+- [Windows 安装程序](发布/费曼物理-安装程序-v4.1.0.exe) · [Windows 发布 ZIP（含校验值）](发布/费曼物理-Windows-v4.1.0.zip)
+- [源码 ZIP](发布/费曼物理-源码-v4.1.0.zip)；仓库本身也保留完整源码。
+
+这些文件均为开发候选，不是正式签名发行版。Windows 4.1.0 尚未与 Android/服务端作业订正协议完全对齐；完整限制、SHA-256 与测试边界见 [发布说明](docs/teacher_student_release_notes.md) 和 [测试报告](docs/teacher_student_test_report.md)。
+
 ## 4.1.0 师生作业闭环候选
 
 - 教师从已有完整题库筛选并选择题目，按全班、小组或学生发布作业；学生看到真实题干、逐题作答，并可在本机保存草稿。没有逐题答案不能提交完成。
