@@ -410,7 +410,7 @@ $rootSourceFiles = @(
 foreach ($relativePath in $rootSourceFiles) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $relativePath) -Destination $sourceStage
 }
-foreach ($directoryName in @('assets', 'schemas', 'tools', 'vendor')) {
+foreach ($directoryName in @('assets', 'docs', 'schemas', 'tools', 'vendor')) {
     Copy-Item -LiteralPath (Join-Path $projectDirectory $directoryName) -Destination $sourceStage -Recurse
 }
 

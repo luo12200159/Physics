@@ -2070,12 +2070,95 @@ html.android-app .student-method-dialog::backdrop {
 
 .classroom-review-form {
   display: grid;
-  grid-template-columns: minmax(160px, 1fr) minmax(120px, 0.7fr) minmax(100px, 0.5fr) minmax(180px, 1.4fr) auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   align-items: end;
   gap: 10px;
   padding: 12px 0;
   border-top: 1px solid #e0e6e2;
 }
+
+.classroom-review-form > div:first-child {
+  grid-column: 1 / -1;
+}
+
+.classroom-review-form textarea,
+.classroom-assignment-answer-form textarea,
+.classroom-question-picker input,
+.classroom-question-picker select,
+.classroom-teaching-actions select {
+  min-width: 0;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid #cbd7d0;
+  border-radius: 11px;
+  color: #182a22;
+  background: #fff;
+  font: inherit;
+}
+
+.classroom-workbench,
+.classroom-assignment-status,
+.student-assignment-detail {
+  display: grid;
+  gap: 12px;
+  margin-top: 18px;
+  padding: 18px;
+  border: 1px solid #d4ded8;
+  border-radius: 16px;
+  background: #fff;
+}
+
+.classroom-workbench > div,
+.classroom-workbench nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.classroom-workbench a {
+  padding: 9px 12px;
+  border-radius: 10px;
+  color: #174e39;
+  background: #eaf3ed;
+}
+
+.classroom-question-picker {
+  min-width: 0;
+  max-height: 460px;
+  overflow: auto;
+  border: 1px solid #d4ded8;
+  border-radius: 12px;
+}
+
+.classroom-picker-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.classroom-question-choice {
+  display: flex !important;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 4px;
+  border-top: 1px solid #e0e6e2;
+}
+
+.classroom-question-choice input[type="checkbox"] { width: auto; min-width: 20px; min-height: 20px; }
+.classroom-question-choice small { display: block; overflow-wrap: anywhere; }
+.classroom-assignment-status article,
+.assignment-history,
+.classroom-assignment-answer-form article,
+.classroom-review-answer { padding: 12px; border: 1px solid #e0e6e2; border-radius: 12px; background: #f8fbf8; }
+.classroom-assignment-status article,
+.classroom-assignment-answer-form,
+.classroom-assignment-answer-form article,
+.classroom-review-answer { display: grid; gap: 8px; }
+.classroom-review-answer p,
+.assignment-history p,
+.student-assignment-detail p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.student-assignment-detail { grid-column: 1 / -1; }
+.classroom-assignment-answer-form label { display: grid; gap: 6px; }
 
 .classroom-review-form > div:first-child,
 .classroom-review-form label {

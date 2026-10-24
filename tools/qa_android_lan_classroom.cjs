@@ -150,23 +150,69 @@ public final class LanClassroomTransportHarness {
       String studentTwoBody = "{\"code\":\"" + invite + "\",\"displayName\":\"Student-B\",\"deviceId\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}";
       LanClassroomTransport.Response secondJoin = call("/v1/invites/join-anonymous", "POST", null, studentTwoBody);
       require(secondJoin.status == 200, 21);
+      String studentTwoAccess = field(secondJoin.bodyText, "accessToken");
       LanClassroomTransport.Response roster = call("/v1/classes/" + classId + "/roster", "GET", "Owner " + owner, "");
       require(roster.status == 200 && roster.bodyText.indexOf("Student-A") >= 0 && roster.bodyText.indexOf("Student-B") >= 0, 22);
 
-      String assignmentBody = "{\"title\":\"LAN Task\",\"instructions\":\"Complete and submit\",\"dueAt\":null,\"targetType\":\"class\",\"targetId\":null,\"questionIds\":[\"q-1\"],\"knowledgePointKeys\":[\"kp-force\"],\"target\":\"Independent completion\",\"publish\":true}";
+      LanClassroomTransport.Response missingSnapshot = call("/v1/classes/" + classId + "/assignments", "POST", "Owner " + owner,
+        "{\"title\":\"No snapshot\",\"instructions\":\"\",\"targetType\":\"class\",\"questionIds\":[\"q-1\"],\"knowledgePointKeys\":[],\"target\":\"Complete\",\"publish\":true}");
+      require(missingSnapshot.status == 400, 46);
+      LanClassroomTransport.Response duplicateSnapshot = call("/v1/classes/" + classId + "/assignments", "POST", "Owner " + owner,
+        "{\"title\":\"Duplicate snapshot\",\"instructions\":\"\",\"targetType\":\"class\",\"questionIds\":[\"q-1\",\"q-2\"],\"questionItems\":[{\"id\":\"q-1\",\"content\":\"A\"},{\"id\":\"q-1\",\"content\":\"B\"}],\"knowledgePointKeys\":[],\"target\":\"Complete\",\"publish\":true}");
+      require(duplicateSnapshot.status == 400, 47);
+
+      String assignmentBody = "{\"title\":\"LAN Task\",\"instructions\":\"Complete and submit\",\"dueAt\":null,\"targetType\":\"class\",\"targetId\":null,\"questionIds\":[\"q-1\",\"q-2\",\"q-3\"],\"questionItems\":[{\"id\":\"q-1\",\"title\":\"Motion\",\"content\":\"Find speed\",\"questionType\":\"计算题\",\"options\":[],\"knowledgePointId\":\"kp-motion\",\"difficulty\":\"基础\",\"correctAnswer\":\"2 m/s\"},{\"id\":\"q-2\",\"title\":\"Force\",\"content\":\"Explain force\",\"questionType\":\"实验题\",\"options\":[],\"knowledgePointId\":\"kp-force\",\"difficulty\":\"进阶\",\"correctAnswer\":\"private key\"},{\"id\":\"q-3\",\"title\":\"Energy\",\"content\":\"Conserve energy?\",\"questionType\":\"计算题\",\"options\":[],\"knowledgePointId\":\"kp-energy\",\"difficulty\":\"基础\",\"correctAnswer\":\"private key\"}],\"knowledgePointKeys\":[\"kp-motion\",\"kp-force\",\"kp-energy\"],\"target\":\"Independent completion\",\"publish\":true}";
       LanClassroomTransport.Response assignment = call("/v1/classes/" + classId + "/assignments", "POST", "Owner " + owner, assignmentBody);
       require(assignment.status == 201, 23);
+      String assignmentId = field(assignment.bodyText, "id");
       LanClassroomTransport.Response studentAssignments = call("/v1/classes/" + classId + "/assignments", "GET", "Bearer " + studentAccess, "");
       if (studentAssignments.status != 200 || studentAssignments.bodyText.indexOf("LAN Task") < 0) {
         System.err.println("assignment-response=" + studentAssignments.status + " " + studentAssignments.bodyText);
       }
       require(studentAssignments.status == 200 && studentAssignments.bodyText.indexOf("LAN Task") >= 0, 24);
+      require(studentAssignments.bodyText.indexOf("Find speed") >= 0 && studentAssignments.bodyText.indexOf("private key") < 0, 32);
+      LanClassroomTransport.Response fakeCompletion = call("/v1/assignments/" + assignmentId + "/submissions", "POST", "Bearer " + studentAccess,
+        "{\"clientEntityId\":\"fake-completion\",\"answers\":[{\"status\":\"completed\"}]}");
+      require(fakeCompletion.status == 400, 33);
+      String firstAnswers = "{\"clientEntityId\":\"first-draft\",\"answers\":[{\"questionId\":\"q-1\",\"response\":\"2 m/s\",\"steps\":\"v=at\"},{\"questionId\":\"q-2\",\"response\":\"force answer v1\",\"steps\":\"experiment\"},{\"questionId\":\"q-3\",\"response\":\"energy answer\",\"steps\":\"E=mc2\"}]}";
+      LanClassroomTransport.Response firstSubmit = call("/v1/assignments/" + assignmentId + "/submissions", "POST", "Bearer " + studentAccess, firstAnswers);
+      require(firstSubmit.status == 201 && firstSubmit.bodyText.indexOf("\"version\":1") >= 0, 34);
+      String submissionId = field(firstSubmit.bodyText, "id");
+      LanClassroomTransport.Response duplicateSubmit = call("/v1/assignments/" + assignmentId + "/submissions", "POST", "Bearer " + studentAccess, firstAnswers);
+      require(duplicateSubmit.status == 201 && field(duplicateSubmit.bodyText, "id").equals(submissionId), 35);
+      LanClassroomTransport.Response reviews = call("/v1/classes/" + classId + "/review-cases", "GET", "Owner " + owner, "");
+      require(reviews.status == 200 && reviews.bodyText.indexOf("force answer v1") >= 0, 36);
+      LanClassroomTransport.Response otherReview = call("/v1/review-cases/" + submissionId, "PATCH", "Bearer " + studentTwoAccess,
+        "{\"decision\":\"approve\",\"score\":100,\"perQuestionScores\":[],\"reason\":\"not allowed\",\"annotation\":{}}");
+      require(otherReview.status == 403, 37);
+      LanClassroomTransport.Response returned = call("/v1/review-cases/" + submissionId, "PATCH", "Owner " + owner,
+        "{\"decision\":\"return\",\"score\":60,\"perQuestionScores\":[],\"reason\":\"Revise force explanation\",\"annotation\":{}}");
+      require(returned.status == 200, 38);
+      LanClassroomTransport.Response feedback = call("/v1/classes/" + classId + "/assignment-submissions/me", "GET", "Bearer " + studentAccess, "");
+      require(feedback.status == 200 && feedback.bodyText.indexOf("Revise force explanation") >= 0, 39);
+      String revisedAnswers = firstAnswers.replace("first-draft", "correction-v2").replace("force answer v1", "force answer revised");
+      LanClassroomTransport.Response corrected = call("/v1/assignments/" + assignmentId + "/submissions", "POST", "Bearer " + studentAccess, revisedAnswers);
+      require(corrected.status == 201 && corrected.bodyText.indexOf("\"version\":2") >= 0, 40);
+      String correctionId = field(corrected.bodyText, "id");
+      LanClassroomTransport.Response revisionReview = call("/v1/classes/" + classId + "/review-cases", "GET", "Owner " + owner, "");
+      require(revisionReview.status == 200 && revisionReview.bodyText.indexOf("force answer v1") >= 0
+        && revisionReview.bodyText.indexOf("force answer revised") >= 0, 41);
+      LanClassroomTransport.Response approved = call("/v1/review-cases/" + correctionId, "PATCH", "Owner " + owner,
+        "{\"decision\":\"approve\",\"score\":90,\"perQuestionScores\":[],\"reason\":\"Corrected reasoning\",\"annotation\":{}}");
+      require(approved.status == 200, 42);
+      LanClassroomTransport.Response ownHistory = call("/v1/classes/" + classId + "/assignment-submissions/me", "GET", "Bearer " + studentAccess, "");
+      require(ownHistory.status == 200 && ownHistory.bodyText.indexOf("first-draft") >= 0
+        && ownHistory.bodyText.indexOf("correction-v2") >= 0, 43);
+      LanClassroomTransport.Response otherHistory = call("/v1/classes/" + classId + "/assignment-submissions/me", "GET", "Bearer " + studentTwoAccess, "");
+      require(otherHistory.status == 200 && otherHistory.bodyText.indexOf("force answer") < 0, 44);
 
       host.close();
       host = new LanClassroomHost(data, TEST_PORT, TEST_DISCOVERY_PORT);
       host.start();
       LanClassroomTransport.Response persisted = call("/v1/classes/" + classId + "/roster", "GET", "Owner " + owner, "");
       require(persisted.status == 200 && persisted.bodyText.indexOf("Student-B") >= 0, 25);
+      LanClassroomTransport.Response persistedHistory = call("/v1/classes/" + classId + "/assignment-submissions", "GET", "Owner " + owner, "");
+      require(persistedHistory.status == 200 && persistedHistory.bodyText.indexOf("correction-v2") >= 0, 45);
       LanClassroomTransport.Response deleted = call("/v1/classes/" + classId, "DELETE", "Owner " + owner, "{}");
       require(deleted.status == 200 && deleted.bodyText.indexOf("archived") >= 0, 26);
       LanClassroomTransport.Response expired = call("/v1/invites/join-anonymous", "POST", null, studentBody);
@@ -206,6 +252,7 @@ public final class LanClassroomTransportHarness {
       persistentRestart: true,
       simulatedDevices: 2,
       assignmentDelivery: true,
+      realAnswerReviewCorrection: true,
     }, null, 2));
   } finally {
     fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });

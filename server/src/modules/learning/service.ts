@@ -11,6 +11,7 @@ import {
 import { withTransaction } from "../../infrastructure/db.js";
 import { appendAudit, hashAuditIp } from "../audit/repository.js";
 import { authorize, type Actor, type AuthorizationAction } from "../authorization/policy.js";
+import { validateSubmissionAnswers, visibleQuestionItems, type AssignmentQuestionItem } from "./assignment-domain.js";
 import type {
   AssignmentListResponse,
   AssignmentRequest,
@@ -24,6 +25,7 @@ import type {
   ReviewCaseView,
   ReviewDecisionRequest,
   SubmissionRequest,
+  SubmissionListResponse,
   SubmissionView,
   SyncExamRecordsRequest,
   SyncLearningRequest,
@@ -69,6 +71,14 @@ interface SubmissionRow {
   client_entity_id: string;
   status: "submitted" | "underReview" | "returned" | "accepted";
   submitted_at: Date;
+  answers?: SubmissionRequest["answers"];
+  student_user_id?: string;
+  student_display_name?: string;
+  submission_version?: number;
+  previous_submission_id?: string | null;
+  review_status?: "pending" | "approved" | "returned" | "rejudged";
+  current_score?: number | string | null;
+  feedback?: string | null;
 }
 
 interface ReviewCaseRow {
@@ -81,6 +91,10 @@ interface ReviewCaseRow {
   revision: number;
   submitted_at: Date;
   updated_at: Date;
+  student_display_name?: string;
+  answers?: SubmissionRequest["answers"];
+  submission_version?: number;
+  previous_answers?: SubmissionRequest["answers"] | null;
 }
 
 interface SnapshotRow {
@@ -221,6 +235,9 @@ function assignmentView(row: AssignmentRow): AssignmentView {
   const knowledgePointKeys = Array.isArray(snapshot.knowledgePointKeys)
     ? snapshot.knowledgePointKeys.filter((item): item is string => typeof item === "string")
     : [];
+  const questionItems = Array.isArray(snapshot.questionItems)
+    ? visibleQuestionItems(snapshot.questionItems as AssignmentQuestionItem[])
+    : [];
   return {
     id: row.id,
     classId: row.class_id,
@@ -232,6 +249,7 @@ function assignmentView(row: AssignmentRow): AssignmentView {
     targetType,
     targetId,
     questionIds,
+    questionItems,
     knowledgePointKeys,
     target: typeof snapshot.target === "string" ? snapshot.target : "",
     createdAt: row.created_at.toISOString(),
@@ -246,6 +264,14 @@ function submissionView(row: SubmissionRow): SubmissionView {
     clientEntityId: row.client_entity_id,
     status: row.status,
     submittedAt: row.submitted_at.toISOString(),
+    ...(row.answers ? { answers: row.answers } : {}),
+    ...(row.student_user_id ? { studentUserId: row.student_user_id } : {}),
+    ...(row.student_display_name ? { studentDisplayName: row.student_display_name } : {}),
+    ...(row.submission_version ? { version: row.submission_version } : {}),
+    ...(row.submission_version ? { previousSubmissionId: row.previous_submission_id ?? null } : {}),
+    ...(row.review_status ? { reviewStatus: row.review_status } : {}),
+    ...(row.current_score !== undefined ? { score: row.current_score === null ? null : Number(row.current_score) } : {}),
+    ...(row.feedback !== undefined ? { feedback: row.feedback } : {}),
   };
 }
 
@@ -260,6 +286,10 @@ function reviewView(row: ReviewCaseRow): ReviewCaseView {
     revision: row.revision,
     submittedAt: row.submitted_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
+    ...(row.student_display_name ? { studentDisplayName: row.student_display_name } : {}),
+    ...(row.answers ? { answers: row.answers } : {}),
+    ...(row.submission_version ? { submissionVersion: row.submission_version } : {}),
+    ...(row.previous_answers ? { previousAnswers: row.previous_answers } : {}),
   };
 }
 
@@ -717,10 +747,24 @@ export class LearningService {
         );
         if (!member.rowCount) throw new ApiError(400, "target_not_in_class", "The student is not an active member of this class");
       }
+      if (new Set(input.questionIds).size !== input.questionIds.length) {
+        throw new ApiError(400, "duplicate_question", "Assignment question ids must be unique");
+      }
+      if (input.publish && (!input.questionIds.length || !input.questionItems?.length)) {
+        throw new ApiError(400, "question_snapshot_required", "Published assignments need at least one complete question snapshot");
+      }
+      if (input.questionItems?.length) {
+        const ids = new Set(input.questionIds);
+        if (input.questionItems.length !== ids.size || new Set(input.questionItems.map((item) => item.id)).size !== ids.size
+          || input.questionItems.some((item) => !ids.has(item.id))) {
+          throw new ApiError(400, "question_snapshot_mismatch", "Question snapshots must match assignment question ids");
+        }
+      }
       const snapshot = JSON.stringify({
         targetType: input.targetType,
         targetId,
         questionIds: input.questionIds,
+        questionItems: input.questionItems ?? [],
         knowledgePointKeys: input.knowledgePointKeys,
         target: input.target,
       });
@@ -804,8 +848,8 @@ export class LearningService {
       actorId: actor.userId,
       expiresAt: apiExpiry(now),
     }, async () => {
-      const assignment = await tx.query<{ id: string; class_id: string; status: AssignmentRow["status"]; membership_id: string }>(
-        `select a.id, a.class_id, a.status, m.id as membership_id
+      const assignment = await tx.query<{ id: string; class_id: string; status: AssignmentRow["status"]; membership_id: string; published_snapshot: Record<string, unknown> | null }>(
+        `select a.id, a.class_id, a.status, a.published_snapshot, m.id as membership_id
            from assignments a
            join memberships m on m.class_id = a.class_id and m.user_id = $1 and m.status = 'active'
           where a.id = $2 and a.status = 'published'
@@ -819,25 +863,58 @@ export class LearningService {
       );
       const target = assignment.rows[0];
       if (!target) throw new ApiError(404, "assignment_not_found", "Assignment was not found");
+      const published = parseSnapshot(target.published_snapshot);
+      const questionIds = Array.isArray(published.questionIds)
+        ? published.questionIds.filter((id): id is string => typeof id === "string") : [];
+      const answerCheck = validateSubmissionAnswers(input.answers, questionIds);
+      if (answerCheck.missingQuestionIds.length) {
+        throw new ApiError(400, "assignment_incomplete", "Every assignment question needs an answer before submission");
+      }
+      // Serialize the first submission and later corrections for this member.
+      // Locking only the latest submission would not protect the first insert,
+      // because there is no row to lock yet.
+      await tx.query("select id from memberships where id = $1 for update", [target.membership_id]);
+      const prior = await tx.query<SubmissionRow>(
+        `select id, assignment_id, client_entity_id, status, submitted_at, submission_version,
+                previous_submission_id, answers, student_user_id
+           from submissions where membership_id = $1 and assignment_id = $2
+          order by submission_version desc limit 1 for update`,
+        [target.membership_id, assignmentId],
+      );
+      const latest = prior.rows[0];
+      if (latest?.client_entity_id === input.clientEntityId) return {
+        statusCode: 201,
+        body: asJson(submissionView(latest)),
+      };
+      if (latest && latest.status !== "returned") {
+        throw new ApiError(409, "submission_already_active", "A new submission is allowed only after teacher return");
+      }
+      const version = (latest?.submission_version ?? 0) + 1;
       const inserted = await tx.query<SubmissionRow>(
         `insert into submissions(
            id, assignment_id, membership_id, student_user_id, client_entity_id,
-           answers, status, submitted_at, created_at
-         ) values ($1, $2, $3, $4, $5, $6::jsonb, 'submitted', $7, $7)
+           answers, status, submitted_at, created_at, submission_version, previous_submission_id
+         ) values ($1, $2, $3, $4, $5, $6::jsonb, 'submitted', $7, $7, $8, $9)
          on conflict (membership_id, client_entity_id) do nothing
-         returning id, assignment_id, client_entity_id, status, submitted_at`,
-        [randomUUID(), assignmentId, target.membership_id, actor.userId, input.clientEntityId, JSON.stringify(input.answers), now],
+         returning id, assignment_id, client_entity_id, status, submitted_at, submission_version,
+                   previous_submission_id, answers, student_user_id`,
+        [randomUUID(), assignmentId, target.membership_id, actor.userId, input.clientEntityId,
+          JSON.stringify(input.answers), now, version, latest?.id ?? null],
       );
       let submission = inserted.rows[0];
       if (!submission) {
         const existing = await tx.query<SubmissionRow>(
-          `select id, assignment_id, client_entity_id, status, submitted_at
+          `select id, assignment_id, client_entity_id, status, submitted_at,
+                  submission_version, previous_submission_id, answers, student_user_id
              from submissions where membership_id = $1 and client_entity_id = $2`,
           [target.membership_id, input.clientEntityId],
         );
         submission = existing.rows[0];
       }
       if (!submission) throw new Error("Submission was not returned");
+      if (submission.assignment_id !== assignmentId) {
+        throw new ApiError(409, "client_entity_conflict", "Submission id was already used for another assignment");
+      }
       await tx.query(
         `insert into review_cases(id, submission_id, class_id, status, revision, created_at, updated_at)
          values ($1, $2, $3, 'pending', 1, $4, $4)
@@ -868,14 +945,81 @@ export class LearningService {
     assertAllowed(actor, "report.read", access);
     const result = await this.options.pool.query<ReviewCaseRow>(
       `select rc.id, rc.submission_id, s.assignment_id, rc.class_id, rc.status,
-              rc.current_score, rc.revision, s.submitted_at, rc.updated_at
+              rc.current_score, rc.revision, s.submitted_at, rc.updated_at,
+              u.display_name as student_display_name,
+              s.answers, s.submission_version, previous.answers as previous_answers
          from review_cases rc
          join submissions s on s.id = rc.submission_id
+         join users u on u.id = s.student_user_id
+         join memberships m on m.id = s.membership_id
+         left join submissions previous on previous.id = s.previous_submission_id
         where rc.class_id = $1 and rc.status = 'pending'
         order by rc.updated_at asc limit 200`,
       [classId],
     );
     return { items: result.rows.map(reviewView) };
+  }
+
+  async listOwnSubmissions(actor: Actor, assignmentId: string): Promise<SubmissionListResponse> {
+    if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
+              rc.status as review_status, rc.current_score,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
+         left join review_cases rc on rc.submission_id = s.id
+        where a.id = $2 and s.student_user_id = $1
+        order by s.submission_version asc limit 100`,
+      [actor.userId, assignmentId],
+    );
+    return { items: result.rows.map(submissionView) };
+  }
+
+  async listOwnClassSubmissions(actor: Actor, classId: string): Promise<SubmissionListResponse> {
+    if (actor.role !== "student") reject("resource_forbidden", "Only students can read their submissions");
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "class.read", access);
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, s.submission_version, s.previous_submission_id,
+              rc.status as review_status, rc.current_score,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id and m.user_id = $1 and m.status = 'active'
+         left join review_cases rc on rc.submission_id = s.id
+        where a.class_id = $2 and s.student_user_id = $1
+        order by s.submitted_at desc limit 500`,
+      [actor.userId, classId],
+    );
+    return { items: result.rows.map(submissionView) };
+  }
+
+  async listClassSubmissions(actor: Actor, classId: string): Promise<SubmissionListResponse> {
+    const access = await this.classAccess(actor.userId, classId);
+    assertAllowed(actor, "report.read", access);
+    const result = await this.options.pool.query<SubmissionRow>(
+      `select s.id, s.assignment_id, s.client_entity_id, s.status, s.submitted_at,
+              s.answers, s.student_user_id, u.display_name as student_display_name,
+              s.submission_version, s.previous_submission_id, rc.status as review_status,
+              rc.current_score,
+              (select rd.reason from review_decisions rd where rd.review_id = rc.id
+                order by rd.revision desc limit 1) as feedback
+         from submissions s
+         join assignments a on a.id = s.assignment_id
+         join memberships m on m.id = s.membership_id
+         join users u on u.id = s.student_user_id
+         left join review_cases rc on rc.submission_id = s.id
+        where a.class_id = $1
+        order by s.submitted_at desc limit 500`,
+      [classId],
+    );
+    return { items: result.rows.map(submissionView) };
   }
 
   async decideReviewCase(

@@ -1284,6 +1284,16 @@
       targetType,
       targetId: input.targetId || null,
       questionIds: Array.isArray(input.questionIds) ? input.questionIds.map((value) => requiredText(value, "题目编号", 160)).slice(0, 100) : [],
+      questionItems: Array.isArray(input.questionItems) ? input.questionItems.map((item) => ({
+        id: requiredText(item.id, "题目编号", 160),
+        title: requiredText(item.title, "题目标题", 240),
+        content: requiredText(item.content, "题干", 30000),
+        questionType: requiredText(item.questionType, "题型", 80),
+        options: Array.isArray(item.options) ? item.options.map((option) => String(option).slice(0, 2000)).slice(0, 12) : [],
+        knowledgePointId: String(item.knowledgePointId || "").slice(0, 160),
+        difficulty: String(item.difficulty || "").slice(0, 40),
+        ...(item.correctAnswer ? { correctAnswer: String(item.correctAnswer).slice(0, 2000) } : {})
+      })).slice(0, 100) : [],
       knowledgePointKeys: Array.isArray(input.knowledgePointKeys) ? input.knowledgePointKeys.map((value) => requiredText(value, "知识点编号", 160)).slice(0, 100) : [],
       target: requiredText(input.target, "达标条件", 1000),
       publish: Boolean(input.publish)
@@ -1313,9 +1323,19 @@
 
   async function submitAssignment(assignmentId, input = {}) {
     const id = uuid(assignmentId, "方案编号");
+    if (!Array.isArray(input.answers) || !input.answers.length || input.answers.some((answer) =>
+      !answer || !String(answer.questionId || "").trim() || !String(answer.response || "").trim())) {
+      throw new ClassroomError("请先完成真实题目作答，再提交作业。", { code: "answer_required", status: 400 });
+    }
     const body = {
       clientEntityId: requiredText(input.clientEntityId, "提交编号", 160),
-      answers: Array.isArray(input.answers) ? input.answers : []
+      answers: input.answers.map((answer) => ({
+        questionId: requiredText(answer.questionId, "题目编号", 160),
+        response: requiredText(answer.response, "作答内容", 30000),
+        steps: String(answer.steps || "").slice(0, 30000),
+        ...(answer.startedAt ? { startedAt: normalizeDateTime(answer.startedAt, "开始时间") } : {}),
+        hintViewCount: Math.max(0, Math.min(100, Number(answer.hintViewCount) || 0))
+      }))
     };
     const event = {
       kind: "assignment-submission",
@@ -1340,6 +1360,21 @@
     }
   }
 
+  async function listOwnSubmissions(assignmentId) {
+    const id = uuid(assignmentId, "作业编号");
+    return requestJson(`/v1/assignments/${encodeURIComponent(id)}/submissions/me`, { method: "GET", authMode: "bearer" });
+  }
+
+  async function listClassSubmissions(classId) {
+    const id = uuid(classId, "班级编号");
+    return requestJson(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions`, { method: "GET" });
+  }
+
+  async function listOwnClassSubmissions(classId) {
+    const id = uuid(classId, "班级编号");
+    return requestJson(`/v1/classes/${encodeURIComponent(id)}/assignment-submissions/me`, { method: "GET", authMode: "bearer" });
+  }
+
   async function getClassLearningSummary(classId) {
     const id = uuid(classId, "班级编号");
     return requestJson(`/v1/classes/${encodeURIComponent(id)}/learning/summary`, { method: "GET" });
@@ -1350,11 +1385,12 @@
     return requestJson(`/v1/classes/${encodeURIComponent(id)}/review-cases`, { method: "GET" });
   }
 
-  async function decideReviewCase(reviewId, input = {}) {
+  async function decideReviewCase(reviewId, input = {}, classId = "") {
     const id = uuid(reviewId, "复核编号");
     return requestJson(`/v1/review-cases/${encodeURIComponent(id)}`, {
       method: "PATCH",
-      body: input
+      body: input,
+      ...(classId ? { ownerClassId: uuid(classId, "班级编号") } : {})
     });
   }
 
@@ -1452,9 +1488,11 @@
     const authMode = String(options.authMode || "auto");
     const bearer = readSessionValue(ACCESS_TOKEN_KEY);
     const classMatch = String(path).match(/\/v1\/classes\/([0-9a-f-]{36})/i);
-    const owner = currentOwnerCapability(classMatch?.[1] || "", serverUrl);
+    const ownerClassId = options.ownerClassId && /^\/v1\/review-cases\/[0-9a-f-]{36}$/i.test(String(path))
+      ? String(options.ownerClassId) : "";
+    const owner = currentOwnerCapability(classMatch?.[1] || ownerClassId, serverUrl);
     const useOwner = auth && authMode !== "bearer" && Boolean(owner)
-      && (authMode === "owner" || Boolean(classMatch));
+      && (authMode === "owner" || Boolean(classMatch) || Boolean(ownerClassId));
     if (auth && authMode === "bearer" && !bearer) {
       throw new ClassroomError("请先登录学生账号再加入班级。", { code: "authentication_required", status: 401 });
     }
@@ -1855,7 +1893,7 @@
   }
 
   window.PhysicsStudioClassroom = Object.freeze({
-    version: "4.0.2",
+    version: "4.1.0",
     configure,
     status,
     checkHealth,
@@ -1888,6 +1926,9 @@
     listAssignments,
     createAssignment,
     submitAssignment,
+    listOwnSubmissions,
+    listClassSubmissions,
+    listOwnClassSubmissions,
     getClassLearningSummary,
     listReviewCases,
     decideReviewCase,

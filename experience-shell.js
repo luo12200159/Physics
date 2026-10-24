@@ -81,6 +81,7 @@
       busy: false,
       message: "",
       error: false,
+      learningSyncOverride: null,
       classes: [],
       selectedClassId: "",
       roster: [],
@@ -88,6 +89,10 @@
       lastInvite: null,
       assignments: [],
       assignmentSubmissions: {},
+      classSubmissions: [],
+      activeAssignmentId: "",
+      selectedQuestionIds: [],
+      picker: { search: "", grade: "全部", type: "全部", difficulty: "全部" },
       learningSummary: [],
       reviewCases: []
     },
@@ -105,6 +110,7 @@
   let metricsDialog = null;
   let methodDialog = null;
   let classroomDialog = null;
+  let assignmentDraftTimer = null;
   let classroomSyncTimer = 0;
   let studentDataCache = null;
   const questionSearchTextCache = new WeakMap();
@@ -418,6 +424,11 @@
     classroomDialog.addEventListener("click", handleClassroomClick);
     classroomDialog.addEventListener("submit", handleClassroomSubmit);
     classroomDialog.addEventListener("change", handleClassroomChange);
+    classroomDialog.addEventListener("input", handleClassroomInput);
+    classroomDialog.addEventListener("close", () => {
+      clearTimeout(assignmentDraftTimer);
+      saveAssignmentDraftFromForm(classroomDialog.querySelector("[data-classroom-assignment-answer-form]"));
+    });
     window.addEventListener("online", syncClassroomSilently);
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "visible") syncClassroomSilently();
@@ -2899,8 +2910,8 @@
       ? joined.classId
       : ui.classroom.classes[0]?.id || "";
     if (ui.classroom.selectedClassId) {
-      await syncStudentLearningData(client, ui.classroom.selectedClassId);
       await loadStudentAssignments(ui.classroom.selectedClassId);
+      await syncStudentLearningData(client, ui.classroom.selectedClassId);
     } else {
       ui.classroom.assignments = [];
       ui.classroom.assignmentSubmissions = {};
@@ -3026,7 +3037,8 @@
       : status.hostedLocally ? "同网局域网服务（本机主机）"
       : /^https:\/\//i.test(status.serverUrl) ? "已配置 HTTPS 班级服务"
       : "同网局域网服务";
-    const learningSync = client.syncStatus?.() || { label: "本机已保存", detail: "当前只写入本机学习记录。" };
+    const learningSync = ui.classroom.learningSyncOverride
+      || client.syncStatus?.() || { label: "本机已保存", detail: "当前只写入本机学习记录。" };
     const selected = ui.classroom.classes.find((item) => item.id === ui.classroom.selectedClassId) || null;
     const disabled = ui.classroom.busy ? " disabled" : "";
     // The local experience role is the UI boundary. A previous teacher
@@ -3062,6 +3074,40 @@
       ${role === "parent" ? '<section class="classroom-empty"><strong>家长账号不直接加入班级</strong><p>当前接口没有授权家长查看班级成员；请继续使用本机家长摘要。</p></section>' : ""}`;
   }
 
+  function classroomQuestionCatalog() {
+    return (window.PhysicsStudioApp?.getQuestions?.() || []).filter(isCompleteStudentQuestion);
+  }
+
+  function classroomQuestionItems(ids) {
+    const byId = new Map(classroomQuestionCatalog().map((question) => [question.id, question]));
+    return ids.map((id) => byId.get(id)).filter(Boolean).map((question) => ({
+      id: question.id,
+      title: String(question.title || question.id),
+      content: String(question.content || ""),
+      questionType: String(question.questionType || "未标注"),
+      options: (Array.isArray(question.options) ? question.options : []).map((option) =>
+        typeof option === "string" ? option : String(option?.text || option?.label || "")).filter(Boolean),
+      knowledgePointId: String(question.knowledgePointId || ""),
+      difficulty: String(question.difficulty || ""),
+      ...(/^(单项选择题|单选题)$/.test(question.questionType || "") && /^[A-D]$/i.test(String(question.answer || "").trim())
+        ? { correctAnswer: String(question.answer).trim().toUpperCase() } : {})
+    }));
+  }
+
+  function renderClassroomQuestionPicker() {
+    const filter = ui.classroom.picker;
+    const chosen = new Set(ui.classroom.selectedQuestionIds);
+    const search = filter.search.trim().toLocaleLowerCase("zh-CN");
+    const matched = classroomQuestionCatalog().filter((question) =>
+      (filter.grade === "全部" || question.grade === filter.grade)
+      && (filter.type === "全部" || questionTypeGroup(question) === filter.type)
+      && (filter.difficulty === "全部" || question.difficulty === filter.difficulty)
+      && (!search || [question.id, question.title, question.topic, question.curriculumChapter,
+        question.curriculumBook, question.knowledgePointId].some((value) => String(value || "").toLocaleLowerCase("zh-CN").includes(search))));
+    return `<div class="classroom-picker-summary">已选 ${chosen.size} 题 · 匹配 ${matched.length} 题（最多显示前 24 题）</div>
+      ${matched.slice(0, 24).map((question) => `<label class="classroom-question-choice"><input type="checkbox" data-classroom-question="${escapeHtml(question.id)}"${chosen.has(question.id) ? " checked" : ""}><span><strong>${escapeHtml(question.title)}</strong><small>${escapeHtml(question.grade)} · ${escapeHtml(question.topic)} · ${escapeHtml(question.questionType)} · ${escapeHtml(question.difficulty)}</small></span></label>`).join("") || "<p>没有匹配的完整题目，请调整筛选条件。</p>"}`;
+  }
+
   function renderTeacherClassroom(selected, disabled) {
     return `
       <div class="classroom-layout">
@@ -3085,9 +3131,23 @@
 
   function renderSelectedClass(selected, disabled) {
     const invite = ui.classroom.lastInvite?.classId === selected.id ? ui.classroom.lastInvite : null;
+    const activeStudents = ui.classroom.roster.filter((member) => member.status === "active");
+    const published = ui.classroom.assignments.filter((assignment) => assignment.status === "published");
+    const pending = ui.classroom.reviewCases.length;
+    const unsubmitted = published.reduce((count, assignment) => {
+      const recipients = activeStudents.filter((member) => assignment.targetType === "class"
+        || assignment.targetType === "student" && assignment.targetId === member.id
+        || assignment.targetType === "group" && assignment.targetId === member.groupId);
+      return count + recipients.filter((member) => !ui.classroom.classSubmissions.some((submission) =>
+        submission.assignmentId === assignment.id && submission.studentUserId === member.userId)).length;
+    }, 0);
     return `
       <header class="classroom-class-head"><div><span>${escapeHtml(selected.grade)} · ${escapeHtml(selected.subject)}</span><h3>${escapeHtml(selected.name)}</h3><p>${escapeHtml(selected.schoolLabel || "未填写学校")}</p></div><strong>${escapeHtml(selected.status)}</strong></header>
-      <div class="classroom-class-meta"><span>班级 ID：${escapeHtml(selected.id)}</span><span>当前学生：${ui.classroom.roster.length} 人</span><button class="danger" data-classroom-action="delete-class" type="button"${disabled}>删除班级</button></div>
+      <div class="classroom-class-meta"><span>班级 ID：${escapeHtml(selected.id)}</span><span>当前学生：${activeStudents.length} 人</span><button class="danger" data-classroom-action="delete-class" type="button"${disabled}>删除班级</button></div>
+      <section class="classroom-workbench"><h3>教学工作台</h3><p>以下数据来自当前班级服务；离线时为上次成功同步的快照。</p>
+        <div><a href="#classroom-roster">学生 ${activeStudents.length} 人</a><a href="#classroom-assignment-form">进行中作业 ${published.length} 份</a><a href="#classroom-review-cases">待批改 ${pending} 份</a><a href="#classroom-assignment-status">未提交 ${unsubmitted} 人次</a></div>
+        <nav aria-label="教学快捷操作"><a href="#classroom-assignment-form">布置作业</a><a href="#classroom-roster">管理班级</a><a href="#classroom-learning-summary">查看学情</a></nav>
+      </section>
       <div class="classroom-action-grid">
         <form id="classroomInviteForm" class="classroom-compact-form">
           <h3>邀请学生加入</h3>
@@ -3102,21 +3162,34 @@
           <div class="classroom-group-list">${ui.classroom.groups.map((group) => `<span>${escapeHtml(group.name)}</span>`).join("") || "<small>尚无分组。</small>"}</div>
         </form>
       </div>
-      <section class="classroom-teaching-actions">
+      <section class="classroom-teaching-actions" id="classroom-assignment-form">
         <form id="classroomAssignmentForm" class="classroom-compact-form">
-          <h3>下发专项作业</h3>
-          <p>教师确认后才发布；题目编号和知识点编号均可留空，但达标条件必须明确。</p>
+          <h3>从题库布置作业</h3>
+          <p>选择完整题目后发布；学生会看到真实题干并逐题作答。未审核或只有题源的记录不参与选题。</p>
           <label><span>作业标题</span><input name="title" required maxlength="160" placeholder="例如：受力分析专项复测"></label>
           <label><span>作业说明</span><textarea name="instructions" rows="2" maxlength="30000" placeholder="说明完成顺序、迁移题或复测要求"></textarea></label>
           <label><span>截止时间（可选）</span><input name="dueAt" type="datetime-local"></label>
-          <label><span>题目编号（可选，逗号分隔）</span><input name="questionIds" maxlength="8000" placeholder="题目ID1,题目ID2"></label>
-          <label><span>知识点编号（可选，逗号分隔）</span><input name="knowledgePointKeys" maxlength="8000" placeholder="topic:niu-dun-yun-dong-ding-lv"></label>
+          <label><span>下发范围</span><select name="scope"><option value="class">全班</option>${ui.classroom.groups.map((group) => `<option value="group:${escapeHtml(group.id)}">小组：${escapeHtml(group.name)}</option>`).join("")}${ui.classroom.roster.filter((member) => member.status === "active").map((member) => `<option value="student:${escapeHtml(member.id)}">学生：${escapeHtml(member.displayName)}</option>`).join("")}</select></label>
+          <fieldset class="classroom-question-picker"><legend>题库选题</legend>
+            <div class="classroom-picker-filters">
+              <label><span>搜索题名、章节或知识点</span><input data-classroom-picker="search" value="${escapeHtml(ui.classroom.picker.search)}" placeholder="输入关键词"></label>
+              <label><span>年级</span><select data-classroom-picker="grade">${["全部", "八年级", "九年级", "高一", "高二", "高三"].map((value) => `<option${ui.classroom.picker.grade === value ? " selected" : ""}>${value}</option>`).join("")}</select></label>
+              <label><span>题型</span><select data-classroom-picker="type">${["全部", "选择题", "填空题", "实验题", "计算与综合"].map((value) => `<option${ui.classroom.picker.type === value ? " selected" : ""}>${value}</option>`).join("")}</select></label>
+              <label><span>难度</span><select data-classroom-picker="difficulty">${["全部", "基础", "进阶", "挑战"].map((value) => `<option${ui.classroom.picker.difficulty === value ? " selected" : ""}>${value}</option>`).join("")}</select></label>
+            </div><div class="classroom-picker-results">${renderClassroomQuestionPicker()}</div>
+          </fieldset>
           <label><span>预定达标条件</span><textarea name="target" rows="2" required maxlength="1000" placeholder="例如：3题中至少2题低提示独立正确，并完成1道经核验专项变式"></textarea></label>
-          <label><span><input name="publish" type="checkbox" checked> 教师确认后立即发布</span></label>
-          <button type="submit"${disabled}>创建并${ui.classroom.busy ? "处理" : "发布"}</button>
+          <label><span><input name="publish" type="checkbox" checked> 立即发布（取消勾选则保存服务端草稿）</span></label>
+          <button type="submit"${disabled}>${ui.classroom.busy ? "正在处理…" : "保存作业"}</button>
         </form>
       </section>
-      <section class="classroom-roster">
+      <section class="classroom-assignment-status" id="classroom-assignment-status"><header><h3>作业与提交</h3><strong>${published.length} 份已发布</strong></header>
+        ${ui.classroom.assignments.map((assignment) => {
+          const submissions = ui.classroom.classSubmissions.filter((item) => item.assignmentId === assignment.id);
+          return `<article><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.status)} · ${assignment.questionIds.length} 题 · ${submissions.length} 次提交${assignment.dueAt ? ` · 截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : ""}</span><small>${escapeHtml(assignment.target || "")}</small></article>`;
+        }).join("") || "<p>尚无作业。可从上方题库选择题目。</p>"}
+      </section>
+      <section class="classroom-roster" id="classroom-roster">
         <header><div><span>逐级管理</span><h3>学生花名册</h3></div><strong>${ui.classroom.roster.length} 人</strong></header>
         ${ui.classroom.roster.map((member) => `
           <article>
@@ -3128,22 +3201,103 @@
             </div>
           </article>`).join("") || '<div class="classroom-empty"><strong>暂无学生</strong><p>生成邀请码后，学生提交加入申请；教师批准后才成为有效成员。</p></div>'}
       </section>
-      <section class="classroom-learning-summary">
+      <section class="classroom-learning-summary" id="classroom-learning-summary">
         <header><div><span>CLASS LEARNING EVIDENCE</span><h3>班级学情摘要</h3></div><strong>${ui.classroom.learningSummary.length} 名已同步学生</strong></header>
         <p>仅显示同步到服务端的证据摘要，不做学生排名；空值表示尚未同步或证据不足。</p>
         <div class="classroom-summary-grid">${ui.classroom.learningSummary.map((item) => `<article><strong>${escapeHtml(item.displayName)}</strong><span>正式作答 ${item.attemptCount || 0} 次 · 试卷 ${item.examCount || 0} 份</span><small>待人工复核 ${item.pendingReviewCount || 0} 项 · 最近证据 ${escapeHtml(item.lastEvidenceAt ? new Date(item.lastEvidenceAt).toLocaleString("zh-CN") : "无")}</small></article>`).join("") || "<p>当前班级没有可读取的学习摘要。</p>"}</div>
       </section>
-      <section class="classroom-review-cases">
+      <section class="classroom-review-cases" id="classroom-review-cases">
         <header><div><span>TEACHER REVIEW</span><h3>待教师复核</h3></div><strong>${ui.classroom.reviewCases.length} 项</strong></header>
         <p>自动分析只提供待判断线索；提交复核决定后才会写入服务端审核状态。</p>
         ${ui.classroom.reviewCases.map((item) => `<form class="classroom-review-form" data-classroom-review-form="${escapeHtml(item.id)}">
-          <div><strong>${escapeHtml(item.id)}</strong><span>作业 ${escapeHtml(item.assignmentId)} · 当前状态 ${escapeHtml(item.status)}</span></div>
+          <div><strong>${escapeHtml(item.studentDisplayName || "学生作答")}</strong><span>作业 ${escapeHtml(ui.classroom.assignments.find((assignment) => assignment.id === item.assignmentId)?.title || item.assignmentId)} · 第 ${item.submissionVersion || 1} 次提交 · ${escapeHtml(new Date(item.submittedAt).toLocaleString("zh-CN"))}</span>
+            ${(item.answers || []).map((answer) => `<div class="classroom-review-answer"><strong>题目 ${escapeHtml(answer.questionId)}</strong><p>回答：${escapeHtml(answer.response)}</p>${answer.steps ? `<p>过程：${escapeHtml(answer.steps)}</p>` : ""}<label><span>该题得分（0—100）</span><input name="questionScore:${escapeHtml(answer.questionId)}" type="number" min="0" max="100" step="0.5"></label></div>`).join("")}
+            ${(item.previousAnswers || []).length ? `<details open><summary>查看上次作答</summary>${item.previousAnswers.map((answer) => `<p>${escapeHtml(answer.questionId)}：${escapeHtml(answer.response)}</p>`).join("")}</details>` : ""}
+          </div>
           <label><span>决定</span><select name="decision"><option value="approve">通过</option><option value="return">退回订正</option><option value="rejudge">重新判定</option></select></label>
           <label><span>分数</span><input name="score" type="number" min="0" max="100" step="0.5" value="${item.currentScore == null ? "" : escapeHtml(item.currentScore)}" required></label>
-          <label><span>教师理由</span><input name="reason" maxlength="1000" required placeholder="记录依据或订正要求"></label>
+          <label><span>教师理由与订正要求</span><textarea name="reason" maxlength="1000" required placeholder="指出错误位置、规律适用条件与下一步修改方法"></textarea></label>
           <button type="submit"${disabled}>提交复核</button>
         </form>`).join("") || "<p>当前没有待教师复核的提交。</p>"}
       </section>`;
+  }
+
+  function assignmentDraftKey(assignmentId) {
+    const userId = window.PhysicsStudioClassroom?.status?.().user?.id || "local";
+    return `physics-classroom-assignment-draft-v1:${userId}:${assignmentId}`;
+  }
+
+  function readAssignmentDraft(assignmentId) {
+    try {
+      return window.PhysicsStudioStorageRepository?.getJson?.(assignmentDraftKey(assignmentId), null) || { answers: {} };
+    } catch (error) {
+      ui.classroom.error = true;
+      ui.classroom.message = `本机作业草稿无法读取：${error?.message || "存储错误"}`;
+      return { answers: {} };
+    }
+  }
+
+  function saveAssignmentDraftFromForm(form) {
+    const assignmentId = form?.dataset?.classroomAssignmentAnswerForm;
+    if (!assignmentId) return true;
+    const previous = readAssignmentDraft(assignmentId);
+    const answers = { ...previous.answers };
+    form.querySelectorAll("[data-assignment-question]").forEach((field) => {
+      const id = field.dataset.assignmentQuestion;
+      const entry = answers[id] || { startedAt: new Date().toISOString() };
+      entry[field.dataset.assignmentField] = field.value;
+      answers[id] = entry;
+    });
+    try {
+      window.PhysicsStudioStorageRepository?.setJson?.(assignmentDraftKey(assignmentId), {
+        ...previous, answers, updatedAt: new Date().toISOString()
+      });
+    } catch (error) {
+      ui.classroom.error = true;
+      ui.classroom.message = `数据未保存：${error?.message || "本机空间不足"}`;
+      const notice = classroomDialog.querySelector(".assignment-draft-status");
+      if (notice) notice.textContent = ui.classroom.message;
+      return false;
+    }
+    const notice = classroomDialog.querySelector(".assignment-draft-status");
+    if (notice) notice.textContent = "草稿已保存在本机；尚未提交给教师。";
+    return true;
+  }
+
+  function renderStudentAssignmentDetail(assignment, disabled) {
+    const history = ui.classroom.assignmentSubmissions[assignment.id] || [];
+    const latest = history[history.length - 1] || null;
+    const draft = readAssignmentDraft(assignment.id);
+    const local = new Map(classroomQuestionCatalog().map((question) => [question.id, question]));
+    const snapshots = Array.isArray(assignment.questionItems) ? assignment.questionItems : [];
+    const snapshotMap = new Map(snapshots.map((item) => [item.id, item]));
+    const questions = (assignment.questionIds || []).map((id) => snapshotMap.get(id) || local.get(id)).filter(Boolean);
+    const missing = questions.length !== assignment.questionIds?.length || !questions.length;
+    const canCorrect = !latest || latest.status === "returned";
+    const queued = Boolean(draft.queued && !latest);
+    const priorAnswers = new Map((latest?.answers || []).map((answer) => [answer.questionId, answer]));
+    return `<section class="student-assignment-detail">
+      <button data-classroom-action="assignment-back" type="button">← 返回任务列表</button>
+      <h3>${escapeHtml(assignment.title)}</h3>
+      <p>${escapeHtml(assignment.instructions || "完成后提交给教师；完整答案须待教师反馈后再核对。")}</p>
+      <p>当前状态：${queued ? "本机已保存，等待服务端确认" : latest ? latest.status === "returned" ? "教师退回，待订正" : latest.status === "accepted" ? "已反馈" : "已提交，待教师批改" : "未开始或本机草稿"} · ${assignment.dueAt ? `截止 ${escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN"))}` : "无截止时间"}</p>
+      ${history.length ? `<details><summary>提交与订正历史（${history.length} 次）</summary>${history.map((item) => `<article class="assignment-history"><strong>第 ${item.version || 1} 次 · ${escapeHtml(item.status)} · ${escapeHtml(new Date(item.submittedAt).toLocaleString("zh-CN"))}</strong>${(item.answers || []).map((answer) => `<p>${escapeHtml(answer.questionId)}：${escapeHtml(answer.response)}</p>`).join("")}<p>教师反馈：${escapeHtml(item.feedback || (item.reviewStatus === "pending" ? "待人工批改" : "暂无"))}${item.score == null ? "" : ` · ${escapeHtml(item.score)} 分`}</p></article>`).join("")}</details>` : ""}
+      ${missing ? '<p class="classroom-message error">该旧作业缺少可读取的题目正文；请教师从题库重新发布。不能用空内容提交。</p>' : ""}
+      ${canCorrect && !queued && !missing ? `<form data-classroom-assignment-answer-form="${escapeHtml(assignment.id)}" class="classroom-assignment-answer-form">
+        ${questions.map((question, index) => {
+          const old = priorAnswers.get(question.id);
+          const saved = draft.answers?.[question.id] || {};
+          return `<article><h4>${index + 1}. ${escapeHtml(question.title || question.id)}</h4><p>${escapeHtml(question.content || "")}</p>
+            ${(question.options || []).map((option) => `<p class="assignment-option">${escapeHtml(typeof option === "string" ? option : option?.text || "")}</p>`).join("")}
+            ${old ? `<small>上次回答：${escapeHtml(old.response || "")}</small>` : ""}
+            <label><span>我的答案</span><textarea data-assignment-question="${escapeHtml(question.id)}" data-assignment-field="response" rows="3" maxlength="30000" required>${escapeHtml(saved.response ?? old?.response ?? "")}</textarea></label>
+            <label><span>推理过程或实验记录</span><textarea data-assignment-question="${escapeHtml(question.id)}" data-assignment-field="steps" rows="3" maxlength="30000">${escapeHtml(saved.steps ?? old?.steps ?? "")}</textarea></label>
+          </article>`;
+        }).join("")}
+        <p class="assignment-draft-status">草稿仅保存在本机，点击提交后才发送给教师。</p>
+        <button type="submit"${disabled}>${latest?.status === "returned" ? "提交订正版本" : "提交逐题作答"}</button>
+      </form>` : queued ? '<p>提交事件正在等待网络恢复；请勿重复提交。若同步失败，草稿仍保留在本机。</p>' : ""}
+    </section>`;
   }
 
   function renderStudentClassroom(disabled) {
@@ -3166,15 +3320,20 @@
           ${ui.classroom.classes.map((item) => `<article><strong>${escapeHtml(item.name)}</strong><span>${escapeHtml(item.grade)} · ${escapeHtml(item.subject)} · ${escapeHtml(item.status)}</span></article>`).join("") || '<p>当前账号还没有已激活班级。</p>'}
         </div>
         <section class="student-assignment-list">
-          <header><div><span>教师方案</span><h3>教师专项方案</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
+          <header><div><span>教师下发的真实题组</span><h3>我的作业</h3></div><strong>${ui.classroom.assignments.length}</strong></header>
           ${ui.classroom.assignments.map((assignment) => {
-            const submitted = Boolean(ui.classroom.assignmentSubmissions[assignment.id]);
+            const history = ui.classroom.assignmentSubmissions[assignment.id] || [];
+            const latest = history[history.length - 1] || null;
             return `<article>
               <div><strong>${escapeHtml(assignment.title)}</strong><span>${escapeHtml(assignment.target || "按教师确认条件完成")} · ${assignment.dueAt ? escapeHtml(new Date(assignment.dueAt).toLocaleString("zh-CN")) : "无截止时间"}</span><small>${escapeHtml(assignment.instructions || "")}</small></div>
-              <button data-classroom-submit-assignment="${escapeHtml(assignment.id)}" type="button"${disabled || submitted ? " disabled" : ""}>${submitted ? "已提交完成状态" : "提交完成状态"}</button>
+              <button data-classroom-open-assignment="${escapeHtml(assignment.id)}" type="button"${disabled}>${latest?.status === "returned" ? "查看反馈并订正" : latest ? "查看提交与反馈" : "开始作答"}</button>
             </article>`;
           }).join("") || '<p class="classroom-empty">当前没有已下发的专项方案。</p>'}
         </section>
+        ${ui.classroom.activeAssignmentId ? (() => {
+          const assignment = ui.classroom.assignments.find((item) => item.id === ui.classroom.activeAssignmentId);
+          return assignment ? renderStudentAssignmentDetail(assignment, disabled) : "";
+        })() : ""}
       </section>`;
   }
 
@@ -3191,8 +3350,8 @@
       if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
         await loadClassroomDetail(ui.classroom.selectedClassId);
       } else if (role === "student" && ui.classroom.selectedClassId) {
-        await syncStudentLearningData(client, ui.classroom.selectedClassId);
         await loadStudentAssignments(ui.classroom.selectedClassId);
+        await syncStudentLearningData(client, ui.classroom.selectedClassId);
       } else {
         ui.classroom.roster = [];
         ui.classroom.groups = [];
@@ -3218,8 +3377,8 @@
       if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
         await loadClassroomDetail(ui.classroom.selectedClassId);
       } else if (role === "student" && ui.classroom.selectedClassId) {
-        await syncStudentLearningData(client, ui.classroom.selectedClassId);
         await loadStudentAssignments(ui.classroom.selectedClassId);
+        await syncStudentLearningData(client, ui.classroom.selectedClassId);
       }
       ui.classroom.error = false;
       ui.classroom.message = "班级状态已自动同步。";
@@ -3242,7 +3401,7 @@
         console.warn(`${label}读取失败；保留已有班级功能。`, error);
         return { items: [] };
       });
-    const [roster, groups, summary, reviews] = await Promise.all([
+    const [roster, groups, summary, reviews, assignments, submissions] = await Promise.all([
       client.listRoster(classId),
       client.listGroups(classId),
       typeof client.getClassLearningSummary === "function"
@@ -3250,22 +3409,33 @@
         : Promise.resolve({ items: [] }),
       typeof client.listReviewCases === "function"
         ? optionalClassCall(() => client.listReviewCases(classId), "教师复核队列")
-        : Promise.resolve({ items: [] })
+        : Promise.resolve({ items: [] }),
+      client.listAssignments ? optionalClassCall(() => client.listAssignments(classId), "班级作业") : Promise.resolve({ items: [] }),
+      client.listClassSubmissions ? optionalClassCall(() => client.listClassSubmissions(classId), "作业提交") : Promise.resolve({ items: [] })
     ]);
     ui.classroom.roster = Array.isArray(roster?.items) ? roster.items : [];
     ui.classroom.groups = Array.isArray(groups?.items) ? groups.items : [];
     ui.classroom.learningSummary = Array.isArray(summary?.items) ? summary.items : [];
     ui.classroom.reviewCases = Array.isArray(reviews?.items) ? reviews.items : [];
+    ui.classroom.assignments = Array.isArray(assignments?.items) ? assignments.items : [];
+    ui.classroom.classSubmissions = Array.isArray(submissions?.items) ? submissions.items : [];
   }
 
   async function loadStudentAssignments(classId) {
     const client = window.PhysicsStudioClassroom;
     if (!client?.listAssignments || !classId) return;
-    const [response, variantResponse] = await Promise.all([
+    const [response, variantResponse, submissionResponse] = await Promise.all([
       client.listAssignments(classId),
-      client.listVariantSets ? client.listVariantSets(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
+      client.listVariantSets ? client.listVariantSets(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] }),
+      client.listOwnClassSubmissions ? client.listOwnClassSubmissions(classId).catch(() => ({ items: [] })) : Promise.resolve({ items: [] })
     ]);
     ui.classroom.assignments = Array.isArray(response?.items) ? response.items : [];
+    const ownSubmissions = Array.isArray(submissionResponse?.items) ? submissionResponse.items : [];
+    ui.classroom.assignmentSubmissions = Object.fromEntries(ui.classroom.assignments.map((assignment) => [
+      assignment.id,
+      ownSubmissions.filter((item) => item.assignmentId === assignment.id).sort((left, right) =>
+        Number(left.version || 0) - Number(right.version || 0))
+    ]));
     if (engine?.saveVariantSet && Array.isArray(variantResponse?.items) && variantResponse.items.length) {
       const state = engine.loadState();
       variantResponse.items.forEach((remote) => {
@@ -3312,6 +3482,7 @@
         targetType: "class",
         targetId: null,
         questionIds: assignment.questionIds,
+        questionItems: classroomQuestionItems(assignment.questionIds),
         knowledgePointKeys: assignment.knowledgePointIds || (assignment.topic && assignment.topic !== "全部" ? [assignment.topic] : []),
         target: assignment.target || "完成作答、订正和专项复盘；不以一次训练形成长期能力结论。",
         publish: true
@@ -3335,14 +3506,21 @@
     if (!engine?.buildLearningSyncPayload || !client?.syncLearning) return;
     const state = engine.loadState();
     const questions = window.PhysicsStudioApp?.getQuestions?.() || [];
-    const payload = engine.buildLearningSyncPayload(state, questions, state.activeProfileId, { limit: 100 });
-    const result = await client.syncLearning(classId, payload);
-    if (engine.buildExamSyncPayload && state.examRecords?.some((item) => item.profileId === state.activeProfileId)) {
-      const examPayload = engine.buildExamSyncPayload(state, state.activeProfileId, { limit: 100 });
-      await client.syncExamRecords(classId, examPayload);
+    try {
+      const payload = engine.buildLearningSyncPayload(state, questions, state.activeProfileId, { limit: 100 });
+      const result = await client.syncLearning(classId, payload);
+      if (engine.buildExamSyncPayload && state.examRecords?.some((item) => item.profileId === state.activeProfileId)) {
+        const examPayload = engine.buildExamSyncPayload(state, state.activeProfileId, { limit: 100 });
+        await client.syncExamRecords(classId, examPayload);
+      }
+      const sync = client.syncStatus?.();
+      ui.classroom.learningSyncOverride = null;
+      if (sync) ui.classroom.message = result?.queued ? `学习数据：${sync.label}。${sync.detail}` : `学习数据：${sync.label}。`;
+    } catch (error) {
+      ui.classroom.learningSyncOverride = { state: "sync-blocked", label: "未同步", detail: error?.message || "本机学习记录尚未发送。" };
+      ui.classroom.message = `学习记录未同步：${error?.message || "班级服务不可用"}。作业列表仍可查看。`;
+      ui.classroom.error = true;
     }
-    const sync = client.syncStatus?.();
-    if (sync) ui.classroom.message = result?.queued ? `学习数据：${sync.label}。${sync.detail}` : `学习数据：${sync.label}。`;
   }
 
   async function runClassroomAction(task, successMessage = "", clearInvite = false) {
@@ -3355,7 +3533,7 @@
     try {
       await task();
       ui.classroom.error = false;
-      ui.classroom.message = successMessage;
+      if (successMessage) ui.classroom.message = successMessage;
     } catch (error) {
       ui.classroom.error = true;
       ui.classroom.message = error?.message || "班级操作失败，请稍后重试。";
@@ -3397,8 +3575,8 @@
         if ((role === "teacher" || role === "administrator") && ui.classroom.selectedClassId) {
           await loadClassroomDetail(ui.classroom.selectedClassId);
         } else if (role === "student" && ui.classroom.selectedClassId) {
-          await syncStudentLearningData(client, ui.classroom.selectedClassId);
           await loadStudentAssignments(ui.classroom.selectedClassId);
+          await syncStudentLearningData(client, ui.classroom.selectedClassId);
         }
       }, "登录成功。服务端权限已生效。", true);
     } else if (form.id === "classroomServerConfigForm") {
@@ -3438,34 +3616,88 @@
       }, "分组已添加。", false);
     } else if (form.id === "classroomAssignmentForm") {
       const classId = ui.classroom.selectedClassId;
-      const splitList = (value) => String(value || "")
-        .split(/[\s,，;；]+/)
-        .map((item) => item.trim())
-        .filter(Boolean);
       await runClassroomAction(async () => {
+        const questionIds = [...ui.classroom.selectedQuestionIds];
+        const questionItems = classroomQuestionItems(questionIds);
+        if (!questionIds.length || questionItems.length !== questionIds.length) {
+          throw new Error("请从完整题库中至少选择一道可下发的题目。");
+        }
+        const scope = String(values.get("scope") || "class");
+        const [scopeType, scopeId] = scope.split(":");
+        const targetType = ["group", "student"].includes(scopeType) ? scopeType : "class";
         const created = await client.createAssignment(classId, {
           title: values.get("title"),
           instructions: values.get("instructions"),
           dueAt: values.get("dueAt") || null,
-          targetType: "class",
-          targetId: null,
-          questionIds: splitList(values.get("questionIds")),
-          knowledgePointKeys: splitList(values.get("knowledgePointKeys")),
+          targetType,
+          targetId: targetType === "class" ? null : scopeId,
+          questionIds,
+          questionItems,
+          knowledgePointKeys: [...new Set(questionItems.map((item) => item.knowledgePointId).filter(Boolean))],
           target: values.get("target"),
           publish: values.get("publish") === "on"
         });
-        if (!created?.queued) await loadClassroomDetail(classId);
-      }, "专项作业已创建；若当前离线，将在恢复网络后发送。", false);
+        if (!created?.queued) {
+          ui.classroom.selectedQuestionIds = [];
+          await loadClassroomDetail(classId);
+        }
+        ui.classroom.message = created?.queued ? "作业待同步；服务端尚未确认发布。" : "作业已由班级服务确认。";
+      }, "", false);
+    } else if (form.matches("[data-classroom-assignment-answer-form]")) {
+      const assignmentId = form.dataset.classroomAssignmentAnswerForm;
+      const assignment = ui.classroom.assignments.find((item) => item.id === assignmentId);
+      if (!assignment) return;
+      const currentAnswers = (assignment.questionIds || []).map((questionId) => {
+        const fields = [...form.querySelectorAll("[data-assignment-question]")].filter((field) => field.dataset.assignmentQuestion === questionId);
+        const response = fields.find((field) => field.dataset.assignmentField === "response")?.value?.trim() || "";
+        const steps = fields.find((field) => field.dataset.assignmentField === "steps")?.value?.trim() || "";
+        return { questionId, response, steps };
+      });
+      clearTimeout(assignmentDraftTimer);
+      if (!saveAssignmentDraftFromForm(form)) return;
+      if (!currentAnswers.length || currentAnswers.some((answer) => !answer.response)) {
+        ui.classroom.error = true;
+        ui.classroom.message = "请填写每一道题的真实答案；草稿可稍后继续。";
+        renderClassroom();
+        return;
+      }
+      const saved = readAssignmentDraft(assignmentId);
+      const clientEntityId = saved.clientEntityId || `assignment-${crypto.randomUUID()}`;
+      await runClassroomAction(async () => {
+        const result = await client.submitAssignment(assignmentId, {
+          clientEntityId,
+          answers: currentAnswers.map((answer) => ({
+            ...answer,
+            startedAt: saved.answers?.[answer.questionId]?.startedAt || new Date().toISOString(),
+            hintViewCount: 0
+          }))
+        });
+        if (result?.queued) {
+          window.PhysicsStudioStorageRepository?.setJson?.(assignmentDraftKey(assignmentId), {
+            ...saved, clientEntityId, queued: true, updatedAt: new Date().toISOString()
+          });
+          ui.classroom.message = "逐题答案已在本机排队，尚未由服务端确认；请恢复网络后查看状态。";
+        } else {
+          window.PhysicsStudioStorageRepository?.removeItem?.(assignmentDraftKey(assignmentId));
+          await loadStudentAssignments(ui.classroom.selectedClassId);
+          ui.classroom.message = "逐题作答已由服务端确认，等待教师批改。";
+        }
+      }, "", false);
     } else if (form.matches("[data-classroom-review-form]")) {
       const reviewId = form.dataset.classroomReviewForm;
       await runClassroomAction(async () => {
+        const item = ui.classroom.reviewCases.find((entry) => entry.id === reviewId);
+        const perQuestionScores = (item?.answers || []).map((answer) => ({
+          questionId: answer.questionId,
+          score: values.get(`questionScore:${answer.questionId}`) === "" ? null : Number(values.get(`questionScore:${answer.questionId}`))
+        }));
         await client.decideReviewCase(reviewId, {
           decision: values.get("decision"),
           score: Number(values.get("score")),
-          perQuestionScores: [],
+          perQuestionScores,
           reason: values.get("reason"),
-          annotation: {}
-        });
+          annotation: { rubric: "教师按题目过程与结果复核；空题分表示未单独量化。" }
+        }, ui.classroom.selectedClassId);
         await loadClassroomDetail(ui.classroom.selectedClassId);
       }, "教师复核决定已提交。", false);
     }
@@ -3492,6 +3724,7 @@
     if (select && !ui.classroom.busy) {
       ui.classroom.selectedClassId = select.dataset.classroomSelect;
       ui.classroom.lastInvite = null;
+      ui.classroom.selectedQuestionIds = [];
       await runClassroomAction(() => loadClassroomDetail(ui.classroom.selectedClassId), "班级花名册已载入。", false);
       return;
     }
@@ -3514,23 +3747,21 @@
       }, "学生分组已更新。", false);
       return;
     }
-    const submitAssignment = event.target.closest("[data-classroom-submit-assignment]");
-    if (submitAssignment && !ui.classroom.busy) {
-      const assignmentId = submitAssignment.dataset.classroomSubmitAssignment;
-      const assignment = ui.classroom.assignments.find((item) => item.id === assignmentId);
-      if (!assignment) return;
-      await runClassroomAction(async () => {
-        const result = await client.submitAssignment(assignmentId, {
-          clientEntityId: `assignment-complete-${assignmentId}`,
-          answers: [{ status: "completed" }]
-        });
-        ui.classroom.assignmentSubmissions[assignmentId] = result;
-      }, "完成状态已提交；若当前离线，将在恢复网络后发送。", false);
+    const openAssignment = event.target.closest("[data-classroom-open-assignment]");
+    if (openAssignment && !ui.classroom.busy) {
+      ui.classroom.activeAssignmentId = openAssignment.dataset.classroomOpenAssignment;
+      renderClassroom();
+      classroomDialog.querySelector(".student-assignment-detail")?.scrollIntoView({ block: "start", behavior: "smooth" });
       return;
     }
     const action = event.target.closest("[data-classroom-action]")?.dataset.classroomAction;
     if (!action) return;
     if (action === "close") classroomDialog.close();
+    else if (action === "assignment-back") {
+      saveAssignmentDraftFromForm(classroomDialog.querySelector("[data-classroom-assignment-answer-form]"));
+      ui.classroom.activeAssignmentId = "";
+      renderClassroom();
+    }
     else if (action === "refresh") await refreshClassroomData(true);
     else if (action === "delete-class") {
       const classId = ui.classroom.selectedClassId;
@@ -3604,6 +3835,30 @@
   }
 
   async function handleClassroomChange(event) {
+    const picker = event.target.closest("[data-classroom-picker]");
+    if (picker) {
+      ui.classroom.picker[picker.dataset.classroomPicker] = picker.value;
+      const results = classroomDialog.querySelector(".classroom-picker-results");
+      if (results) results.innerHTML = renderClassroomQuestionPicker();
+      return;
+    }
+    const question = event.target.closest("[data-classroom-question]");
+    if (question) {
+      const id = question.dataset.classroomQuestion;
+      const chosen = new Set(ui.classroom.selectedQuestionIds);
+      if (question.checked) chosen.add(id);
+      else chosen.delete(id);
+      if (chosen.size > 100) {
+        question.checked = false;
+        ui.classroom.message = "单次作业最多选择 100 题。";
+        ui.classroom.error = true;
+        return;
+      }
+      ui.classroom.selectedQuestionIds = [...chosen];
+      const summary = classroomDialog.querySelector(".classroom-picker-summary");
+      if (summary) summary.textContent = `已选 ${chosen.size} 题 · 可继续筛选或保存作业`;
+      return;
+    }
     const input = event.target.closest("#classroomInviteQrInput");
     if (!input) return;
     const status = classroomDialog.querySelector(".classroom-qr-status");
@@ -3624,6 +3879,22 @@
       status.classList.add("error");
       status.textContent = error?.message || "二维码识别失败，请改为手动输入邀请码。";
     }
+  }
+
+  function handleClassroomInput(event) {
+    const assignmentField = event.target.closest("[data-assignment-question]");
+    if (assignmentField) {
+      clearTimeout(assignmentDraftTimer);
+      assignmentDraftTimer = window.setTimeout(() => {
+        saveAssignmentDraftFromForm(assignmentField.closest("[data-classroom-assignment-answer-form]"));
+      }, 300);
+      return;
+    }
+    const picker = event.target.closest('[data-classroom-picker="search"]');
+    if (!picker) return;
+    ui.classroom.picker.search = picker.value;
+    const results = classroomDialog.querySelector(".classroom-picker-results");
+    if (results) results.innerHTML = renderClassroomQuestionPicker();
   }
 
   function diagnosticPackageProgress(paper, learning) {

@@ -124,7 +124,7 @@ async function main() {
       "listClasses", "getClass", "deleteClass", "createInvite", "parseInvitePayload", "discoverServices", "joinClassByInviteCode", "joinInvite", "updateDisplayName", "listRoster", "listGroups",
       "createGroup", "updateMembership", "syncStatus", "syncLearning",
       "syncExamRecords", "syncVariantSets", "listVariantSets", "flushSyncQueue", "acknowledgeSyncConflict",
-      "listAssignments", "createAssignment", "submitAssignment", "getClassLearningSummary",
+      "listAssignments", "createAssignment", "submitAssignment", "listOwnSubmissions", "listClassSubmissions", "listOwnClassSubmissions", "getClassLearningSummary",
       "listReviewCases", "decideReviewCase", "saveReportSnapshot", "listReportSnapshots"
     ]
   );
@@ -330,6 +330,7 @@ async function main() {
     instructions: "完成后提交完成状态",
     targetType: "class",
     questionIds: ["q-1"],
+    questionItems: [],
     knowledgePointKeys: ["topic:motion"],
     target: "完成 5 题并提交迁移记录",
     publish: true
@@ -383,6 +384,7 @@ async function main() {
     targetType: "class",
     targetId: null,
     questionIds: ["q-1"],
+    questionItems: [],
     knowledgePointKeys: ["topic:motion"],
     target: "完成 5 题并提交迁移记录",
     publish: true

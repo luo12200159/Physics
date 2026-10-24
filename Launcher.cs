@@ -17,8 +17,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyDescription("支持离线使用、学情档案与受控联网服务的物理学习应用")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("4.0.2.0")]
-[assembly: AssemblyFileVersion("4.0.2.0")]
+[assembly: AssemblyVersion("4.1.0.0")]
+[assembly: AssemblyFileVersion("4.1.0.0")]
 
 internal static class Program
 {

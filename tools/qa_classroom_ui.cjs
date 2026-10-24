@@ -15,6 +15,7 @@ const accessToken = `access.${"x".repeat(100)}`;
 const refreshToken = `r1.44444444-4444-4444-8444-444444444444.${"a".repeat(43)}`;
 const ownerCapability = `oc1.${"o".repeat(43)}`;
 const ownerUserId = "99999999-9999-4999-8999-999999999999";
+const sharedWork = { assignments: [], submissions: [], reviews: [] };
 
 function experience(role) {
   return {
@@ -150,6 +151,8 @@ async function installServerMock(page, role, calls) {
       });
     }
     const activeClassId = [classId, createdClassId].find((id) => url.pathname.startsWith(`/v1/classes/${id}/`));
+    const selectedClass = classes.find((item) => url.pathname === `/v1/classes/${item.id}`);
+    if (selectedClass && method === "GET") return json(route, 200, selectedClass);
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/roster` && method === "GET") {
       return json(route, 200, {
         items: [{
@@ -176,7 +179,58 @@ async function installServerMock(page, role, calls) {
       return json(route, 201, groups[0]);
     }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignments` && method === "GET") {
-      return json(route, 200, { items: [], nextCursor: null });
+      return json(route, 200, { items: sharedWork.assignments, nextCursor: null });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignments` && method === "POST") {
+      const item = {
+        ...body,
+        id: "44444444-4444-4444-8444-444444444444",
+        classId: activeClassId,
+        status: body.publish ? "published" : "draft",
+        revision: 1,
+        questionItems: (body.questionItems || []).map(({ correctAnswer: _answer, ...question }) => question),
+        createdAt: "2026-10-23T12:00:00.000Z",
+        updatedAt: "2026-10-23T12:00:00.000Z"
+      };
+      sharedWork.assignments.push(item);
+      return json(route, 201, item);
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignment-submissions` && method === "GET") {
+      return json(route, 200, { items: sharedWork.submissions });
+    }
+    if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/assignment-submissions/me` && method === "GET") {
+      return json(route, 200, { items: sharedWork.submissions });
+    }
+    if (url.pathname === `/v1/assignments/44444444-4444-4444-8444-444444444444/submissions` && method === "POST") {
+      if (!Array.isArray(body.answers) || body.answers.length !== 3 || body.answers.some((answer) => !answer.questionId || !answer.response)) {
+        return json(route, 400, { code: "answer_required", message: "Three real answers required" });
+      }
+      const prior = sharedWork.submissions.at(-1);
+      if (prior && prior.status !== "returned") return json(route, 409, { code: "submission_already_active" });
+      const item = {
+        id: prior ? "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" : "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        assignmentId: "44444444-4444-4444-8444-444444444444",
+        clientEntityId: body.clientEntityId,
+        status: "submitted",
+        answers: body.answers,
+        studentUserId: "66666666-6666-4666-8666-666666666666",
+        studentDisplayName: "服务端学生",
+        version: prior ? 2 : 1,
+        previousSubmissionId: prior?.id || null,
+        reviewStatus: "pending",
+        score: null,
+        feedback: null,
+        submittedAt: "2026-10-23T12:30:00.000Z"
+      };
+      sharedWork.submissions.push(item);
+      sharedWork.reviews.push({
+        id: item.id, submissionId: item.id, assignmentId: item.assignmentId,
+        classId: createdClassId, status: "pending", currentScore: null,
+        revision: 1, submittedAt: item.submittedAt, updatedAt: item.submittedAt,
+        studentDisplayName: item.studentDisplayName, answers: item.answers,
+        submissionVersion: item.version, previousAnswers: prior?.answers || []
+      });
+      return json(route, 201, item);
     }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/variant-sets` && method === "GET") {
       return json(route, 200, { items: [], nextCursor: null });
@@ -185,7 +239,20 @@ async function installServerMock(page, role, calls) {
       return json(route, 200, { items: [], nextCursor: null });
     }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/review-cases` && method === "GET") {
-      return json(route, 200, { items: [], nextCursor: null });
+      return json(route, 200, { items: sharedWork.reviews.filter((item) => item.status === "pending"), nextCursor: null });
+    }
+    if (url.pathname.startsWith("/v1/review-cases/") && method === "PATCH") {
+      const id = url.pathname.split("/").at(-1);
+      const review = sharedWork.reviews.find((item) => item.id === id);
+      const submission = sharedWork.submissions.find((item) => item.id === id);
+      if (!review || !submission) return json(route, 404, { code: "not_found" });
+      review.status = body.decision === "return" ? "returned" : "approved";
+      review.currentScore = body.score;
+      submission.status = body.decision === "return" ? "returned" : "accepted";
+      submission.reviewStatus = review.status;
+      submission.score = body.score;
+      submission.feedback = body.reason;
+      return json(route, 200, review);
     }
     if (activeClassId && url.pathname === `/v1/classes/${activeClassId}/learning/sync` && method === "POST") {
       return json(route, 200, { accepted: true, nextRevision: 2, conflicts: [] });
@@ -218,6 +285,11 @@ async function installServerMock(page, role, calls) {
       return json(route, 201, { membershipId, status: "pending" });
     }
     if (url.pathname === "/v1/invites/join-anonymous" && method === "POST") {
+      classes = [{
+        id: createdClassId, name: "仅名称创建的物理班", grade: "高一", subject: "物理",
+        schoolLabel: null, status: "active", revision: 1,
+        createdAt: "2026-10-23T12:00:00.000Z", updatedAt: "2026-10-23T12:00:00.000Z"
+      }];
       return json(route, 201, {
         accessToken,
         refreshToken,
@@ -230,7 +302,7 @@ async function installServerMock(page, role, calls) {
           deletionPending: false
         },
         membershipId,
-        classId,
+        classId: createdClassId,
         status: "active"
       });
     }
@@ -338,6 +410,16 @@ async function login(page, loginName) {
     await teacher.page.waitForTimeout(300);
     const approvedText = await teacher.page.locator("#classroomContent").innerText();
     assert.match(approvedText, /已批准学生加入。[\s\S]*已加入/, approvedText);
+    await teacher.page.locator('#classroomAssignmentForm input[name="title"]').fill("三题物理专项");
+    await teacher.page.locator('#classroomAssignmentForm textarea[name="target"]').fill("三题均完成真实作答，由教师批改开放题。");
+    const questionChoices = teacher.page.locator(".classroom-picker-results [data-classroom-question]");
+    for (let index = 0; index < 3; index += 1) await questionChoices.nth(index).check();
+    await teacher.page.locator('#classroomAssignmentForm button[type="submit"]').click();
+    await teacher.page.getByText("作业已由班级服务确认。", { exact: true }).waitFor();
+    const publishedCall = teacherCalls.find((call) => call.method === "POST" && call.path === `/v1/classes/${createdClassId}/assignments`);
+    assert.equal(publishedCall?.body?.questionIds?.length, 3);
+    assert.equal(publishedCall?.body?.questionItems?.length, 3);
+    assert.ok(publishedCall.body.questionItems.every((item) => item.content && item.questionType));
     await teacher.page.screenshot({ path: path.join(outputDirectory, "teacher-classroom.png"), fullPage: false });
     await teacher.page.setViewportSize({ width: 390, height: 844 });
     await teacher.page.locator("#classroomInviteQr").scrollIntoViewIfNeeded();
@@ -351,7 +433,6 @@ async function login(page, loginName) {
     await teacher.page.screenshot({ path: path.join(outputDirectory, "teacher-mobile-invite.png"), fullPage: false });
     if (teacher.errors.length) console.error("teacher page errors", teacher.errors, teacherCalls.map((call) => `${call.method} ${call.path}`));
     assert.deepEqual(teacher.errors, []);
-    await teacherContext.close();
 
     const studentContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const student = await preparePage(studentContext, "student", studentCalls);
@@ -403,14 +484,55 @@ async function login(page, loginName) {
       buffer: inviteQrPng
     });
     await student.page.locator(".classroom-session-bar").waitFor({ state: "visible" });
+    try {
+      await student.page.getByText("三题物理专项", { exact: true }).first().waitFor({ timeout: 6_000 });
+    } catch (error) {
+      throw new Error(`student assignment missing: ${await student.page.locator("#classroomContent").innerText()} | ${JSON.stringify(studentCalls.map((call) => `${call.method} ${call.path}`))}`, { cause: error });
+    }
+    await student.page.locator("[data-classroom-open-assignment]").first().click();
+    const answerFields = student.page.locator('[data-assignment-field="response"]');
+    assert.equal(await answerFields.count(), 3);
+    await answerFields.nth(0).fill("2 m/s");
+    await answerFields.nth(1).fill("合力改变速度");
+    await answerFields.nth(2).fill("机械能守恒须检查非保守力做功");
+    await student.page.locator('[data-classroom-assignment-answer-form] button[type="submit"]').click();
+    await student.page.getByText("逐题作答已由服务端确认，等待教师批改。", { exact: true }).waitFor();
+    assert.equal(sharedWork.submissions.length, 1);
+    assert.equal(sharedWork.submissions[0].answers.length, 3);
+    await teacher.page.setViewportSize({ width: 1440, height: 960 });
+    await teacher.page.locator('[data-classroom-action="refresh"]').click();
+    try {
+      await teacher.page.locator('[data-classroom-review-form]').waitFor({ timeout: 6_000 });
+    } catch (error) {
+      throw new Error(`teacher review missing: ${await teacher.page.locator("#classroomContent").innerText()} | reviews=${JSON.stringify(sharedWork.reviews)} | calls=${JSON.stringify(teacherCalls.map((call) => `${call.method} ${call.path}`))}`, { cause: error });
+    }
+    assert.match(await teacher.page.locator('[data-classroom-review-form]').innerText(), /合力改变速度/);
+    await teacher.page.locator('[data-classroom-review-form] select[name="decision"]').selectOption("return");
+    await teacher.page.locator('[data-classroom-review-form] input[name="score"]').fill("60");
+    await teacher.page.locator('[data-classroom-review-form] textarea[name="reason"]').fill("请补充受力对象和规律适用条件。");
+    await teacher.page.locator('[data-classroom-review-form] button[type="submit"]').click();
+    try {
+      await teacher.page.getByText("教师复核决定已提交。", { exact: true }).waitFor({ timeout: 6_000 });
+    } catch (error) {
+      throw new Error(`teacher review submission failed: ${await teacher.page.locator("#classroomContent").innerText()} | calls=${JSON.stringify(teacherCalls.slice(-5).map((call) => `${call.method} ${call.path}`))} | errors=${JSON.stringify(teacher.errors)}`, { cause: error });
+    }
+    await student.page.locator('[data-classroom-action="refresh"]').click();
+    await student.page.getByText("教师退回，待订正", { exact: false }).waitFor();
+    await student.page.locator('[data-assignment-field="response"]').nth(1).fill("以小车为研究对象，合力不为零，依据牛顿第二定律加速度不为零。");
+    await student.page.locator('[data-classroom-assignment-answer-form] button[type="submit"]').click();
+    await student.page.getByText("逐题作答已由服务端确认，等待教师批改。", { exact: true }).waitFor();
+    assert.equal(sharedWork.submissions.length, 2);
+    assert.equal(sharedWork.submissions[0].status, "returned");
+    assert.equal(sharedWork.submissions[1].version, 2);
+    await teacher.page.locator('[data-classroom-action="refresh"]').click();
+    await teacher.page.locator('[data-classroom-review-form]').waitFor();
+    assert.match(await teacher.page.locator('[data-classroom-review-form]').innerText(), /合力改变速度/);
+    assert.match(await teacher.page.locator('[data-classroom-review-form]').innerText(), /牛顿第二定律/);
     assert.equal(
       studentCalls.filter((call) => call.method === "POST" && call.path === "/v1/invites/join-anonymous").length,
       1,
       "QR image decoding must call the same anonymous join endpoint exactly once",
     );
-    if (false) {
-    await student.page.getByText("加入申请已提交，等待老师批准。", { exact: true }).waitFor();
-    }
     const mobileFit = await student.page.locator("#classroomDialog").evaluate((node) => ({
       clientWidth: node.clientWidth,
       scrollWidth: node.scrollWidth,
@@ -423,9 +545,10 @@ async function login(page, loginName) {
     if (student.errors.length) console.error("student page errors", student.errors, studentCalls.map((call) => `${call.method} ${call.path}`));
     assert.deepEqual(student.errors, []);
     await studentContext.close();
+    await teacherContext.close();
 
     const mutations = [...teacherCalls, ...studentCalls].filter((call) => ["POST", "PATCH"].includes(call.method));
-    assert.ok(mutations.length >= 6, JSON.stringify(mutations));
+    assert.ok(mutations.length >= 6, JSON.stringify(mutations.map((call) => `${call.method} ${call.path}`)));
     assert.ok(mutations.every((call) => /^[\x21-\x7e]{16,128}$/.test(call.headers["idempotency-key"] || "")));
     const protectedCalls = [...teacherCalls, ...studentCalls].filter((call) => !call.path.startsWith("/v1/auth/") && call.path !== "/v1/classes/anonymous" && call.path !== "/v1/invites/join-anonymous");
     assert.ok(protectedCalls.every((call) => [

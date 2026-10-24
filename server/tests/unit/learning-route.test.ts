@@ -35,6 +35,44 @@ function authService(): AuthService {
 }
 
 describe("learning route registration", () => {
+  it("rejects completion markers and exposes typed submission history routes", async () => {
+    const submitAssignment = vi.fn(async () => ({
+      id: PROFILE_ID,
+      assignmentId: CLASS_ID,
+      clientEntityId: "attempt-1",
+      status: "submitted",
+      submittedAt: "2026-10-23T10:00:00.000Z",
+      answers: [{ questionId: "q-1", response: "2 m/s" }],
+      version: 1,
+      previousSubmissionId: null,
+    }));
+    const listOwnClassSubmissions = vi.fn(async () => ({ items: [] }));
+    const app = await buildTestApp({
+      authService: authService(),
+      learningService: { submitAssignment, listOwnClassSubmissions } as unknown as LearningService,
+    });
+    const headers = { authorization: "Bearer header.payload.signature", "idempotency-key": "assignment-test-0001" };
+    const fake = await app.inject({
+      method: "POST", url: `/v1/assignments/${CLASS_ID}/submissions`, headers,
+      payload: { clientEntityId: "attempt-1", answers: [{ status: "completed" }] },
+    });
+    expect(fake.statusCode).toBe(400);
+    expect(submitAssignment).not.toHaveBeenCalled();
+    const real = await app.inject({
+      method: "POST", url: `/v1/assignments/${CLASS_ID}/submissions`, headers,
+      payload: { clientEntityId: "attempt-1", answers: [{ questionId: "q-1", response: "2 m/s" }] },
+    });
+    expect(real.statusCode).toBe(201);
+    expect(real.json().answers).toEqual([{ questionId: "q-1", response: "2 m/s" }]);
+    const history = await app.inject({
+      method: "GET", url: `/v1/classes/${CLASS_ID}/assignment-submissions/me`,
+      headers: { authorization: "Bearer header.payload.signature" },
+    });
+    expect(history.statusCode).toBe(200);
+    expect(listOwnClassSubmissions).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
   it("requires idempotency for learning writes and keeps the route behind auth", async () => {
     const syncLearning = vi.fn(async () => ({
       profileId: PROFILE_ID,
