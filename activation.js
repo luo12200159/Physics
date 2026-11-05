@@ -25,7 +25,7 @@
   });
 
   const api = Object.freeze({
-    version: "1.0.0",
+    version: "2.0.0",
     whenActivated,
     validateCode,
     formatDeviceRequest,
@@ -51,10 +51,6 @@
       assertPublicKeyConfiguration();
       const native = await getNativeActivationAdapter();
       const deviceId = normalizeDeviceId(native.deviceId);
-      gate.device.textContent = formatDeviceRequest(deviceId);
-      gate.environment.textContent = native.description;
-      gate.copy.disabled = false;
-      gate.copy.addEventListener("click", () => copyDeviceRequest(deviceId, gate));
 
       const storedCode = String(native.storedCode || "").trim();
       if (storedCode) {
@@ -66,7 +62,7 @@
           setStatus(gate, "本机已保存的激活信息无效或已过期，请输入新的激活码。", "error");
         }
       } else {
-        setStatus(gate, "复制设备申请码交给软件所有者，再把签发的激活码粘贴到下方。", "info");
+        setStatus(gate, "请输入所有者提供的签名激活码。旧版设备绑定激活码仍可在原设备使用。", "info");
       }
 
       gate.form.addEventListener("submit", async (event) => {
@@ -78,7 +74,7 @@
           return;
         }
         gate.submit.disabled = true;
-        setStatus(gate, "正在校验设备绑定和数字签名……", "info");
+        setStatus(gate, "正在校验有效期和数字签名……", "info");
         try {
           const payload = await validateCode(code, deviceId);
           const saved = await native.save(code);
@@ -109,34 +105,24 @@
         <div class="activation-panel">
           <div class="activation-brand">
             <span class="activation-brand-mark" aria-hidden="true">φ</span>
-            <div><strong>费曼物理</strong><span>DEVICE ACTIVATION</span></div>
+            <div><strong>费曼物理</strong><span>签名授权</span></div>
           </div>
           <h1 id="activationTitle">激活后开始学习</h1>
-          <p class="activation-intro">本应用采用一机一码。激活码包含当前设备摘要的数字签名，不能转用于第二台设备。</p>
-          <div class="activation-device-card">
-            <label>设备申请码 <small id="activationEnvironment"></small></label>
-            <div class="activation-device-row">
-              <code class="activation-device-code" id="activationDeviceCode">正在读取本机设备摘要……</code>
-              <button class="activation-copy-button" id="activationCopyButton" type="button" disabled>复制</button>
-            </div>
-          </div>
+          <p class="activation-intro">只需输入所有者提供的激活码；无需提交设备码。有效期由签发者决定。</p>
           <form id="activationForm" novalidate>
             <label class="activation-code-field">
               <span>激活码</span>
               <textarea id="activationCode" maxlength="${MAX_CODE_LENGTH}" spellcheck="false" autocomplete="off" placeholder="PSA1.……"></textarea>
             </label>
-            <button class="activation-submit" id="activationSubmit" type="submit">校验并激活本机</button>
+            <button class="activation-submit" id="activationSubmit" type="submit">校验并激活</button>
           </form>
           <p class="activation-status" id="activationStatus" role="status" aria-live="polite"></p>
-          <p class="activation-boundary">设备申请码是单向摘要，不包含题库、学生档案或原始硬件标识。离线授权能阻止跨设备复用；卸载或清除全部应用数据后的全局一次性核销需要另行部署联网激活服务。</p>
+          <p class="activation-boundary">新版离线便携码可在不同设备使用，无法限制复制次数；旧版设备绑定码仍只对原设备有效。签发私钥不随软件分发。</p>
         </div>`;
       document.body.appendChild(gate);
     }
     return {
       root: gate,
-      device: gate.querySelector("#activationDeviceCode"),
-      environment: gate.querySelector("#activationEnvironment"),
-      copy: gate.querySelector("#activationCopyButton"),
       form: gate.querySelector("#activationForm"),
       code: gate.querySelector("#activationCode"),
       submit: gate.querySelector("#activationSubmit"),
@@ -265,7 +251,8 @@
     validatePayload(payload, expectedDeviceId);
 
     const publicKeys = await importPublicKeys();
-    const verificationResults = await Promise.all(publicKeys.map((publicKey) => {
+    const verificationResults = await Promise.all(publicKeys.map(({ publicKey, fingerprint }) => {
+      if (payload.kid && payload.kid !== fingerprint.slice(0, 16)) return false;
       return crypto.subtle.verify(
         { name: "ECDSA", hash: "SHA-256" },
         publicKey,
@@ -282,7 +269,7 @@
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
       throw new Error("激活码载荷格式错误。");
     }
-    const allowed = new Set(["v", "product", "licenseId", "device", "issuedAt", "expiresAt", "note"]);
+    const allowed = new Set(["v", "product", "licenseId", "device", "issuedAt", "expiresAt", "note", "kid", "scope"]);
     const unknown = Object.keys(payload).filter((key) => !allowed.has(key));
     if (unknown.length) throw new Error("激活码包含不支持的字段。");
     if (payload.v !== 1 || payload.product !== PRODUCT_ID) {
@@ -291,10 +278,21 @@
     if (!/^[a-f0-9]{32}$/.test(String(payload.licenseId || ""))) {
       throw new Error("激活码编号格式错误。");
     }
-    const actualDevice = normalizeDeviceId(payload.device);
-    const expected = normalizeDeviceId(expectedDeviceId);
-    if (actualDevice !== expected) {
-      throw new Error("该激活码绑定的是另一台设备。");
+    if (payload.scope === "portable") {
+      if (payload.device !== undefined && payload.device !== null) {
+        throw new Error("便携激活码不得包含设备绑定字段。");
+      }
+    } else if (payload.scope === undefined) {
+      const actualDevice = normalizeDeviceId(payload.device);
+      const expected = normalizeDeviceId(expectedDeviceId);
+      if (actualDevice !== expected) {
+        throw new Error("该激活码绑定的是另一台设备。");
+      }
+    } else {
+      throw new Error("激活码包含不支持的授权范围。");
+    }
+    if (payload.kid !== undefined && !/^[A-F0-9]{16}$/.test(payload.kid)) {
+      throw new Error("激活码密钥标识格式错误。");
     }
     const issuedAt = Date.parse(payload.issuedAt);
     if (!Number.isFinite(issuedAt) || issuedAt > Date.now() + 5 * 60 * 1000) {
@@ -314,7 +312,7 @@
 
   function importPublicKeys() {
     if (!importedPublicKeysPromise) {
-      const trusted = [PUBLIC_KEY, ...LEGACY_PUBLIC_KEYS].filter((key, index, keys) => {
+      const trusted = [PUBLIC_KEY, ...(PUBLIC_KEY.historicalPublicKeys || []), ...LEGACY_PUBLIC_KEYS].filter((key, index, keys) => {
         return key?.spkiBase64
           && keys.findIndex((candidate) => candidate?.spkiBase64 === key.spkiBase64) === index;
       });
@@ -325,7 +323,7 @@
           { name: "ECDSA", namedCurve: "P-256" },
           false,
           ["verify"]
-        );
+        ).then((publicKey) => ({ publicKey, fingerprint: key.fingerprintSha256 }));
       }));
     }
     return importedPublicKeysPromise;

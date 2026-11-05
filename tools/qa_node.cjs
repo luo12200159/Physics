@@ -4,6 +4,11 @@ const path = require("node:path");
 const project = path.resolve(__dirname, "..");
 const scripts = [
   "qa_activation_and_1900.cjs",
+  "qa_portable_activation.cjs",
+  "qa_content_answer_schema.cjs",
+  "qa_content_bank_migration.cjs",
+  "qa_curriculum_mapping.cjs",
+  "qa_content_remediation.cjs",
   "qa_backup_validator_fields.cjs",
   "qa_classroom_client.cjs",
   "qa_class_invite_join.cjs",

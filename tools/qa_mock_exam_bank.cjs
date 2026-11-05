@@ -5,7 +5,10 @@ const vm = require("node:vm");
 
 const projectRoot = path.resolve(__dirname, "..");
 const context = vm.createContext({ window: {} });
+vm.runInContext(fs.readFileSync(path.join(projectRoot, "curriculum-taxonomy.js"), "utf8"), context, { filename: "curriculum-taxonomy.js" });
+vm.runInContext(fs.readFileSync(path.join(projectRoot, "curriculum-mapping.js"), "utf8"), context, { filename: "curriculum-mapping.js" });
 vm.runInContext(fs.readFileSync(path.join(projectRoot, "solution-format.js"), "utf8"), context, { filename: "solution-format.js" });
+vm.runInContext(fs.readFileSync(path.join(projectRoot, "answer-schema.js"), "utf8"), context, { filename: "answer-schema.js" });
 const source = fs.readFileSync(path.join(projectRoot, "mock-exam-bank.js"), "utf8");
 vm.runInContext(source, context, { filename: "mock-exam-bank.js" });
 

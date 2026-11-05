@@ -36,6 +36,8 @@ const browserModule = `(() => {
   };
   const require = (name) => {
     if (name === "ajv/dist/runtime/ucs2length") return { default: ucs2length };
+    // The only uniqueItems rule in this schema compares A-D option strings.
+    if (name === "ajv/dist/runtime/equal") return { default: (left, right) => left === right };
     throw new Error(\`Unsupported validator runtime: \${name}\`);
   };
 ${generated}

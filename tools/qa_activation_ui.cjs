@@ -8,12 +8,16 @@ const { launchBrowser } = require("./browser-launcher.cjs");
 const project = path.resolve(__dirname, "..");
 const indexPath = path.join(project, "index.html");
 const outputDirectory = path.join(project, "qa-output");
-const managerPath = path.join(
+const preferredManagerPath = path.join(
   project,
   "发布",
   "仅限管理员",
-  "费曼物理-激活码管理器-v1.0.0.exe"
+  "费曼物理-激活码管理器-命令行-v1.2.0.exe"
 );
+const hasNewManager = fs.existsSync(preferredManagerPath);
+const managerPath = hasNewManager
+  ? preferredManagerPath
+  : path.join(project, "发布", "仅限管理员", "费曼物理-激活码管理器-v1.0.0.exe");
 
 async function storedQuestions(page) {
   return page.evaluate(async () => {
@@ -64,20 +68,26 @@ async function storedQuestions(page) {
 
   try {
     await page.goto(pathToFileURL(indexPath).href, { waitUntil: "domcontentloaded" });
-    await page.locator("#activationDeviceCode").waitFor();
-    await page.waitForFunction(() => {
-      return document.getElementById("activationDeviceCode")?.textContent?.startsWith("PSDEV-");
-    });
+    await page.locator("#activationCode").waitFor();
+    assert.equal(await page.locator("#activationDeviceCode").count(), 0,
+      "new activation flow must not ask students for a device request code");
     await page.screenshot({
       path: path.join(outputDirectory, "physics-studio-activation-gate.png"),
       type: "png"
     });
 
-    const deviceRequest = (await page.locator("#activationDeviceCode").textContent()).trim();
+    const deviceRequest = await page.evaluate(async () => {
+      const secret = localStorage.getItem("physics-studio-browser-device-secret-v1");
+      const bytes = new TextEncoder().encode(`physics-studio|browser-debug|${secret}`);
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+      return `PSDEV-${Array.from(digest, (item) => item.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+    });
     const codePath = path.join(outputDirectory, "activation-ui-test-code.txt");
     const issued = childProcess.spawnSync(
       managerPath,
-      ["--issue", deviceRequest, codePath],
+      hasNewManager
+        ? ["--issue", deviceRequest, codePath, "0", "qa-activation-ui"]
+        : ["--issue", deviceRequest, codePath],
       { encoding: "utf8", windowsHide: true, timeout: 15000 }
     );
     if (issued.error) throw issued.error;
@@ -88,7 +98,18 @@ async function storedQuestions(page) {
     await page.locator("#activationCode").fill(code);
     await page.locator("#activationSubmit").click();
     await page.waitForFunction(() => !document.body.classList.contains("activation-pending"));
-    await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "1900");
+    try {
+      await page.waitForFunction(() => document.getElementById("totalCount")?.textContent === "1900", null,
+        { timeout: 10000 });
+    } catch (error) {
+      const stored = await storedQuestions(page);
+      const collections = Object.fromEntries([...new Set(stored.map((item) => item.collection))]
+        .map((name) => [name, stored.filter((item) => item.collection === name).length]));
+      const incomplete = stored.filter((item) => item.collection !== 'changsha-six-year-real-exam-index'
+        && (!String(item.content || '').trim() || !String(item.answer || '').trim()
+          || !String(item.solution || '').trim() || item.fullTextIncluded === false || item.resourceOnly));
+      throw new Error(`question bank did not load: count=${await page.locator("#totalCount").textContent()} records=${stored.length} collections=${JSON.stringify(collections)} incomplete=${JSON.stringify(incomplete.map((item) => item.id))} errors=${JSON.stringify(errors)}`, { cause: error });
+    }
 
     const questions = await storedQuestions(page);
     const complete = questions.filter((question) => {

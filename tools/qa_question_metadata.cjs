@@ -12,7 +12,7 @@ const context = {
 context.window = context;
 context.globalThis = context;
 vm.createContext(context);
-for (const file of ["curriculum-taxonomy.js", "solution-format.js", "curriculum-bank.js", "mock-exam-bank.js", "original-practice-bank.js", "targeted-practice-bank.js"]) {
+for (const file of ["curriculum-taxonomy.js", "curriculum-mapping.js", "solution-format.js", "answer-schema.js", "curriculum-bank.js", "mock-exam-bank.js", "original-practice-bank.js", "targeted-practice-bank.js"]) {
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", file), "utf8"), context, { filename: file });
 }
 vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8"), context, { filename: "app.js" });

@@ -5,6 +5,7 @@ const vm = require('node:vm');
 const context = { console, Date, Math, JSON, Object, Array, Map, Set, RegExp, String, Number, Boolean };
 context.window = context;
 vm.createContext(context);
+vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'answer-schema.js'), 'utf8'), context);
 vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'learning-engine.js'), 'utf8'), context);
 const engine = context.PHYSICS_LEARNING_ENGINE;
 let cases = 0;

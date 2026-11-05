@@ -2852,6 +2852,11 @@
     const planProgress = needsStudents ? engine.learningPlanProgress(lab.state, activePlan) : null;
     const preview = needsStudents && lab.planPreview?.profileId === profile?.id ? lab.planPreview : null;
     const questionMap = needsStudents ? new Map(questions.map((question) => [question.id, question])) : new Map();
+    const previewQuestion = preview?.items?.length ? questionMap.get(preview.items[0].questionId) : null;
+    const teachingAdvice = previewQuestion && engine.recommendTeachingIntervention
+      ? engine.recommendTeachingIntervention(lab.state, profile?.id,
+        previewQuestion.knowledgePointId || engine.topicKeyForQuestion(previewQuestion), questions)
+      : null;
     const gradeTopics = needsStudents ? [...new Set(eligible
       .filter((question) => question.grade === profile?.grade)
       .map((question) => question.topic)
@@ -2898,6 +2903,7 @@
             <section class="targeted-plan-preview">
               <header><div><span>预览 · ${escapeHtml(preview.evidenceCoverage?.levelLabel || preview.evidenceLevel || "证据不足")}</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount}题 / 约${preview.expectedMinutes}分钟</strong></header>
               <p>${escapeHtml(preview.evidenceReason)}</p>
+              ${teachingAdvice ? `<p>教学建议：${escapeHtml(teachingAdvice.suggestedActivity)} ${escapeHtml(teachingAdvice.suggestedAssignment)} ${escapeHtml(teachingAdvice.conclusion)} 依据：${teachingAdvice.evidenceIds.length ? escapeHtml(teachingAdvice.evidenceIds.join("、")) : "暂无原始作答"}；教师确认后方可下发。</p>` : ""}
               <ol>${preview.items.map((item) => {
                 const question = questionMap.get(item.questionId);
                 return `<li><i>${escapeHtml(item.purpose)}</i><div><strong>${escapeHtml(question?.title || item.questionId)}</strong><span>${escapeHtml(item.reason)}</span></div></li>`;

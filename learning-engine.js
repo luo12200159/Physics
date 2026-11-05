@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "4.1.0",
+    appVersion: "4.2.0",
     stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.1.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.0");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
@@ -2214,8 +2214,19 @@
   const GRADING_VERSION = "physics-structured-v1";
 
   function gradeFinalAnswer(question, response) {
+    const unsupported = question.autoScorable === false
+      || (Boolean(question.answerSchema)
+        && !window.PHYSICS_ANSWER_SCHEMA?.validSchema?.(question.answerSchema));
+    const structuredResponse = !unsupported && question.answerSchema
+      ? (window.PHYSICS_ANSWER_SCHEMA?.normalizeResponse(question, response) ?? response)
+      : response;
     return {
-      ...(question.answerSchema ? gradeStructuredAnswer(question, response) : gradeFinalAnswerLegacy(question, response)),
+      ...(unsupported ? {
+        status: "review-required", score: null,
+        summary: "该题需要人工复核，暂不自动评分。",
+        issues: [{ type: "manual", location: "完整作答", reason: "没有经验证的自动评分规范", next: "请教师依据评分要点复核。" }],
+        expected: question.answer || ""
+      } : question.answerSchema ? gradeStructuredAnswer(question, structuredResponse) : gradeFinalAnswerLegacy(question, response)),
       gradingVersion: GRADING_VERSION,
       questionContentVersion: question.questionContentVersion || question.contentVersion || null,
       answerSchemaVersion: question.answerSchema?.answerSchemaVersion || null,
@@ -6337,6 +6348,54 @@
     };
   }
 
+  function recommendTeachingIntervention(state, profileId, knowledgePointId, questions = []) {
+    const target = String(knowledgePointId || "").trim();
+    const questionById = new Map((Array.isArray(questions) ? questions : [])
+      .map((question) => [String(question.id || ""), question]));
+    const attempts = (Array.isArray(state?.attempts) ? state.attempts : []).filter((attempt) => {
+      if (String(attempt.profileId || "") !== String(profileId || "")) return false;
+      const question = questionById.get(String(attempt.questionId || ""));
+      return String(attempt.knowledgePointId || attempt.topicKey
+        || question?.knowledgePointId || topicKeyForLabel(attempt.topic || question?.topic || "")) === target;
+    });
+    const scored = attempts.filter(isValidAccuracyEvidence);
+    const pendingReviewCount = attempts.filter(isPendingManualReview).length;
+    const errorCounts = new Map();
+    for (const attempt of scored) {
+      if (attempt.grading?.status === "correct") continue;
+      const code = errorTypeCode(attempt.errorType || "");
+      if (code && code !== "other") errorCounts.set(code, (errorCounts.get(code) || 0) + 1);
+    }
+    const primaryErrorCode = [...errorCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+    const adviceByCode = {
+      concept: ["先用反例澄清物理概念，再做独立判断题。", "选择同知识点概念辨析题，要求写出理由。"],
+      modeling: ["先明确研究对象、过程和理想化条件。", "选择需要建立对象和过程模型的短题。"],
+      "law-condition": ["先比较规律的适用条件，再选公式。", "安排一题可用规律与一题不可用的反例辨析。"],
+      "graph-representation": ["对照图像的斜率、面积和物理量单位。", "选择图像与文字相互转换的题。"],
+      "formula-algebra": ["先写物理关系，再做代数变形与代入。", "安排一题分步列式练习。"],
+      "unit-direction": ["标明正方向并逐项核对单位。", "安排含方向和单位检验的短题。"],
+      "experiment-data": ["先检查控制变量、读数和误差来源。", "选择需要解释实验数据的题，保留人工复核。"],
+      "reading-calculation": ["先圈出已知量、未知量和设问，再复核运算。", "安排一道同条件短题并要求写出检验步骤。"]
+    };
+    const sequence = window.PhysicsStudioTeachingSequences?.get(target) || null;
+    const advice = adviceByCode[primaryErrorCode] || [
+      "先补充不同模型的独立作答，再确定主要错因。",
+      "选一题基础诊断与一题条件变式，不按错题数量直接定性。"
+    ];
+    const evidenceIds = attempts.map((attempt) => String(attempt.id || "")).filter(Boolean);
+    return {
+      knowledgePointId: target, profileId: String(profileId || ""), evidenceIds,
+      scoredCount: scored.length, pendingReviewCount,
+      correctCount: scored.filter((attempt) => attempt.grading?.status === "correct").length,
+      evidenceQuality: scored.length < 3 ? "insufficient" : "descriptive",
+      primaryErrorCode, suggestedActivity: advice[0], suggestedAssignment: advice[1],
+      sequenceTitle: sequence?.title || "", requiresTeacherConfirmation: true,
+      conclusion: scored.length < 3
+        ? "当前已评分样本不足 3 条，不能形成稳定能力结论；建议补充独立作答。"
+        : "以上仅为基于现有作答的描述性教学建议，需教师核对原始证据。"
+    };
+  }
+
   window.PHYSICS_LEARNING_ENGINE = Object.freeze({
     version: APP_VERSION,
     gradingVersion: GRADING_VERSION,
@@ -6417,6 +6476,7 @@
     summarizeLearning,
     modelingRadar,
     recommendations,
+    recommendTeachingIntervention,
     addExamRecord,
     importExamRecords,
     importLearningProfile,

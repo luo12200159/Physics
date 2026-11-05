@@ -13,7 +13,7 @@ const context = vm.createContext({
   }
 });
 context.window = context;
-for (const file of ["storage-repository.js", "targeted-practice-bank.js", "learning-engine.js"]) {
+for (const file of ["storage-repository.js", "curriculum-taxonomy.js", "curriculum-mapping.js", "answer-schema.js", "targeted-practice-bank.js", "learning-engine.js"]) {
   vm.runInContext(fs.readFileSync(path.join(project, file), "utf8"), context, { filename: file });
 }
 const engine = context.PHYSICS_LEARNING_ENGINE;

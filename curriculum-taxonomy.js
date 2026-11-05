@@ -3,6 +3,9 @@
 
   const normalizeBook = (book) => ({
     ...book,
+    curriculumVersion: book.curriculumVersion
+      || (/^pep-g/.test(book.id) ? "pep-junior-legacy-catalog"
+        : /^pep-h/.test(book.id) ? "pep-high-course-structure" : "review-topic-structure"),
     chapters: book.chapters.map(([chapterNo, title, sections], chapterIndex) => ({
       id: `${book.id}-c${String(chapterIndex + 1).padStart(2, "0")}`,
       chapterNo,
@@ -161,6 +164,22 @@
         ["第三章", "热力学定律", ["功、热和内能改变", "热力学第一定律", "能量守恒定律", "热力学第二定律"]],
         ["第四章", "原子结构和波粒二象性", ["黑体辐射和能量子", "光电效应", "原子的核式结构", "氢原子光谱和玻尔模型", "粒子的波动性"]],
         ["第五章", "原子核", ["原子核的组成", "放射性衰变", "核力与结合能", "核裂变和核聚变", "基本粒子"]]
+      ]
+    },
+    {
+      id: "pep-h-2019-required-1",
+      stage: "高中",
+      grades: ["高一", "高三"],
+      title: "必修第一册（2019年审定版）",
+      publisher: "人民教育出版社",
+      curriculumVersion: "pep-high-2019",
+      structureBasis: "2019年审定人教版必修第一册目录；仅用于精确章节映射，不复制教材正文。",
+      officialUrl: "https://r3-ndr.ykt.cbern.com.cn/edu_product/esp/assets_document/708256b6-6f06-4d14-89c7-4df16dfe3b81.pkg/pdf.pdf",
+      chapters: [
+        ["第一章", "运动的描述", ["质点　参考系", "时间　位移", "位置变化快慢的描述——速度", "速度变化快慢的描述——加速度"]],
+        ["第二章", "匀变速直线运动的研究", ["实验：探究小车速度随时间变化的规律", "匀变速直线运动的速度与时间的关系", "匀变速直线运动的位移与时间的关系", "自由落体运动"]],
+        ["第三章", "相互作用——力", ["重力与弹力", "摩擦力", "牛顿第三定律", "力的合成和分解", "共点力的平衡"]],
+        ["第四章", "运动和力的关系", ["牛顿第一定律", "实验：探究加速度与力、质量的关系", "牛顿第二定律", "力学单位制", "牛顿运动定律的应用", "超重和失重"]]
       ]
     },
     {

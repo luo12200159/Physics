@@ -822,6 +822,38 @@ async function upgradeBundledSamples() {
   return updates.length;
 }
 
+function mergeBundledScoringMetadata(storedQuestion, bundledQuestion) {
+  if (storedQuestion.userEdited) {
+    return {
+      ...storedQuestion,
+      answerSchema: null,
+      autoScorable: false,
+      answerSchemaReviewStatus: "教师编辑过题目或答案，需重新核验评分规范"
+    };
+  }
+  return {
+    ...storedQuestion,
+    answerSchema: bundledQuestion.answerSchema
+      ? JSON.parse(JSON.stringify(bundledQuestion.answerSchema)) : null,
+    autoScorable: bundledQuestion.autoScorable === true,
+    answerSchemaReviewStatus: bundledQuestion.answerSchemaReviewStatus || "待人工复核",
+    curriculumVersion: bundledQuestion.curriculumVersion || "",
+    curriculumSectionIds: [...(bundledQuestion.curriculumSectionIds || [])],
+    curriculumReviewStatus: bundledQuestion.curriculumReviewStatus || "unresolved",
+    mappingReason: bundledQuestion.mappingReason || ""
+  };
+}
+
+function hasChangedScoringMetadata(before, after) {
+  return before.autoScorable !== after.autoScorable
+    || before.answerSchemaReviewStatus !== after.answerSchemaReviewStatus
+    || JSON.stringify(before.answerSchema || null) !== JSON.stringify(after.answerSchema || null)
+    || before.curriculumVersion !== after.curriculumVersion
+    || before.curriculumReviewStatus !== after.curriculumReviewStatus
+    || before.mappingReason !== after.mappingReason
+    || JSON.stringify(before.curriculumSectionIds || []) !== JSON.stringify(after.curriculumSectionIds || []);
+}
+
 async function installCurriculumBank() {
   const bank = window.PHYSICS_CURRICULUM_BANK;
   if (!bank || !Array.isArray(bank.questions) || bank.questions.length === 0) return 0;
@@ -856,7 +888,7 @@ async function installCurriculumBank() {
     const safeBundledSolution = repairedIds.has(bundledQuestion.id)
       || storedQuestion.solution === bundledQuestion.solution;
     const merged = {
-      ...storedQuestion,
+      ...mergeBundledScoringMetadata(storedQuestion, bundledQuestion),
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
       ...(safeBundledSolution ? {
         solution: bundledQuestion.solution,
@@ -870,6 +902,7 @@ async function installCurriculumBank() {
       updatedAt: storedQuestion.userEdited ? storedQuestion.updatedAt : bundledQuestion.updatedAt
     };
     const needsUpgrade = repairedIds.has(bundledQuestion.id)
+      || hasChangedScoringMetadata(storedQuestion, merged)
       || fieldsToApply.some((field) => storedQuestion[field] !== bundledQuestion[field])
       || (safeBundledSolution && (storedQuestion.contentVersion !== bundledQuestion.contentVersion
         || storedQuestion.contentHash !== bundledQuestion.contentHash))
@@ -926,7 +959,7 @@ async function installMockExamBank() {
     const safeBundledSolution = repairedIds.has(bundledQuestion.id)
       || stored.solution === bundledQuestion.solution;
     const merged = {
-      ...stored,
+      ...mergeBundledScoringMetadata(stored, bundledQuestion),
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
       ...(safeBundledSolution ? {
         solution: bundledQuestion.solution,
@@ -950,6 +983,7 @@ async function installMockExamBank() {
       updatedAt: stored.updatedAt || bundledQuestion.updatedAt
     };
     const needsUpdate = repairedIds.has(bundledQuestion.id)
+      || hasChangedScoringMetadata(stored, merged)
       || fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
       || (safeBundledSolution && (stored.contentVersion !== bundledQuestion.contentVersion
         || stored.contentHash !== bundledQuestion.contentHash))
@@ -1000,7 +1034,7 @@ async function installOriginalPracticeBank() {
 
     const fieldsToApply = stored.userEdited ? identityFields : managedFields;
     const merged = {
-      ...stored,
+      ...mergeBundledScoringMetadata(stored, bundledQuestion),
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
       examPoints: stored.userEdited
         ? [...(Array.isArray(stored.examPoints) ? stored.examPoints : bundledQuestion.examPoints)]
@@ -1018,7 +1052,8 @@ async function installOriginalPracticeBank() {
       createdAt: stored.createdAt || bundledQuestion.createdAt,
       updatedAt: stored.updatedAt || bundledQuestion.updatedAt
     };
-    const needsUpdate = fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
+    const needsUpdate = hasChangedScoringMetadata(stored, merged)
+      || fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
       || (!stored.userEdited
         && JSON.stringify(stored.examPoints || []) !== JSON.stringify(bundledQuestion.examPoints));
     if (needsUpdate) updates.push(merged);
@@ -1070,7 +1105,7 @@ async function installTargetedPracticeBank() {
 
     const fieldsToApply = stored.userEdited ? identityFields : managedFields;
     const merged = {
-      ...stored,
+      ...mergeBundledScoringMetadata(stored, bundledQuestion),
       ...Object.fromEntries(fieldsToApply.map((field) => [field, bundledQuestion[field]])),
       examPoints: stored.userEdited
         ? [...(Array.isArray(stored.examPoints) ? stored.examPoints : bundledQuestion.examPoints)]
@@ -1094,7 +1129,8 @@ async function installTargetedPracticeBank() {
       createdAt: stored.createdAt || bundledQuestion.createdAt,
       updatedAt: stored.updatedAt || bundledQuestion.updatedAt
     };
-    const needsUpdate = fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
+    const needsUpdate = hasChangedScoringMetadata(stored, merged)
+      || fieldsToApply.some((field) => stored[field] !== bundledQuestion[field])
       || (!stored.userEdited
         && (JSON.stringify(stored.examPoints || []) !== JSON.stringify(bundledQuestion.examPoints)
           || JSON.stringify(stored.misconceptionTags || []) !== JSON.stringify(bundledQuestion.misconceptionTags)

@@ -771,14 +771,18 @@ x = vt = 2.0 × 0.50 m = 1.0 m。`,
     ...buildQuestions(seniorDefinitions, exams[1])
   ];
 
-  const normalizedQuestions = questions.map((question) => ({
+  const normalizedQuestions = questions.map((question) => {
+    const normalized = {
     ...question,
+    ...window.PHYSICS_ANSWER_SCHEMA.forQuestion(question),
     knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
     cognitiveDemand: question.cognitiveDemand || (/实验|探究/.test(String(question.questionType || "")) ? "实验推理" : /计算/.test(String(question.questionType || "")) ? "定量计算" : "基础概念"),
     representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : /图|图像/.test(String(question.content || "")) ? "图像" : "文字/公式"),
     independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
     assessmentPurpose: question.assessmentPurpose || "exam"
-  }));
+    };
+    return { ...normalized, ...window.PHYSICS_CURRICULUM_MAPPING.resolve(normalized) };
+  });
 
   window.PHYSICS_MOCK_EXAM_BANK = Object.freeze({
     version: 2,

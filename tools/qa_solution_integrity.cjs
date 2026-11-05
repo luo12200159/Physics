@@ -7,6 +7,9 @@ const root = path.resolve(__dirname, "..");
 const context = vm.createContext({ window: {} });
 const shared = path.join(root, "solution-format.js");
 if (fs.existsSync(shared)) vm.runInContext(fs.readFileSync(shared, "utf8"), context);
+vm.runInContext(fs.readFileSync(path.join(root, "curriculum-taxonomy.js"), "utf8"), context);
+vm.runInContext(fs.readFileSync(path.join(root, "curriculum-mapping.js"), "utf8"), context);
+vm.runInContext(fs.readFileSync(path.join(root, "answer-schema.js"), "utf8"), context);
 for (const file of ["curriculum-bank.js", "mock-exam-bank.js"]) {
   const source = fs.readFileSync(path.join(root, file), "utf8");
   vm.runInContext(source.replace(/\}\)\(\);\s*$/, `window.testFormatter = formatDetailedSolution; })();`), context);

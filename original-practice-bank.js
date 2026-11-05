@@ -30,13 +30,17 @@
   function inferQuestionType(templateResult = {}) {
     const explicit = String(templateResult.questionType || "").trim();
     if (explicit) return explicit;
-    const text = [templateResult.title, templateResult.content, templateResult.solution].join(" ");
-    if (/选择题|单选|多选|[A-D][.、)]/.test(text)) return "单项选择题";
-    if (/填空|（\s*）|\(\s*\)|____|横线上/.test(text)) return "填空题";
-    if (/实验|探究|器材|测量|装置|数据处理/.test(text)) return "实验题";
-    if (/判断/.test(text)) return "判断题";
-    if (/简答|说明|解释|为什么|论述/.test(text)) return "简答题";
-    if (/求|计算|速度|质量|电流|电压|功率|能量|周期|距离|时间/.test(text)) return "计算题";
+    // Classify from the actual prompt, not the worked solution: symbols such
+    // as A (ampere) and explanatory words otherwise masquerade as options.
+    const text = String(templateResult.content || "");
+    if (/多项选择|多选/u.test(text) && /(?:^|\n)\s*A[.、．)]/u.test(text)) return "多项选择题";
+    if ((/选择题|单选/u.test(text) || /(?:^|\n)\s*A[.、．)]/u.test(text))
+      && /(?:^|\n)\s*B[.、．)]/u.test(text)) return "单项选择题";
+    if (/填空|（\s*）|\(\s*\)|____|横线上/u.test(text)) return "填空题";
+    if (/实验|探究|器材|装置|数据处理/u.test(text) && !/求|计算/u.test(text)) return "实验题";
+    if (/求|计算|估算|尚未衰变的质量是多少/u.test(text)) return "计算题";
+    if (/判断|是否正确/u.test(text)) return "判断题";
+    if (/简答|说明|解释|为什么|论述/u.test(text)) return "简答题";
     return "未标注";
   }
 
@@ -1797,14 +1801,18 @@
     throw new Error(`原创1500题库生成失败：${invalid[0] || "数量不符"}`);
   }
 
-  const normalizedQuestions = questions.map((question) => ({
+  const normalizedQuestions = questions.map((question) => {
+    const normalized = {
     ...question,
+    ...window.PHYSICS_ANSWER_SCHEMA.forQuestion(question),
     knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
     cognitiveDemand: question.cognitiveDemand || (question.difficulty === "挑战" ? "迁移" : question.difficulty === "进阶" ? "应用" : "基础"),
     representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : /图|图像/.test(String(question.content || "")) ? "图像" : "文字/公式"),
     independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
     assessmentPurpose: question.assessmentPurpose || "practice"
-  }));
+    };
+    return { ...normalized, ...window.PHYSICS_CURRICULUM_MAPPING.resolve(normalized) };
+  });
 
   window.PHYSICS_ORIGINAL_PRACTICE_BANK = Object.freeze({
     version: VERSION,

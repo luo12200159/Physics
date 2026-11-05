@@ -21,6 +21,9 @@ function load(file) {
 }
 
 load("solution-format.js");
+load("curriculum-taxonomy.js");
+load("curriculum-mapping.js");
+load("answer-schema.js");
 load("curriculum-bank.js");
 load("mock-exam-bank.js");
 load("original-practice-bank.js");
@@ -95,7 +98,7 @@ const activationSource = fs.readFileSync(path.join(project, "activation.js"), "u
 const indexSource = fs.readFileSync(path.join(project, "index.html"), "utf8");
 assert.match(publicKeySource, /ECDSA_P256_SHA256/);
 assert.match(publicKeySource, /fingerprintSha256: "[A-F0-9]{64}"/);
-assert.doesNotMatch(publicKeySource, /PRIVATE KEY|privateKey|d\s*:/);
+assert.doesNotMatch(publicKeySource, /PRIVATE KEY|privateKey|(?:^|[,{]\s*)(?:"d"|d)\s*:/m);
 assert.match(activationSource, /crypto\.subtle\.verify/);
 assert.match(activationSource, /该激活码绑定的是另一台设备/);
 assert.match(indexSource, /class="activation-pending"/);

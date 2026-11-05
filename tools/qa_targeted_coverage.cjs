@@ -6,6 +6,11 @@ const vm = require("node:vm");
 const project = path.resolve(__dirname, "..");
 const context = vm.createContext({ console, Object, Array, Map, Set, String, Number, Boolean, RegExp, Math });
 context.window = context;
+vm.runInContext(fs.readFileSync(path.join(project, "curriculum-taxonomy.js"), "utf8"), context);
+vm.runInContext(fs.readFileSync(path.join(project, "curriculum-mapping.js"), "utf8"), context);
+vm.runInContext(fs.readFileSync(path.join(project, "answer-schema.js"), "utf8"), context, {
+  filename: "answer-schema.js"
+});
 vm.runInContext(fs.readFileSync(path.join(project, "targeted-practice-bank.js"), "utf8"), context, {
   filename: "targeted-practice-bank.js"
 });

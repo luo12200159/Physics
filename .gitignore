@@ -19,4 +19,6 @@ android/signing/keystore.properties
 
 *.user
 *.tmp
+*.pfx
+*.p12
 Thumbs.db

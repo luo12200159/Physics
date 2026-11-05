@@ -20,23 +20,30 @@ if (-not $compiler) {
 }
 
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-$outputPath = Join-Path $OutputDirectory '费曼物理-激活码管理器-v1.0.0.exe'
+$outputPath = Join-Path $OutputDirectory '费曼物理-激活码管理器-v1.2.0.exe'
+$consolePath = Join-Path $OutputDirectory '费曼物理-激活码管理器-命令行-v1.2.0.exe'
 $iconPath = Join-Path $projectDirectory 'assets\app.ico'
-
-& $compiler @(
+$commonArguments = @(
     '/nologo',
-    '/target:winexe',
     '/optimize+',
     '/codepage:65001',
     '/reference:System.Windows.Forms.dll',
     '/reference:System.Drawing.dll',
     '/reference:System.Security.dll',
+    '/reference:System.Core.dll',
+    '/reference:System.Runtime.Serialization.dll',
+    "/win32manifest:$(Join-Path $projectDirectory 'app.manifest')",
     "/win32icon:$iconPath",
-    "/out:$outputPath",
     (Join-Path $projectDirectory 'ActivationManager.cs')
 )
+
+& $compiler @('/target:winexe', "/out:$outputPath") @commonArguments
 if ($LASTEXITCODE -ne 0) {
-    throw "激活码管理器编译失败，退出码：$LASTEXITCODE"
+    throw "激活码管理器 GUI 编译失败，退出码：$LASTEXITCODE"
+}
+& $compiler @('/target:exe', "/out:$consolePath") @commonArguments
+if ($LASTEXITCODE -ne 0) {
+    throw "激活码管理器 CLI 编译失败，退出码：$LASTEXITCODE"
 }
 
 if ($CertificateThumbprint) {
@@ -51,31 +58,34 @@ if ($CertificateThumbprint) {
     }
     if (-not $SignToolPath) { throw '未找到 Windows SDK SignTool，无法完成代码签名。' }
     $thumbprint = ($CertificateThumbprint -replace '\s', '').ToUpperInvariant()
-    & $SignToolPath sign /sha1 $thumbprint /s My /fd SHA256 /td SHA256 /tr $TimestampUrl /d '费曼物理激活码管理器' $outputPath
-    if ($LASTEXITCODE -ne 0) { throw '激活码管理器代码签名失败。' }
+    foreach ($path in @($outputPath, $consolePath)) {
+        & $SignToolPath sign /sha1 $thumbprint /s My /fd SHA256 /td SHA256 /tr $TimestampUrl /d '费曼物理激活码管理器' $path
+        if ($LASTEXITCODE -ne 0) { throw "激活码管理器代码签名失败：$path" }
+    }
 } elseif ($RequireSignature) {
     throw '已要求代码签名，但未提供 CertificateThumbprint。'
 }
 
-$hash = Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath
 $hashPath = Join-Path $OutputDirectory 'SHA256-激活码管理器.txt'
+[string[]]$hashLines = @($outputPath, $consolePath) | ForEach-Object {
+    $hash = Get-FileHash -Algorithm SHA256 -LiteralPath $_
+    "$($hash.Hash) *$([IO.Path]::GetFileName($_))"
+}
 [IO.File]::WriteAllText(
     $hashPath,
-    "$($hash.Hash) *$([IO.Path]::GetFileName($outputPath))`n",
+    ($hashLines -join "`n") + "`n",
     (New-Object Text.UTF8Encoding($false))
 )
 
 $guide = @'
-费曼物理激活码管理器（仅限软件所有者）
+费曼物理激活码管理器 v1.2.0（仅限软件所有者）
 
-1. 该程序不会把私钥打包到 EXE 中。可信私钥保存在初始化它的 Windows 当前用户 CNG 密钥库，并设置为不可导出。
-2. 首次发布时仅执行一次：
-   费曼物理-激活码管理器-v1.0.0.exe --initialize activation-public-key.js
-   然后必须用该 activation-public-key.js 重新构建 Windows 与 Android 用户端。
-3. 日常签发时打开管理器，把用户端显示的设备申请码逐行粘贴，批量生成激活码。
-4. 每个激活码只对签发时指定的设备摘要有效，不能用于第二台设备。
-5. 不要向用户分发本目录、管理器或所有者 Windows 账户。请离线备份操作系统和账户恢复材料；不可导出私钥遗失后，只能发布使用新公钥的新版本。
-6. 纯离线签名不能在卸载、清除数据后全局记录“已经兑换”。它实现的是一机一码、跨设备不可复用；如需服务器端一次性核销，必须部署联网激活服务。
+1. GUI 登录密码只用于阻止误打开；签发权由独立加密 PFX 及其强密码保护。EXE 不含签发私钥。
+2. 初次建立便携签发体系时执行 --initialize-portable <activation-public-key.js> <backup.pfx>。归档创建时弹出强密码设置框。PFX 须在仓库外保存，与密码分开备份。
+3. 必须用新导出的 activation-public-key.js 重新构建 Windows、Android 学生端和教师端，且三端公钥指纹一致，才可向用户发便携码。
+4. 换电脑时复制 GUI/CLI EXE 与独立 PFX；GUI 登录后选择 PFX，签发时输入归档密码。无需恢复原 Windows 用户的命名 CNG 密钥。CLI 支持 --issue-portable 和 --issue-portable-batch。
+5. 旧版设备绑定 PSA1 仍可由原设备验证。便携 PSA1 不带设备字段，可跨设备使用，纯离线无法限制复制次数或实现全局一次性核销。
+6. 签发台账位于当前用户的 LocalAppData\\PhysicsStudio\\ActivationManager\\audit-log.jsonl。PFX、归档密码、管理员 EXE 与台账不得上传公开仓库。
 '@
 [IO.File]::WriteAllText(
     (Join-Path $OutputDirectory '管理员使用说明.txt'),
@@ -84,4 +94,5 @@ $guide = @'
 )
 
 Get-Item -LiteralPath $outputPath | Select-Object FullName, Length, LastWriteTime
+Get-Item -LiteralPath $consolePath | Select-Object FullName, Length, LastWriteTime
 Get-Item -LiteralPath $hashPath | Select-Object FullName, Length, LastWriteTime

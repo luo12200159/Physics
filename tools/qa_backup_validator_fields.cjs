@@ -37,6 +37,20 @@ const question = {
   retestGroupId: "retest-1",
   diagnosticEligible: true,
   autoScorable: false,
+  answerSchema: {
+    answerSchemaVersion: 1,
+    parts: [{
+      id: "part-1", kind: "quantity", quantity: "speed",
+      expected: { value: 2, unit: "m/s" },
+      tolerance: { absolute: 0, relative: 0.015 },
+      unitRequired: true
+    }]
+  },
+  answerSchemaReviewStatus: "规则校验通过，待教师抽检",
+  curriculumVersion: "pep-2024",
+  curriculumSectionIds: ["pep-high-1-2"],
+  curriculumReviewStatus: "catalog-exact",
+  mappingReason: "教材目录精确对应",
   visualSpec: {
     type: "force",
     model: "newton",
@@ -52,16 +66,20 @@ const payload = {
 };
 
 const accepted = context.window.PhysicsStudioBackupValidator.validate(payload);
+question.answerSchema.parts[0].expected.value = "not-a-number";
+const invalidSchema = context.window.PhysicsStudioBackupValidator.validate(payload);
+question.answerSchema.parts[0].expected.value = 2;
 question.variantRole = "invalid";
 const rejected = context.window.PhysicsStudioBackupValidator.validate(payload);
 
-if (!accepted.valid || rejected.valid) {
-  console.error(JSON.stringify({ accepted, rejected }, null, 2));
+if (!accepted.valid || invalidSchema.valid || rejected.valid) {
+  console.error(JSON.stringify({ accepted, invalidSchema, rejected }, null, 2));
   process.exit(1);
 }
 
 console.log(JSON.stringify({
   newFieldsAccepted: accepted.valid,
+  invalidAnswerSchemaRejected: !invalidSchema.valid,
   invalidVariantRejected: !rejected.valid,
   rejectionKeyword: rejected.errors[0] && rejected.errors[0].keyword
 }, null, 2));

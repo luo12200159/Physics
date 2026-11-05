@@ -2052,6 +2052,8 @@
   function renderAdvice(data) {
     const priorities = data.analysis?.priorities || ["先完成一组独立作答，形成可分析证据"];
     const plan = sevenDayPlan(data);
+    const course = window.PhysicsStudioTeachingSequences?.forQuestion(data.next?.question);
+    const courseStep = (id, fallback) => course?.stages.find((stage) => stage.id === id)?.instruction || fallback;
     return `
       ${renderModuleHeader("ACTIONABLE ADVICE", "学习建议", "建议只依据本机作答、提示、错因、建模、复习与考试记录；证据不足时明确说明。", "profile")}
       ${renderAssignedPlan(data)}
@@ -2085,10 +2087,10 @@
       <section class="learning-method-advice">
         <header><span>学习方法</span><h2>每道题怎样学得更扎实</h2></header>
         <div>
-          <article><strong>先主动提取</strong><p>在看解析前至少写出研究对象、已知未知量和一个可能适用的规律。</p></article>
-          <article><strong>控制提示依赖</strong><p>只在卡住时逐级打开提示；完成后记录最终使用的提示等级。</p></article>
-          <article><strong>解释与迁移</strong><p>用一句话解释关键规律，再做一道表面不同、结构相同的变式。</p></article>
-          <article><strong>按时复习</strong><p>到期后重新独立作答，不能用“记得答案”替代物理推理。</p></article>
+          <article><strong>先诊断再讲解</strong><p>${escapeHtml(courseStep("diagnose", "在看解析前写出研究对象、已知未知量和可能适用的规律。"))} ${escapeHtml(courseStep("explain", "完成后说明公式适用条件。"))}</p></article>
+          <article><strong>先预测再验证</strong><p>${escapeHtml(courseStep("predict", "先写下预测及依据。"))} ${escapeHtml(courseStep("simulate", "再使用现有模型验证；仿真不等于真实实验。"))}</p></article>
+          <article><strong>练习与迁移</strong><p>${escapeHtml(courseStep("practice", "独立完成基础题并记录提示等级。"))} ${escapeHtml(courseStep("near-transfer", "尝试条件变化。"))} ${escapeHtml(courseStep("far-transfer", "再做跨情境题；未审核题不计正式掌握。"))}</p></article>
+          <article><strong>延迟复测</strong><p>${escapeHtml(courseStep("delayed-retest", "跨日期用不同题目重新独立作答，不能用记住原题答案代替推理。"))}</p></article>
         </div>
       </section>
       <section class="advice-boundary">

@@ -21,7 +21,14 @@ const backup = context.PhysicsStudioBackup;
 const state = { version: 10, profiles: [{ id: "student-default" }], attempts: [{ id: "a1", profileId: "student-default" }] };
 const questions = [{
   id: "q1", title: "测试题", content: "小车运动", answer: "2 m/s",
-  solution: "由速度公式计算", attachments: [], videoBlob: null
+  solution: "由速度公式计算", attachments: [], videoBlob: null,
+  curriculumVersion: "pep-2024", curriculumSectionIds: ["pep-high-1-2"],
+  curriculumReviewStatus: "catalog-exact", mappingReason: "教材目录精确对应",
+  answerSchema: {
+    answerSchemaVersion: 1,
+    parts: [{ id: "part-1", kind: "quantity", quantity: "speed", expected: { value: 2, unit: "m/s" }, tolerance: { absolute: 0, relative: 0.015 }, unitRequired: true }]
+  },
+  answerSchemaReviewStatus: "规则校验通过，待教师抽检"
 }];
 let restoreCount = 0;
 const app = {
@@ -29,6 +36,9 @@ const app = {
   restoreCompleteBackup: async (nextQuestions, nextState) => {
     restoreCount += 1;
     assert.equal(nextQuestions[0].id, "q1");
+    assert.equal(JSON.stringify(nextQuestions[0].answerSchema), JSON.stringify(questions[0].answerSchema));
+    assert.equal(JSON.stringify(nextQuestions[0].curriculumSectionIds), JSON.stringify(questions[0].curriculumSectionIds));
+    assert.equal(nextQuestions[0].curriculumReviewStatus, questions[0].curriculumReviewStatus);
     assert.equal(nextState.attempts[0].id, "a1");
     return { restored: nextQuestions.length };
   }

@@ -43,6 +43,9 @@ function load(file) {
 }
 
 load("solution-format.js");
+load("curriculum-taxonomy.js");
+load("curriculum-mapping.js");
+load("answer-schema.js");
 load("curriculum-bank.js");
 load("mock-exam-bank.js");
 load("original-practice-bank.js");

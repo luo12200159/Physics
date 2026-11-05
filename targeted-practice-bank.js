@@ -1432,14 +1432,18 @@
     throw new Error(`专项迁移题库生成失败：${invalid[0] || `题量${questions.length}`}`);
   }
 
-  const normalizedQuestions = questions.map((question) => ({
+  const normalizedQuestions = questions.map((question) => {
+    const normalized = {
     ...question,
+    ...window.PHYSICS_ANSWER_SCHEMA.forQuestion(question),
     knowledgePointId: question.knowledgePointId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/中的?/g, "").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
     cognitiveDemand: question.cognitiveDemand || (question.variantRole === "counter" ? "反例辨析" : question.variantRole === "far" ? "远迁移" : "专项应用"),
     representationType: question.representationType || (/实验|探究/.test(String(question.questionType || "")) ? "实验" : "文字/公式"),
     independenceGroupId: question.independenceGroupId || question.modelFamilyId || question.modelDefinitionId,
     assessmentPurpose: question.assessmentPurpose || "targeted"
-  }));
+    };
+    return { ...normalized, ...window.PHYSICS_CURRICULUM_MAPPING.resolve(normalized) };
+  });
 
   const TARGET_GRADES = Object.freeze([
     Object.freeze({ grade: "八年级", gradeCode: "g8" }),

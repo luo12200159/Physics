@@ -571,17 +571,21 @@
     };
   });
 
-  const normalizedQuestions = questions.map((question) => ({
+  const normalizedQuestions = questions.map((question) => {
+    const normalized = {
     ...question,
+    ...window.PHYSICS_ANSWER_SCHEMA.forQuestion(question),
     knowledgePointId: question.knowledgePointId || question.curriculumSectionId || `kp:${String(question.topic || question.id).normalize("NFKC").replace(/[^\p{L}\p{N}]+/gu, "-")}`,
     cognitiveDemand: question.cognitiveDemand || "基础",
     representationType: question.representationType || "文字/公式",
     independenceGroupId: question.independenceGroupId || question.modelDefinitionId,
     assessmentPurpose: question.assessmentPurpose || "diagnostic"
-  }));
+    };
+    return { ...normalized, ...window.PHYSICS_CURRICULUM_MAPPING.resolve(normalized) };
+  });
 
   window.PHYSICS_CURRICULUM_BANK = Object.freeze({
-    version: 3,
+    version: 4,
     contentVersion: window.PHYSICS_SOLUTION_FORMAT.CONTENT_VERSION,
     verifiedAt: "2026-07-29",
     officialBasisUrl: OFFICIAL_BASIS_URL,
