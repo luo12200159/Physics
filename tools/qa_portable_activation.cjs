@@ -6,6 +6,22 @@ const { webcrypto, createHash } = require('node:crypto');
 
 (async () => {
   const root = path.resolve(__dirname, '..');
+  const publishedContext = { window: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(root, 'activation-public-key.js'), 'utf8'), publishedContext);
+  const published = publishedContext.window.PHYSICS_STUDIO_ACTIVATION_PUBLIC_KEY;
+  const publishedKeys = [published, ...(published.historicalPublicKeys || [])];
+  assert.equal(published.fingerprintSha256,
+    '25E1061D80D59277D19299221BA8ED82CD5E3EBA8BA740B736AB070FA5F8D4C6',
+    'existing device-bound public key must remain the primary trust anchor');
+  assert.ok(publishedKeys.length >= 2, 'a separate portable issuer public key must be published');
+  for (const key of publishedKeys) {
+    const encoded = Buffer.from(key.spkiBase64, 'base64');
+    assert.equal(createHash('sha256').update(encoded).digest('hex').toUpperCase(), key.fingerprintSha256);
+    assert.equal(key.kid, key.fingerprintSha256.slice(0, 16));
+    await webcrypto.subtle.importKey('spki', encoded, { name: 'ECDSA', namedCurve: 'P-256' },
+      false, ['verify']);
+  }
+  assert.equal(new Set(publishedKeys.map((key) => key.fingerprintSha256)).size, publishedKeys.length);
   const keys = await webcrypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true,
     ['sign', 'verify']);
   const spki = Buffer.from(await webcrypto.subtle.exportKey('spki', keys.publicKey));
