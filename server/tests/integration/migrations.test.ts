@@ -29,7 +29,20 @@ describe("database migrations", () => {
           and column_name = 'revision'`,
     );
     expect(membershipRevision.rows[0]?.name).toBe("revision");
+    const submissionVersion = await pool.query<{ name: string | null }>(
+      `select column_name as name from information_schema.columns
+        where table_schema = 'public' and table_name = 'submissions'
+          and column_name = 'submission_version'`,
+    );
+    expect(submissionVersion.rows[0]?.name).toBe("submission_version");
     await runMigrations("down", 1);
+    const removedSubmissionVersion = await pool.query<{ name: string | null }>(
+      `select column_name as name from information_schema.columns
+        where table_schema = 'public' and table_name = 'submissions'
+          and column_name = 'submission_version'`,
+    );
+    expect(removedSubmissionVersion.rows[0]?.name).toBeUndefined();
+    await runMigrations("down", 4);
     const removedMembershipRevision = await pool.query<{ name: string | null }>(
       `select column_name as name from information_schema.columns
         where table_schema = 'public' and table_name = 'memberships'

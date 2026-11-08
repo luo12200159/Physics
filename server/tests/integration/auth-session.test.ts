@@ -17,7 +17,9 @@ describe("authentication session lifecycle", () => {
   const database = startPostgres();
   const cache = startRedis();
   const previousDatabaseUrl = process.env.DATABASE_URL;
-  const baseNow = new Date("2026-07-31T12:00:00.000Z");
+  // Keep token and database expiry on the same real-time side of the clock.
+  // A fixed past date makes PostgreSQL now() reject otherwise valid sessions.
+  const baseNow = new Date(Math.floor(Date.now() / 1000) * 1000);
   const password = "Correct Horse Battery Staple 2026";
   const replacementPassword = "Longer replacement password 2026!";
 

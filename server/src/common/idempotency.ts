@@ -127,7 +127,11 @@ export async function executeIdempotently<T extends JsonValue>(
   work: () => Promise<IdempotentResponse<T>>,
 ): Promise<IdempotentResult<T>> {
   const expiresAt = validateExecutionInput(input);
-  const lockIdentity = `${input.actorId}\u0000${input.routeKey}\u0000${input.key}`;
+  // PostgreSQL text parameters cannot contain NUL. Hash the unambiguous
+  // length-delimited identity before passing it to hashtextextended.
+  const lockIdentity = createHash("sha256")
+    .update(`${input.actorId.length}:${input.actorId}${input.routeKey.length}:${input.routeKey}${input.key.length}:${input.key}`)
+    .digest("hex");
   await tx.query("select pg_advisory_xact_lock(hashtextextended($1, 0))", [lockIdentity]);
   await tx.query(
     `delete from api_idempotency

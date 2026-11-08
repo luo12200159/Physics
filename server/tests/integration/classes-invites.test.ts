@@ -68,6 +68,7 @@ describe("teacher class and student invite lifecycle", () => {
       pool,
       auditIpKey: "integration-class-audit-key-at-least-32-characters",
       ownerCapabilitySecret: "integration-owner-capability-key-at-least-32-characters",
+      allowAnonymousClassCreation: true,
       syncOutboxRetentionDays: 180,
     });
     ownerCapabilities = new OwnerCapabilityService({
