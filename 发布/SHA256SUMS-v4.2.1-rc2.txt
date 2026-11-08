@@ -1,0 +1,4 @@
+8322bf39ad4ad9e2037b41fdb0fe749d353e541ee0231154f10cae266e54fc53  Feynman-Physics-Student-Android-v4.2.1.apk
+7ac75209b9cc0d90de1b2ac3f28894ecdb153fd01240c3082828bc1dcc94ab76  Feynman-Physics-Teacher-Android-v4.2.1.apk
+c10e54276bc365c061f549a5bc90bb2cd54dccf95aa7e9114fd074f8894f9ef7  Feynman-Physics-Windows-Installer-v4.2.1.exe
+78262d640315f79cdd42ab240fb7378017a90dae39acdcfa69e138daddd4cb2f  Feynman-Physics-Windows-v4.2.1.zip

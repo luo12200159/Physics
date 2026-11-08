@@ -7,10 +7,10 @@
 
 ## 下载 v4.2.1 开发候选
 
-- [Android 学生端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc1/Feynman-Physics-Student-Android-v4.2.1.apk)
-- [Android 教师端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc1/Feynman-Physics-Teacher-Android-v4.2.1.apk)
-- [Windows 安装程序](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc1/Feynman-Physics-Windows-Installer-v4.2.1.exe) · [Windows 发布 ZIP](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc1/Feynman-Physics-Windows-v4.2.1.zip)
-- [SHA-256 校验清单](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc1/SHA256SUMS-v4.2.1-rc1.txt)；源码保留在本仓库，不另附源码包。
+- [Android 学生端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc2/Feynman-Physics-Student-Android-v4.2.1.apk)
+- [Android 教师端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc2/Feynman-Physics-Teacher-Android-v4.2.1.apk)
+- [Windows 安装程序](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc2/Feynman-Physics-Windows-Installer-v4.2.1.exe) · [Windows 发布 ZIP](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc2/Feynman-Physics-Windows-v4.2.1.zip)
+- [SHA-256 校验清单](https://github.com/luo12200159/Physics/releases/download/v4.2.1-rc2/SHA256SUMS-v4.2.1-rc2.txt)；源码保留在本仓库，不另附源码包。
 
 这些文件均为开发候选，不是正式签名发行版。仓库外的便携签发归档已经初始化，三端已重建为同时信任旧主公钥与新便携公钥。本机使用原归档密码实际签发的测试码已通过两个不同设备标识的验签；异机恢复、真机升级安装仍待人工验证。完整限制、SHA-256 与测试边界见 [内容核验记录](docs/content-stage-test-results.md)。
 
@@ -18,7 +18,7 @@
 
 - 修复 Windows 手工安装脚本漏装的教学、班级配置和权限脚本；启动器现在检查对应文件。Windows 本机课堂服务支持与 Android v2 一致的真实题干快照、逐题作答、提交版本链、教师复核与退回订正；旧班级数据以兼容方式读取。
 - 扩展可明确判读的电磁学、动量等单位及科学计数法、分数、方向评分；解释、作图、实验论证仍需人工复核。新增 Android 分块文件导出，降低 JavaScript 与原生桥单次 Base64 分配峰值。IndexedDB 保存不再逐表 `getAll()`，但状态快照仍需全量复制。
-- 题目 ID、state v10 与旧 `.pslab` 未改；教材小节未核验映射、学生 AI 联网授权、原生离线公式 OCR、数字签名与容器化数据库集成测试**未因此变为已完成**。详见 [整改与验证边界](docs/audit-remediation-release-4.2.1.md)。
+- 题目 ID、state v10 与旧 `.pslab` 未改；教材小节未核验映射、学生 AI 联网授权、原生离线公式 OCR 与正式数字签名**未因此变为已完成**。服务端容器集成测试已在 GitHub Actions 运行通过，本机仍无容器环境。详见 [整改与验证边界](docs/audit-remediation-release-4.2.1.md)。
 
 ## 4.2.0 内容核验与便携授权候选
 
