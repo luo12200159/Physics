@@ -1,9 +1,20 @@
 # 费曼物理
-当前师生双端开发候选版本：v4.2.1。Android 学生端与教师端仍为独立安装包，共享题库、学习引擎、备份格式、变式生成器和班级协议。
+当前师生双端开发候选版本：v4.2.2。Android 学生端与教师端仍为独立安装包，共享题库、学习引擎、备份格式、变式生成器和班级协议。
 
 一个可安装、离线优先且支持真实联机班级的初高中物理学习应用。v4.0.0 不改变既有题目 ID，并以向后兼容的 state v10 承接 v3.4.1 的 state v9 与 `.pslab` 数据。旧单体 Android 包 `com.physicsstudio.studyroom` 不会被新包覆盖；旧数据须先从旧应用导出 `.pslab`，再按身份导入学生端或教师端。班级创建、加入、成员列表、作业下发、邀请码轮换和删除均以班级服务确认结果为准，不用本机假状态冒充联网成功。
 
 项目继续保留 Windows 版；Android 两个独立包分别使用 `com.physicsstudio.student` 和 `com.physicsstudio.teacher`，可安装在同一设备上。
+
+## 下载 v4.2.2 教学内容开发候选
+
+- [Android 学生端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Student-Android-v4.2.2.apk)
+- [Android 教师端 APK](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Teacher-Android-v4.2.2.apk)
+- [Windows 安装程序](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-Installer-v4.2.2.exe) · [Windows 发布 ZIP](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/Feynman-Physics-Windows-v4.2.2.zip)
+- [SHA-256 校验清单](https://github.com/luo12200159/Physics/releases/download/v4.2.2-rc1/SHA256SUMS-v4.2.2-rc1.txt)；源码保留在仓库，不另上传源码包附件。
+
+本候选修正 100 道高二静电场与电路题的教材册及内部目录映射，为平均速度、欧姆定律和牛顿第二定律补充课程样板、前概念诊断与教师建议；四道高一多表征草稿仍待教师审核。1,897 道内置完整题中 766 道与仓库目录匹配，1,131 道教材节待核验；这不是教材实本或教学效果认证。详见[内容核验记录](docs/content-quality-v4.2.2.md)和[教师待审核清单](docs/content-teacher-review.md)。
+
+三个安装包均为开发候选：Windows 安装器没有正式代码签名，Android 使用本机开发签名。跨设备班级、真机升级和教师逐题审核仍须实际验收。旧 `v4.2.0-rc1` 保留不变。
 
 ## 下载 v4.2.1 开发候选
 

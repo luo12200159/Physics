@@ -859,11 +859,12 @@ async function installCurriculumBank() {
   if (!bank || !Array.isArray(bank.questions) || bank.questions.length === 0) return 0;
 
   const markerKey = `physics-curriculum-bank-v${bank.version}`;
+  const installVersion = `${bank.contentVersion}|${bank.metadataVersion || "legacy"}`;
   const existing = await getAllQuestions();
   const repairPlan = window.PHYSICS_SOLUTION_FORMAT?.repairBundledSolutions(existing);
   const repairedIds = new Set(repairPlan?.repairedIds || []);
   try {
-    if (appStorage().getItem(markerKey) === bank.contentVersion && repairedIds.size === 0) return 0;
+    if (appStorage().getItem(markerKey) === installVersion && repairedIds.size === 0) return 0;
   } catch (error) {
     console.warn("无法读取题库安装标记，将通过试题编号安全去重。", error);
   }
@@ -913,7 +914,7 @@ async function installCurriculumBank() {
   await putQuestions([...missing.map((question) => ({ ...question })), ...updates]);
 
   try {
-    appStorage().setItem(markerKey, bank.contentVersion);
+    appStorage().setItem(markerKey, installVersion);
   } catch (error) {
     console.warn("无法保存题库安装标记，但试题已按编号去重写入。", error);
   }

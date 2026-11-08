@@ -42,13 +42,22 @@
     "h1-original-template-004": "pep-h-2019-required-1-c04-s03",
     "h1-original-template-005": "pep-h-2019-required-1-c04-s06",
     "h1-original-template-006": "pep-h-2019-required-1-c04-s06",
-    "h1-original-template-014": "pep-h-2019-required-1-c03-s01"
+    "h1-original-template-014": "pep-h-2019-required-1-c03-s01",
+    "h2-original-template-000": "pep-h-required-3-c01-s02",
+    "h2-original-template-001": "pep-h-required-3-c01-s03",
+    "h2-original-template-002": "pep-h-required-3-c02-s02",
+    "h2-original-template-003": "pep-h-required-3-c02-s04",
+    "h2-original-template-004": "pep-h-required-3-c04-s02"
   });
 
   function unresolved(reason, knowledgePointId) {
     return { curriculumVersion: "", curriculumSectionIds: [],
       curriculumReviewStatus: "unresolved", mappingReason: reason,
       ...(knowledgePointId ? { knowledgePointId } : {}) };
+  }
+
+  function bookModule(title) {
+    return String(title || "").match(/(?:选择性必修|必修)第[一二三]册/u)?.[0] || "";
   }
 
   function resolve(question = {}) {
@@ -76,6 +85,11 @@
       const entry = byId.get(modelSectionId);
       if (!entry || !entry.book.grades.includes(grade)) {
         return unresolved("模板教材节映射与年级不符，待教师核验", knowledgePointId);
+      }
+      const claimedModule = bookModule(question.curriculumBook);
+      const mappedModule = bookModule(entry.book.title);
+      if (claimedModule && mappedModule && claimedModule !== mappedModule) {
+        return unresolved("题目声明教材册与已核对模型所属教材册冲突，待教师核验", knowledgePointId);
       }
       return { curriculumVersion: entry.book.curriculumVersion,
         curriculumSectionIds: [modelSectionId], curriculumReviewStatus: "catalog-exact",

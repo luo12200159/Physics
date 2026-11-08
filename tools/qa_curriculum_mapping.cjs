@@ -28,6 +28,9 @@ assert.deepEqual(Array.from(mapping.resolve({ grade: '高一',
 assert.equal(mapping.resolve({ grade: '高二', modelDefinitionId: 'h2-original-template-000',
   topic: '静电场', curriculumBook: '选择性必修第三册',
   curriculumChapter: '静电场' }).curriculumReviewStatus, 'unresolved');
+assert.deepEqual(Array.from(mapping.resolve({ grade: '高二', modelDefinitionId: 'h2-original-template-000',
+  topic: '静电场', curriculumBook: '必修第三册',
+  curriculumChapter: '静电场及其应用' }).curriculumSectionIds), ['pep-h-required-3-c01-s02']);
 
 const high1 = mapping.resolve({ grade: '高一', topic: '匀变速直线运动',
   curriculumSectionIds: ['pep-h-2019-required-1-c02-s02'] });

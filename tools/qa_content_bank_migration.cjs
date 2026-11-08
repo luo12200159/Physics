@@ -71,7 +71,32 @@ const edited = mergeScoring({ ...legacyStored, userEdited: true, answer: '教师
 assert.equal(edited.answer, '教师自定义答案');
 assert.equal(edited.autoScorable, false, 'edited answers require renewed review');
 assert.equal(edited.answerSchema, null);
-console.log(JSON.stringify({ status: 'passed', questions: questions.length,
-  autoScorable: questions.filter((question) => question.autoScorable === true).length,
-  manualReview: questions.filter((question) => question.autoScorable === false).length,
-  generatedFamilies: families.size }));
+async function verifyMetadataUpgrade() {
+  const bank = context.PHYSICS_CURRICULUM_BANK;
+  const markerKey = `physics-curriculum-bank-v${bank.version}`;
+  const marker = new Map([[markerKey, bank.contentVersion]]);
+  const target = bank.questions.find((question) => question.grade === '高二');
+  assert.ok(target, 'the migration fixture needs a published high-two question');
+  context.PhysicsStudioStorageRepository = {
+    getItem: (key) => marker.get(key) || null,
+    setItem: (key, value) => marker.set(key, value)
+  };
+  context.__migrationStored = bank.questions.map((question) => question.id === target.id
+    ? { ...question, curriculumBasis: '旧版课程依据', notes: '保留原有学习笔记' }
+    : { ...question });
+  context.__migrationWrites = [];
+  vm.runInContext('getAllQuestions = async () => __migrationStored; putQuestions = async (items) => { __migrationWrites.push(...items); };', context);
+  await vm.runInContext('installCurriculumBank()', context);
+  const updated = context.__migrationWrites.find((question) => question.id === target.id);
+  assert.ok(updated, 'an existing v4.2.1 marker must not suppress the metadata migration');
+  assert.equal(updated.curriculumBasis, target.curriculumBasis);
+  assert.equal(updated.notes, '保留原有学习笔记');
+  assert.notEqual(marker.get(markerKey), bank.contentVersion, 'new migration marker must differ from the old one');
+}
+
+verifyMetadataUpgrade().then(() => {
+  console.log(JSON.stringify({ status: 'passed', questions: questions.length,
+    autoScorable: questions.filter((question) => question.autoScorable === true).length,
+    manualReview: questions.filter((question) => question.autoScorable === false).length,
+    generatedFamilies: families.size }));
+}).catch((error) => { console.error(error); process.exitCode = 1; });

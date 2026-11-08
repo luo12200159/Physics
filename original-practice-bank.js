@@ -59,7 +59,7 @@
       "【分步解析】",
       templateResult.solution,
       `【最终结论】${templateResult.answer}`,
-      "【结果复核】把结论代回题意，核对所求物理量、公式适用条件、单位（若有）、方向（若有）和数量级。"
+      ...(templateResult.resultCheck ? [`【结果复核】${templateResult.resultCheck}`] : [])
     ].join("\n");
     const result = {
       id: `cs-original-1500-${gradeCode}-${String(sequence + 1).padStart(4, "0")}`,
@@ -69,7 +69,7 @@
       topic: templateResult.topic,
       difficulty: templateResult.difficulty || choose(["基础", "进阶", "挑战"], sequence),
       questionType: inferQuestionType(templateResult),
-      content: templateResult.content,
+      content: `${templateResult.content} 题中数据按理想模型给定值处理；非整除结果可按三位有效数字合理修约。`,
       solution: detailedSolution,
       answer: templateResult.answer,
       examPoints,
@@ -1147,8 +1147,9 @@
         ),
         answer: `库仑力大小为 ${number(force)} N；同号相斥、异号相吸。`,
         examPoints: ["库仑定律", "电荷单位换算"],
-        book: "高中物理选择性必修第三册",
-        chapter: "静电场"
+        book: "必修第三册",
+        chapter: "静电场及其应用",
+        resultCheck: "库仑力大小不得为负，μC 已换算为 C；同号相斥、异号相吸。"
       };
     },
     (r) => {
@@ -1167,8 +1168,9 @@
         ),
         answer: `场强为 ${number(field)} N/C，方向与正试探电荷受力方向相同。`,
         examPoints: ["电场强度定义", "方向判断"],
-        book: "高中物理选择性必修第三册",
-        chapter: "静电场"
+        book: "必修第三册",
+        chapter: "静电场及其应用",
+        resultCheck: "场强单位为 N/C；正试探电荷的受力方向与该点电场方向相同。"
       };
     },
     (r) => {
@@ -1187,8 +1189,9 @@
         ),
         answer: `电场力做功 ${number(work, 8)} J，电势能减少 ${number(work, 8)} J。`,
         examPoints: ["电场力做功", "电势能变化"],
-        book: "高中物理选择性必修第三册",
-        chapter: "静电场"
+        book: "必修第三册",
+        chapter: "静电场中的能量",
+        resultCheck: "按 U_AB 与正电荷约定，电场力做正功时电势能减少同样的数值。"
       };
     },
     (r) => {
@@ -1208,8 +1211,9 @@
         ),
         answer: `电荷量 ${number(charge, 8)} C，电场能 ${number(energy, 8)} J。`,
         examPoints: ["电容定义", "电容器能量"],
-        book: "高中物理选择性必修第三册",
-        chapter: "静电场"
+        book: "必修第三册",
+        chapter: "静电场中的能量",
+        resultCheck: "电荷量单位为 C，理想电容器储能非负；两结果不应互换单位。"
       };
     },
     (r) => {
@@ -1230,8 +1234,9 @@
         ),
         answer: `电流 ${number(current)} A，路端电压 ${number(terminal)} V。`,
         examPoints: ["闭合电路欧姆定律", "路端电压"],
-        book: "高中物理选择性必修第三册",
-        chapter: "恒定电流"
+        book: "必修第三册",
+        chapter: "电能　能量守恒定律",
+        resultCheck: "由 U=E-Ir 复核路端电压；存在正内阻时路端电压应小于电动势。"
       };
     },
     (r) => {

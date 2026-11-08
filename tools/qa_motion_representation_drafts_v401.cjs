@@ -23,6 +23,11 @@ for (const item of drafts) {
   assert.equal(item.diagnosticEligible, false);
   assert.equal(item.autoScorable, false);
   assert.ok(item.content && item.answer && item.solution && item.questionType);
+  assert.ok(Array.isArray(item.rubric?.criteria) && item.rubric.criteria.length >= 3,
+    `${item.id}: an open or multi-part teaching draft needs a teacher scoring rubric`);
+  assert.ok(item.rubric.criteria.every((criterion) => criterion.label && criterion.maxScore > 0));
+  assert.equal(item.rubric.criteria.reduce((sum, criterion) => sum + criterion.maxScore, 0),
+    item.rubric.maxScore);
   assert.match(item.solution, /条件|加速度恒定/);
   const model = context.PHYSICS_VISUALS.kinematics(item.visualSpec.params);
   assert.ok(Math.abs(model.position - item.expectedModelOutput.position) < 1e-9);

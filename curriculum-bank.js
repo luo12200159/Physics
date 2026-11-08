@@ -23,7 +23,7 @@
     高二: {
       stage: "高中",
       source: "长沙人教版高中物理同步·原创练习",
-      basis: "依据长沙市2025年春季用书目录中的人教版高中物理选择性必修第三册，并结合高中物理必修、选择性必修课程知识序列编写。"
+      basis: "依据高中物理必修第三册及选择性必修各册的相应知识模块编写；具体教材节以逐题已核验映射为准，不能仅凭年级推断教材册。"
     },
     高三: {
       stage: "高中",
@@ -587,6 +587,7 @@
   window.PHYSICS_CURRICULUM_BANK = Object.freeze({
     version: 4,
     contentVersion: window.PHYSICS_SOLUTION_FORMAT.CONTENT_VERSION,
+    metadataVersion: "4.2.2-curriculum-metadata",
     verifiedAt: "2026-07-29",
     officialBasisUrl: OFFICIAL_BASIS_URL,
     title: "长沙八年级至高三物理原创同步题库",

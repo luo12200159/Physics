@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "4.2.1",
+    appVersion: "4.2.2",
     stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.1");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.2");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
@@ -562,6 +562,28 @@
       }
     },
     {
+      code: "series-voltage-always-equal",
+      category: "电路与电学",
+      grades: ["九年级"],
+      title: "认为串联各电阻两端电压必相等",
+      statement: "只要两个电阻串联，它们两端电压就相同。",
+      correction: "稳恒串联电路中电流相同；欧姆电阻两端电压与各自阻值成正比，阻值不同时分压通常不同。",
+      topics: ["串联电路", "电压", "欧姆定律"],
+      diagnostic: {
+        id: "diag-series-voltage",
+        prompt: "3 Ω 与 6 Ω 定值电阻串联接在 9 V 理想电源两端，忽略导线电阻。两电阻两端电压分别是多少？",
+        choices: [["A", "都为 4.5 V"], ["B", "3 V 和 6 V"],
+          ["C", "6 V 和 3 V"], ["D", "都为 9 V"]],
+        correctAnswer: "B",
+        reasons: [["R1", "串联电流相同，U=IR，阻值大的电阻分压更大"],
+          ["R2", "串联电路中每只电阻两端电压必等于总电压的一半"],
+          ["R3", "电压在两个电阻中被等量消耗"],
+          ["R4", "串联与并联的电压规律相同"]],
+        correctReason: "R1",
+        explanation: "总阻值 9 Ω，电流 9 V/9 Ω=1 A；3 Ω 两端为 3 V，6 Ω 两端为 6 V。"
+      }
+    },
+    {
       code: "parallel-current-equals-voltage",
       category: "电路与电学",
       grades: ["九年级"],
@@ -615,6 +637,28 @@
         ],
         correctReason: "R2",
         explanation: "对于温度不变的欧姆导体，电压加倍时电流也加倍，U/I 的比值即电阻近似保持不变。"
+      }
+    },
+    {
+      code: "variable-control-ohm",
+      category: "电路与电学",
+      grades: ["九年级"],
+      title: "探究电流与电阻关系时未控制被测电阻两端电压",
+      statement: "只要电源总电压不变，换电阻后即可比较电流与电阻的关系。",
+      correction: "换电阻后应调节滑动变阻器，使被测定值电阻两端电压保持近似不变，再比较电流。",
+      topics: ["电流与电压和电阻的关系", "欧姆定律", "控制变量"],
+      diagnostic: {
+        id: "diag-ohm-variable-control",
+        prompt: "探究电流 I 与定值电阻 R 的关系，更换 R 后应优先保持哪个物理量不变？",
+        choices: [["A", "电源总电压"], ["B", "被测电阻两端电压"],
+          ["C", "电路总电阻"], ["D", "滑动变阻器接入电路的阻值"]],
+        correctAnswer: "B",
+        reasons: [["R1", "单独比较 I 与 R 时，要控制被测电阻两端电压"],
+          ["R2", "电源电压不变就保证每个元件两端电压不变"],
+          ["R3", "调节滑动变阻器会让实验失效"],
+          ["R4", "电流由电源总电压单独决定"]],
+        correctReason: "R1",
+        explanation: "更换 R 后通过调节滑动变阻器使该定值电阻两端电压保持不变；再记录对应电流，才能比较 I 与 R 的关系。"
       }
     },
     {
@@ -6403,6 +6447,14 @@
       "reading-calculation": ["先圈出已知量、未知量和设问，再复核运算。", "安排一道同条件短题并要求写出检验步骤。"]
     };
     const sequence = window.PhysicsStudioTeachingSequences?.get(target) || null;
+    const misconceptionEvidence = [...scored].reverse().find((attempt) =>
+      attempt.grading?.status !== "correct"
+        && window.PhysicsStudioTeachingSequences?.remediationFor?.(attempt.misconceptionCode));
+    const remediationSource = misconceptionEvidence
+      ? window.PhysicsStudioTeachingSequences.remediationFor(misconceptionEvidence.misconceptionCode) : null;
+    const remediation = remediationSource
+      ? { code: misconceptionEvidence.misconceptionCode, ...remediationSource,
+        sourceEvidenceId: misconceptionEvidence.id } : null;
     const advice = adviceByCode[primaryErrorCode] || [
       "先补充不同模型的独立作答，再确定主要错因。",
       "选一题基础诊断与一题条件变式，不按错题数量直接定性。"
@@ -6413,7 +6465,11 @@
       scoredCount: scored.length, pendingReviewCount,
       correctCount: scored.filter((attempt) => attempt.grading?.status === "correct").length,
       evidenceQuality: scored.length < 3 ? "insufficient" : "descriptive",
-      primaryErrorCode, suggestedActivity: advice[0], suggestedAssignment: advice[1],
+      primaryErrorCode,
+      suggestedActivity: remediation
+        ? `${remediation.prediction} ${remediation.counterevidence} ${remediation.explanation}` : advice[0],
+      suggestedAssignment: remediation?.independentRetest || advice[1],
+      remediation, teacherGuide: sequence?.courseUnit?.teacherGuide || null,
       sequenceTitle: sequence?.title || "", requiresTeacherConfirmation: true,
       conclusion: scored.length < 3
         ? "当前已评分样本不足 3 条，不能形成稳定能力结论；建议补充独立作答。"

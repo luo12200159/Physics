@@ -2903,7 +2903,7 @@
             <section class="targeted-plan-preview">
               <header><div><span>预览 · ${escapeHtml(preview.evidenceCoverage?.levelLabel || preview.evidenceLevel || "证据不足")}</span><h4>${escapeHtml(preview.title)}</h4></div><strong>${preview.questionCount}题 / 约${preview.expectedMinutes}分钟</strong></header>
               <p>${escapeHtml(preview.evidenceReason)}</p>
-              ${teachingAdvice ? `<p>教学建议：${escapeHtml(teachingAdvice.suggestedActivity)} ${escapeHtml(teachingAdvice.suggestedAssignment)} ${escapeHtml(teachingAdvice.conclusion)} 依据：${teachingAdvice.evidenceIds.length ? escapeHtml(teachingAdvice.evidenceIds.join("、")) : "暂无原始作答"}；教师确认后方可下发。</p>` : ""}
+              ${teachingAdvice ? `<p>教学建议：${escapeHtml(teachingAdvice.suggestedActivity)} ${escapeHtml(teachingAdvice.suggestedAssignment)} ${escapeHtml(teachingAdvice.conclusion)} 依据：${teachingAdvice.evidenceIds.length ? escapeHtml(teachingAdvice.evidenceIds.join("、")) : "暂无原始作答"}；教师确认后方可下发。${teachingAdvice.teacherGuide ? ` 教师追问：${escapeHtml(teachingAdvice.teacherGuide.followupQuestion)} 评分关注：${escapeHtml(teachingAdvice.teacherGuide.scoringFocus)}` : ""}</p>` : ""}
               <ol>${preview.items.map((item) => {
                 const question = questionMap.get(item.questionId);
                 return `<li><i>${escapeHtml(item.purpose)}</i><div><strong>${escapeHtml(question?.title || item.questionId)}</strong><span>${escapeHtml(item.reason)}</span></div></li>`;
@@ -3116,7 +3116,7 @@
         <section class="lab-card motion-draft-pilot">
           <div class="lab-card-head"><div><span>原创教学草稿</span><h3>高一·匀变速直线运动多表征试点</h3></div><strong>${motionDrafts.length} 道待审核</strong></div>
           <p>概念、图像、实验数据与跨情境题共用现有匀变速动态模型。草稿不在正式题库，也不生成学生掌握证据；教师可逐题核对后加入审核队列。</p>
-          <div class="motion-draft-list">${motionDrafts.map((draft) => `<article><span>${escapeHtml(draft.representationType)} · ${escapeHtml(draft.questionType)}</span><h4>${escapeHtml(draft.title)}</h4><p>${escapeHtml(draft.content)}</p><details><summary>核对答案、单位与条件</summary><strong>${escapeHtml(draft.answer)}</strong><p>${escapeHtml(draft.solution)}</p></details><button data-lab-action="preview-motion-draft" data-draft-id="${escapeHtml(draft.id)}" type="button">用动态模型验证</button></article>`).join("")}</div>
+          <div class="motion-draft-list">${motionDrafts.map((draft) => `<article><span>${escapeHtml(draft.representationType)} · ${escapeHtml(draft.questionType)}</span><h4>${escapeHtml(draft.title)}</h4><p>${escapeHtml(draft.content)}</p><details><summary>核对答案、单位、条件与评分依据</summary><strong>${escapeHtml(draft.answer)}</strong><p>${escapeHtml(draft.solution)}</p>${draft.rubric?.criteria ? `<p>教师评分量规（共 ${draft.rubric.maxScore} 分，须人工复核）：${escapeHtml(draft.rubric.criteria.map((criterion) => `${criterion.label}（${criterion.maxScore} 分）`).join("；"))}</p>` : ""}</details><button data-lab-action="preview-motion-draft" data-draft-id="${escapeHtml(draft.id)}" type="button">用动态模型验证</button></article>`).join("")}</div>
           <button class="lab-secondary-button" data-lab-action="import-motion-drafts" type="button"${motionDrafts.length ? "" : " disabled"}>加入教师审核队列</button>
         </section>
         <section class="lab-card">
