@@ -12,17 +12,68 @@
     "mm": "length", "km": "length", "kg": "mass", "min": "time",
     "Hz": "frequency", "Pa": "pressure", "N": "force", "J": "energy",
     "W": "power", "V": "voltage", "A": "current", "Ω": "resistance",
+    "C": "charge", "T": "magneticField", "Wb": "magneticFlux",
+    "F": "capacitance", "μF": "capacitance", "pF": "capacitance",
+    "eV": "energy", "N/C": "electricField", "V/m": "electricField",
+    "N·s": "momentum", "kg·m/s": "momentum", "rad/s": "angularSpeed",
+    "K": "temperatureKelvin", "℃": "temperatureCelsius", "mol": "amount",
     "m": "length", "s": "time", "h": "time", "g": "mass"
   });
   const unitPattern = Object.keys(units).sort((a, b) => b.length - a.length)
     .map((unit) => unit.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  const quantityPattern = new RegExp(`([-+]?(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:e[-+]?\\d+)?)\\s*(${unitPattern})(?![A-Za-z/²³])`, "g");
-  const directions = Object.freeze({ "向右": "right", "向左": "left", "向上": "up", "向下": "down" });
+  const numberPattern = "[-+]?(?:√\\d+(?:\\.\\d+)?(?:/\\d+(?:\\.\\d+)?)?|(?:\\d+(?:\\.\\d+)?|\\.\\d+)/(?:\\d+(?:\\.\\d+)?|\\.\\d+)|(?:\\d+(?:\\.\\d+)?|\\.\\d+)(?:e[-+]?\\d+)?)";
+  const quantityPattern = new RegExp(`(${numberPattern})\\s*(${unitPattern})(?![A-Za-z/²³])`, "g");
+  const directions = Object.freeze({
+    "垂直纸面向里": "into-page", "垂直纸面向外": "out-of-page",
+    "沿斜面向上": "incline-up", "沿斜面向下": "incline-down",
+    "水平向右": "right", "水平向左": "left", "竖直向上": "up", "竖直向下": "down",
+    "逆时针": "counterclockwise", "顺时针": "clockwise",
+    "向右": "right", "向左": "left", "向上": "up", "向下": "down"
+  });
+  const directionNames = Object.keys(directions).sort((a, b) => b.length - a.length);
+
+  function normalizeScientificText(text) {
+    const superscript = { "⁻": "-", "⁺": "+", "⁰": "0", "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5", "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9" };
+    return String(text || "")
+      .replace(/10([⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]+)/g, (_, exponent) => `10^${[...exponent].map((char) => superscript[char]).join("")}`)
+      .replace(/[−－]/g, "-")
+      .replace(/[×·]\s*10\s*\^?\s*([+-]?\d+)/g, "e$1")
+      .replace(/(^|[^\d])10\s*\^\s*([+-]?\d+)/g, "$11e$2");
+  }
+
+  function parseNumber(text) {
+    const sign = text.startsWith("-") ? -1 : 1;
+    const unsigned = text.replace(/^[-+]/, "");
+    if (unsigned.startsWith("√")) {
+      const [radicand, denominator = "1"] = unsigned.slice(1).split("/");
+      return sign * Math.sqrt(Number(radicand)) / Number(denominator);
+    }
+    if (unsigned.includes("/")) {
+      const [numerator, denominator] = unsigned.split("/");
+      return sign * Number(numerator) / Number(denominator);
+    }
+    return Number(text);
+  }
+
+  function directionMatches(text) {
+    const matches = [];
+    for (const label of directionNames) {
+      let start = text.indexOf(label);
+      while (start !== -1) {
+        const end = start + label.length;
+        if (!matches.some((item) => start < item.end && end > item.start)) {
+          matches.push({ label, value: directions[label], start, end });
+        }
+        start = text.indexOf(label, start + 1);
+      }
+    }
+    return matches.sort((a, b) => a.start - b.start);
+  }
 
   function quantities(text) {
-    const value = String(text || "").replace(/[−－]/g, "-");
+    const value = normalizeScientificText(text);
     const found = [...value.matchAll(quantityPattern)].map((match) => ({
-      value: Number(match[1]), unit: match[2], start: match.index, end: match.index + match[0].length
+      value: parseNumber(match[1]), unit: match[2], start: match.index, end: match.index + match[0].length
     }));
     if (!found.length || found.some((item) => !Number.isFinite(item.value))) return [];
     let remainder = value;
@@ -46,7 +97,7 @@
         && Number.isFinite(part.expected?.value)
         && Number.isFinite(part.tolerance?.absolute) && part.tolerance.absolute >= 0
         && Number.isFinite(part.tolerance?.relative) && part.tolerance.relative >= 0
-        && (!part.directionRequired || ["right", "left", "up", "down"].includes(part.expectedDirection));
+        && (!part.directionRequired || Object.values(directions).includes(part.expectedDirection));
     });
   }
 
@@ -79,14 +130,14 @@
     }
     const parts = quantities(answer);
     if (!parts.length || parts.length > 6) return manual("无法唯一提取参考物理量与单位");
-    const directionMentions = Object.entries(directions).filter(([label]) => answer.includes(label));
+    const directionMentions = directionMatches(answer);
     if ((answer.includes("方向") && directionMentions.length !== 1) || directionMentions.length > 1
       || (directionMentions.length && parts.length !== 1)) return manual("方向或多物理量归属不明确");
     const answerSchema = { answerSchemaVersion: 1, parts: parts.map((part, index) => ({
       id: `part-${index + 1}`, kind: "quantity", quantity: units[part.unit],
       expected: { value: part.value, unit: part.unit },
       tolerance: { absolute: 0, relative: 0.015 }, unitRequired: true,
-      ...(directionMentions.length ? { directionRequired: true, expectedDirection: directions[directionMentions[0][0]] } : {})
+      ...(directionMentions.length ? { directionRequired: true, expectedDirection: directionMentions[0].value } : {})
     })) };
     return validSchema(answerSchema)
       ? { answerSchema, autoScorable: true, answerSchemaReviewStatus: "规则校验通过，待教师抽检" }
@@ -106,12 +157,18 @@
       return { parts: [{ id: schema.parts[0].id, optionIds: [...new Set(selected.match(/[A-D]/g))] }] };
     }
     if (!schema.parts.every((part) => part.kind === "quantity")) return response;
+    const normalizedText = normalizeScientificText(text);
     const values = quantities(text);
     if (values.length !== schema.parts.length) return response;
-    const direction = Object.entries(directions).find(([label]) => text.includes(label))?.[1];
+    const mentions = directionMatches(normalizedText);
     return { parts: schema.parts.map((part, index) => ({
       id: part.id, value: values[index].value, unit: values[index].unit,
-      ...(direction && part.directionRequired ? { direction } : {})
+      ...(part.directionRequired ? (() => {
+        const start = values[index].end;
+        const end = index + 1 < values.length ? values[index + 1].start : normalizedText.length;
+        const relevant = mentions.filter((mention) => mention.start >= start && mention.end <= end);
+        return relevant.length === 1 ? { direction: relevant[0].value } : {};
+      })() : {})
     })) };
   }
 

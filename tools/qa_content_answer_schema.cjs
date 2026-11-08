@@ -72,4 +72,37 @@ const unknownUnit = { id: 'schema-test-unknown-unit', questionType: '计算题',
 assert.equal(schemas.forQuestion(unknownUnit).autoScorable, false);
 assert.equal(grade(unknownUnit, '10 xyz').status, 'review-required');
 
+const electricField = { id: 'schema-test-electric-field', questionType: '计算题',
+  content: '求电场强度。', answer: '电场强度为 2×10^3 N/C。', autoScorable: true };
+assert.equal(schemas.forQuestion(electricField).autoScorable, true);
+assert.equal(grade(electricField, '2000 V/m').status, 'correct', 'N/C and V/m are equivalent field units');
+assert.notEqual(grade(electricField, '2000 C').status, 'correct', 'charge is not electric field');
+
+const charge = { id: 'schema-test-charge', questionType: '计算题',
+  content: '求电荷量。', answer: '电荷量为 1.6×10⁻¹⁹ C。', autoScorable: true };
+assert.equal(schemas.forQuestion(charge).autoScorable, true);
+assert.equal(grade(charge, '1.6e-19 C').status, 'correct');
+const barePower = { id: 'schema-test-bare-power', questionType: '计算题',
+  content: '求长度。', answer: '长度为 10^5 m。', autoScorable: true };
+assert.equal(grade(barePower, '100000 m').status, 'correct');
+
+const momentum = { id: 'schema-test-momentum', questionType: '计算题',
+  content: '求冲量。', answer: '冲量为 3 N·s。', autoScorable: true };
+assert.equal(grade(momentum, '3 kg·m/s').status, 'correct');
+
+const half = { id: 'schema-test-half', questionType: '计算题',
+  content: '求位移。', answer: '位移为 1/3 m。', autoScorable: true };
+assert.equal(grade(half, '0.333 m').status, 'correct');
+
+const directional = { id: 'schema-test-directional', questionType: '计算题',
+  content: '求两段力的大小与方向。', answer: '第一段为 2 N，沿斜面向上；第二段为 3 N，垂直纸面向里。',
+  autoScorable: true, answerSchema: { answerSchemaVersion: 1, parts: [
+    { id: 'part-1', kind: 'quantity', quantity: 'force', expected: { value: 2, unit: 'N' },
+      tolerance: { absolute: 0, relative: 0.01 }, directionRequired: true, expectedDirection: 'incline-up' },
+    { id: 'part-2', kind: 'quantity', quantity: 'force', expected: { value: 3, unit: 'N' },
+      tolerance: { absolute: 0, relative: 0.01 }, directionRequired: true, expectedDirection: 'into-page' },
+  ] } };
+assert.equal(grade(directional, '2 N 沿斜面向上；3 N 垂直纸面向里').status, 'correct');
+assert.notEqual(grade(directional, '2 N 沿斜面向下；3 N 垂直纸面向里').status, 'correct');
+
 console.log('qa_content_answer_schema: passed');

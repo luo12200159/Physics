@@ -1,11 +1,18 @@
 ﻿param(
-    [switch]$Launch
+    [switch]$Launch,
+    [string]$InstallDirectory,
+    [switch]$SkipShortcuts
 )
 
 $ErrorActionPreference = 'Stop'
 
 $sourceDirectory = $PSScriptRoot
-$installDirectory = Join-Path $env:LOCALAPPDATA 'Programs\物理研习室'
+if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
+    $InstallDirectory = Join-Path $env:LOCALAPPDATA 'Programs\物理研习室'
+}
+if (-not [System.IO.Path]::IsPathRooted($InstallDirectory)) {
+    throw '安装目录必须是绝对路径。'
+}
 $executableName = '物理研习室.exe'
 $requiredFiles = @(
     $executableName,
@@ -19,6 +26,8 @@ $requiredFiles = @(
     'activation.js',
     'storage-repository.js',
     'curriculum-taxonomy.js',
+    'curriculum-mapping.js',
+    'answer-schema.js',
     'curriculum-bank.js',
     'solution-format.js',
     'exam-question-index.js',
@@ -35,15 +44,19 @@ $requiredFiles = @(
     'ai-tutor.js',
     'document-import.js',
     'content-catalog.js',
+    'classroom-config.js',
     'classroom-client.js',
     'question-answer-service.js',
     'learning-engine.js',
     'physics-visuals.js',
     'motion-representation-drafts.js',
+    'teaching-sequences.js',
     'variant-generator.js',
+    'teacher-mode-lock.js',
     'app.js',
     'learning-lab.js',
     'experience-shell.js',
+    '物理研习室-班级服务.exe',
     'Microsoft.Web.WebView2.Core.dll',
     'Microsoft.Web.WebView2.WinForms.dll',
     'runtimes\win-x64\native\WebView2Loader.dll',
@@ -74,6 +87,8 @@ $filesToInstall = @(
     'activation.js',
     'storage-repository.js',
     'curriculum-taxonomy.js',
+    'curriculum-mapping.js',
+    'answer-schema.js',
     'curriculum-bank.js',
     'solution-format.js',
     'exam-question-index.js',
@@ -86,15 +101,19 @@ $filesToInstall = @(
     'ai-tutor.js',
     'document-import.js',
     'content-catalog.js',
+    'classroom-config.js',
     'classroom-client.js',
     'question-answer-service.js',
     'learning-engine.js',
     'physics-visuals.js',
     'motion-representation-drafts.js',
+    'teaching-sequences.js',
     'variant-generator.js',
+    'teacher-mode-lock.js',
     'app.js',
     'learning-lab.js',
     'experience-shell.js',
+    '物理研习室-班级服务.exe',
     'README.md',
     'Microsoft.Web.WebView2.Core.dll',
     'Microsoft.Web.WebView2.WinForms.dll',
@@ -135,8 +154,6 @@ $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) '费曼�
 $startMenuDirectory = Join-Path ([Environment]::GetFolderPath('Programs')) '费曼物理'
 $startMenuShortcut = Join-Path $startMenuDirectory '费曼物理.lnk'
 
-New-Item -ItemType Directory -Force -Path $startMenuDirectory | Out-Null
-
 function New-AppShortcut {
     param([string]$ShortcutPath)
 
@@ -149,12 +166,17 @@ function New-AppShortcut {
     $shortcut.Save()
 }
 
-New-AppShortcut -ShortcutPath $desktopShortcut
-New-AppShortcut -ShortcutPath $startMenuShortcut
+if (-not $SkipShortcuts) {
+    New-Item -ItemType Directory -Force -Path $startMenuDirectory | Out-Null
+    New-AppShortcut -ShortcutPath $desktopShortcut
+    New-AppShortcut -ShortcutPath $startMenuShortcut
+}
 
 Write-Output "INSTALL_DIR=$installDirectory"
-Write-Output "DESKTOP_SHORTCUT=$desktopShortcut"
-Write-Output "START_MENU_SHORTCUT=$startMenuShortcut"
+if (-not $SkipShortcuts) {
+    Write-Output "DESKTOP_SHORTCUT=$desktopShortcut"
+    Write-Output "START_MENU_SHORTCUT=$startMenuShortcut"
+}
 
 if ($Launch) {
     Start-Process -FilePath $targetPath

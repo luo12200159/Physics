@@ -13,8 +13,8 @@ using System.Web.Script.Serialization;
 
 [assembly: System.Reflection.AssemblyTitle("费曼物理班级服务")]
 [assembly: System.Reflection.AssemblyProduct("费曼物理")]
-[assembly: System.Reflection.AssemblyVersion("4.2.0.0")]
-[assembly: System.Reflection.AssemblyFileVersion("4.2.0.0")]
+[assembly: System.Reflection.AssemblyVersion("4.2.1.0")]
+[assembly: System.Reflection.AssemblyFileVersion("4.2.1.0")]
 
 internal static class LanClassroomProgram
 {
@@ -142,6 +142,11 @@ internal static class JsonCodec
         Dictionary<string, object> result = parsed as Dictionary<string, object>;
         if (result == null) throw new ClientError(400, "validation_error", "请求 JSON 必须是对象。");
         return result;
+    }
+
+    public static object Parse(string value)
+    {
+        lock (Serializer) return Serializer.DeserializeObject(value);
     }
 }
 
@@ -551,9 +556,38 @@ internal sealed class ClassroomStore
                 assignment.TargetType = "class";
             assignment.TargetId = OptionalNullableText(body, "targetId", 160);
             assignment.QuestionIds = StringList(body, "questionIds", 100, 160);
+            if (new HashSet<string>(assignment.QuestionIds, StringComparer.Ordinal).Count != assignment.QuestionIds.Count)
+                throw new ClientError(400, "validation_error", "作业题目编号不得重复。");
             assignment.KnowledgePointKeys = StringList(body, "knowledgePointKeys", 100, 160);
             assignment.Target = RequiredText(BodyText(body, "target"), "达标条件", 1000);
             assignment.Published = BooleanValue(body, "publish");
+            if (assignment.Published && assignment.QuestionIds.Count == 0)
+                throw new ClientError(400, "validation_error", "发布作业前必须选择题目。");
+            object suppliedItems;
+            body.TryGetValue("questionItems", out suppliedItems);
+            IList questionItems = suppliedItems as IList;
+            if (assignment.Published && (questionItems == null || questionItems.Count != assignment.QuestionIds.Count))
+                throw new ClientError(400, "validation_error", "发布作业前必须提供每道题的完整题干快照。");
+            if (questionItems != null)
+            {
+                if (questionItems.Count != 0 && questionItems.Count != assignment.QuestionIds.Count)
+                    throw new ClientError(400, "validation_error", "题目快照与题目编号不一致。");
+                HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+                foreach (object raw in questionItems)
+                {
+                    Dictionary<string, object> item = raw as Dictionary<string, object>;
+                    if (item == null) throw new ClientError(400, "validation_error", "题目快照无效。");
+                    string id = RequiredText(BodyText(item, "id"), "题目编号", 160);
+                    if (!assignment.QuestionIds.Contains(id) || !seen.Add(id))
+                        throw new ClientError(400, "validation_error", "题目快照与题目编号不一致。");
+                    RequiredText(BodyText(item, "title"), "题目标题", 240);
+                    RequiredText(BodyText(item, "content"), "题干", 30000);
+                    RequiredText(BodyText(item, "questionType"), "题型", 80);
+                    if (!(item.ContainsKey("options") && item["options"] is IList))
+                        throw new ClientError(400, "validation_error", "题目选项格式无效。");
+                }
+            }
+            assignment.QuestionItemsJson = JsonCodec.Serialize(questionItems ?? new object[0]);
             assignment.CreatedAt = DateTime.UtcNow.ToString("o");
             data.Assignments.Add(assignment);
             SaveLocked();
@@ -573,6 +607,7 @@ internal sealed class ClassroomStore
                 { return item.Id == assignmentId; });
             if (assignment == null || !assignment.Published)
                 throw new ClientError(404, "assignment_not_found", "作业不存在。");
+            ActiveClass(assignment.ClassId);
             StudentRecord student = RequireStudent(authorization);
             MembershipRecord membership = data.Memberships.Find(delegate(MembershipRecord item)
             {
@@ -580,6 +615,10 @@ internal sealed class ClassroomStore
             });
             if (membership == null)
                 throw new ClientError(403, "resource_forbidden", "无权提交该班级作业。");
+            if ((assignment.TargetType == "group" && assignment.TargetId != membership.GroupId)
+                || (assignment.TargetType == "student" && assignment.TargetId != membership.Id
+                    && assignment.TargetId != student.Id))
+                throw new ClientError(403, "resource_forbidden", "作业未下发给该学生。");
             string clientEntityId = RequiredText(BodyText(body, "clientEntityId"), "提交编号", 160);
             SubmissionRecord existing = data.Submissions.Find(delegate(SubmissionRecord item)
             {
@@ -587,18 +626,228 @@ internal sealed class ClassroomStore
                     && item.ClientEntityId == clientEntityId;
             });
             if (existing != null) return SubmissionJson(existing);
+            object rawAnswers;
+            if (!body.TryGetValue("answers", out rawAnswers) || !(rawAnswers is IList))
+                throw new ClientError(400, "validation_error", "必须提交真实逐题作答。");
+            IList answers = (IList)rawAnswers;
+            if (assignment.QuestionIds.Count == 0 || answers.Count != assignment.QuestionIds.Count)
+                throw new ClientError(400, "validation_error", "必须完成作业中的每一道题。");
+            HashSet<string> seenAnswers = new HashSet<string>(StringComparer.Ordinal);
+            List<object> canonicalAnswers = new List<object>();
+            foreach (object raw in answers)
+            {
+                Dictionary<string, object> answer = raw as Dictionary<string, object>;
+                if (answer == null) throw new ClientError(400, "validation_error", "逐题作答格式无效。");
+                string questionId = RequiredText(BodyText(answer, "questionId"), "题目编号", 160);
+                if (!assignment.QuestionIds.Contains(questionId) || !seenAnswers.Add(questionId))
+                    throw new ClientError(400, "validation_error", "逐题作答编号重复或不属于本作业。");
+                Dictionary<string, object> canonical = new Dictionary<string, object>();
+                canonical["questionId"] = questionId;
+                canonical["response"] = RequiredText(BodyText(answer, "response"), "作答内容", 30000);
+                canonical["steps"] = OptionalText(answer, "steps", 30000);
+                canonical["startedAt"] = BodyText(answer, "startedAt");
+                object hintCount;
+                answer.TryGetValue("hintViewCount", out hintCount);
+                canonical["hintViewCount"] = hintCount is int && (int)hintCount >= 0 ? hintCount : 0;
+                canonicalAnswers.Add(canonical);
+            }
+            SubmissionRecord latest = null;
+            foreach (SubmissionRecord prior in data.Submissions)
+                if (prior.AssignmentId == assignmentId && prior.StudentId == student.Id
+                    && (latest == null || prior.Version > latest.Version)) latest = prior;
+            if (latest != null && latest.Status != "returned")
+                throw new ClientError(409, "submission_already_active", "教师退回后才能提交订正版本。");
             SubmissionRecord submission = new SubmissionRecord();
             submission.Id = Guid.NewGuid().ToString();
             submission.AssignmentId = assignmentId;
             submission.StudentId = student.Id;
             submission.ClientEntityId = clientEntityId;
-            submission.AnswersJson = JsonCodec.Serialize(body.ContainsKey("answers") ? body["answers"] : new object[0]);
+            submission.AnswersJson = JsonCodec.Serialize(canonicalAnswers);
             submission.Status = "submitted";
             submission.SubmittedAt = DateTime.UtcNow.ToString("o");
+            submission.UpdatedAt = submission.SubmittedAt;
+            submission.Version = latest == null ? 1 : latest.Version + 1;
+            submission.PreviousSubmissionId = latest == null ? null : latest.Id;
+            submission.ReviewStatus = "pending";
+            submission.ReviewRevision = 1;
+            submission.PerQuestionScoresJson = "[]";
             data.Submissions.Add(submission);
             SaveLocked();
             return SubmissionJson(submission);
         }
+    }
+
+    public Dictionary<string, object> ListOwnClassSubmissions(string classId, string authorization)
+    {
+        lock (gate)
+        {
+            ActiveClass(classId);
+            StudentRecord student = RequireStudent(authorization);
+            if (!data.Memberships.Exists(delegate(MembershipRecord item)
+                { return item.ClassId == classId && item.StudentId == student.Id && item.Status == "active"; }))
+                throw new ClientError(403, "resource_forbidden", "无权访问该班级作业。");
+            List<object> items = new List<object>();
+            foreach (SubmissionRecord submission in data.Submissions)
+            {
+                AssignmentRecord assignment = data.Assignments.Find(delegate(AssignmentRecord item)
+                    { return item.Id == submission.AssignmentId; });
+                if (assignment != null && assignment.ClassId == classId && submission.StudentId == student.Id)
+                    items.Add(SubmissionJson(submission));
+            }
+            return ListJson(items);
+        }
+    }
+
+    public Dictionary<string, object> ListOwnAssignmentSubmissions(string assignmentId, string authorization)
+    {
+        lock (gate)
+        {
+            AssignmentRecord assignment = data.Assignments.Find(delegate(AssignmentRecord item)
+                { return item.Id == assignmentId; });
+            if (assignment == null) throw new ClientError(404, "assignment_not_found", "作业不存在。");
+            ActiveClass(assignment.ClassId);
+            StudentRecord student = RequireStudent(authorization);
+            if (!data.Memberships.Exists(delegate(MembershipRecord item)
+                { return item.ClassId == assignment.ClassId && item.StudentId == student.Id && item.Status == "active"; }))
+                throw new ClientError(403, "resource_forbidden", "无权查看该作业。");
+            List<object> items = new List<object>();
+            foreach (SubmissionRecord submission in data.Submissions)
+                if (submission.AssignmentId == assignmentId && submission.StudentId == student.Id)
+                    items.Add(SubmissionJson(submission));
+            return ListJson(items);
+        }
+    }
+
+    public Dictionary<string, object> ListClassSubmissions(string classId, string authorization)
+    {
+        lock (gate)
+        {
+            RequireOwner(ActiveClass(classId), authorization);
+            List<object> items = new List<object>();
+            foreach (SubmissionRecord submission in data.Submissions)
+            {
+                AssignmentRecord assignment = data.Assignments.Find(delegate(AssignmentRecord item)
+                    { return item.Id == submission.AssignmentId; });
+                if (assignment == null || assignment.ClassId != classId) continue;
+                Dictionary<string, object> value = SubmissionJson(submission);
+                StudentRecord student = data.Students.Find(delegate(StudentRecord item)
+                    { return item.Id == submission.StudentId; });
+                value["studentDisplayName"] = student == null ? "学生" : student.DisplayName;
+                items.Add(value);
+            }
+            return ListJson(items);
+        }
+    }
+
+    public Dictionary<string, object> ListReviewCases(string classId, string authorization)
+    {
+        lock (gate)
+        {
+            RequireOwner(ActiveClass(classId), authorization);
+            List<object> items = new List<object>();
+            foreach (SubmissionRecord submission in data.Submissions)
+            {
+                AssignmentRecord assignment = data.Assignments.Find(delegate(AssignmentRecord item)
+                    { return item.Id == submission.AssignmentId; });
+                if (assignment != null && assignment.ClassId == classId && submission.ReviewStatus == "pending")
+                    items.Add(ReviewJson(submission, assignment));
+            }
+            return ListJson(items);
+        }
+    }
+
+    public Dictionary<string, object> DecideReviewCase(
+        string reviewId, string authorization, Dictionary<string, object> body)
+    {
+        lock (gate)
+        {
+            SubmissionRecord submission = data.Submissions.Find(delegate(SubmissionRecord item)
+                { return item.Id == reviewId; });
+            if (submission == null) throw new ClientError(404, "review_case_not_found", "待批改记录不存在。");
+            AssignmentRecord assignment = data.Assignments.Find(delegate(AssignmentRecord item)
+                { return item.Id == submission.AssignmentId; });
+            if (assignment == null) throw new ClientError(404, "assignment_not_found", "作业不存在。");
+            RequireOwner(ActiveClass(assignment.ClassId), authorization);
+            string decision = RequiredText(BodyText(body, "decision"), "批改决定", 20);
+            if (decision != "approve" && decision != "return" && decision != "rejudge")
+                throw new ClientError(400, "validation_error", "批改决定无效。");
+            if (submission.ReviewStatus != "pending" && decision != "rejudge")
+                throw new ClientError(409, "review_already_decided", "该提交已经批改。");
+            object rawScore;
+            body.TryGetValue("score", out rawScore);
+            double score = NumericScore(rawScore, false);
+            object rawScores;
+            body.TryGetValue("perQuestionScores", out rawScores);
+            IList scoreList = rawScores as IList;
+            if (scoreList == null) throw new ClientError(400, "validation_error", "逐题评分格式无效。");
+            HashSet<string> answerIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (object raw in (IList)JsonCodec.Parse(submission.AnswersJson))
+            {
+                Dictionary<string, object> answer = raw as Dictionary<string, object>;
+                if (answer != null) answerIds.Add(BodyText(answer, "questionId"));
+            }
+            HashSet<string> seenScores = new HashSet<string>(StringComparer.Ordinal);
+            List<object> checkedScores = new List<object>();
+            foreach (object raw in scoreList)
+            {
+                Dictionary<string, object> entry = raw as Dictionary<string, object>;
+                if (entry == null) throw new ClientError(400, "validation_error", "逐题评分格式无效。");
+                string questionId = RequiredText(BodyText(entry, "questionId"), "题目编号", 160);
+                if (!answerIds.Contains(questionId) || !seenScores.Add(questionId))
+                    throw new ClientError(400, "validation_error", "逐题评分编号重复或不属于本次提交。");
+                object rawQuestionScore;
+                entry.TryGetValue("score", out rawQuestionScore);
+                Dictionary<string, object> checkedEntry = new Dictionary<string, object>();
+                checkedEntry["questionId"] = questionId;
+                checkedEntry["score"] = rawQuestionScore == null ? null : (object)NumericScore(rawQuestionScore, false);
+                checkedScores.Add(checkedEntry);
+            }
+            submission.Score = score;
+            submission.Feedback = RequiredText(BodyText(body, "reason"), "教师反馈", 1000);
+            submission.ReviewStatus = decision == "approve" ? "approved"
+                : decision == "return" ? "returned" : "rejudged";
+            submission.Status = decision == "return" ? "returned" : "accepted";
+            submission.ReviewRevision += 1;
+            submission.UpdatedAt = DateTime.UtcNow.ToString("o");
+            submission.PerQuestionScoresJson = JsonCodec.Serialize(checkedScores);
+            SaveLocked();
+            return ReviewJson(submission, assignment);
+        }
+    }
+
+    private static double NumericScore(object value, bool allowNull)
+    {
+        if (allowNull && value == null) return 0;
+        if (!(value is int) && !(value is long) && !(value is double) && !(value is decimal))
+            throw new ClientError(400, "validation_error", "分数必须在 0 到 100 之间。");
+        double score = Convert.ToDouble(value);
+        if (Double.IsNaN(score) || Double.IsInfinity(score) || score < 0 || score > 100)
+            throw new ClientError(400, "validation_error", "分数必须在 0 到 100 之间。");
+        return score;
+    }
+
+    private Dictionary<string, object> ReviewJson(SubmissionRecord submission, AssignmentRecord assignment)
+    {
+        Dictionary<string, object> value = new Dictionary<string, object>();
+        value["id"] = submission.Id;
+        value["submissionId"] = submission.Id;
+        value["assignmentId"] = assignment.Id;
+        value["classId"] = assignment.ClassId;
+        value["status"] = submission.ReviewStatus;
+        value["currentScore"] = submission.Score;
+        value["revision"] = submission.ReviewRevision;
+        value["submittedAt"] = submission.SubmittedAt;
+        value["updatedAt"] = submission.UpdatedAt;
+        StudentRecord student = data.Students.Find(delegate(StudentRecord item)
+            { return item.Id == submission.StudentId; });
+        value["studentDisplayName"] = student == null ? "学生" : student.DisplayName;
+        value["answers"] = JsonCodec.Parse(submission.AnswersJson);
+        value["submissionVersion"] = submission.Version;
+        SubmissionRecord previous = data.Submissions.Find(delegate(SubmissionRecord item)
+            { return item.Id == submission.PreviousSubmissionId; });
+        if (previous != null) value["previousAnswers"] = JsonCodec.Parse(previous.AnswersJson);
+        value["perQuestionScores"] = JsonCodec.Parse(submission.PerQuestionScoresJson);
+        return value;
     }
 
     public Dictionary<string, object> UpdateMembership(
@@ -675,7 +924,8 @@ internal sealed class ClassroomStore
         try
         {
             DataEnvelope loaded = JsonCodec.Deserialize<DataEnvelope>(File.ReadAllText(dataFile, Encoding.UTF8));
-            if (loaded == null || loaded.SchemaVersion != 1) throw new InvalidDataException("班级数据版本无效。");
+            if (loaded == null || (loaded.SchemaVersion != 1 && loaded.SchemaVersion != 2))
+                throw new InvalidDataException("班级数据版本无效。");
             loaded.Normalize();
             return loaded;
         }
@@ -683,7 +933,7 @@ internal sealed class ClassroomStore
         {
             if (!File.Exists(backupFile)) throw;
             DataEnvelope backup = JsonCodec.Deserialize<DataEnvelope>(File.ReadAllText(backupFile, Encoding.UTF8));
-            if (backup == null || backup.SchemaVersion != 1) throw;
+            if (backup == null || (backup.SchemaVersion != 1 && backup.SchemaVersion != 2)) throw;
             backup.Normalize();
             return backup;
         }
@@ -910,6 +1160,22 @@ internal sealed class ClassroomStore
         result["questionIds"] = assignment.QuestionIds;
         result["knowledgePointKeys"] = assignment.KnowledgePointKeys;
         result["target"] = assignment.Target;
+        List<object> visibleItems = new List<object>();
+        IList storedItems = JsonCodec.Parse(assignment.QuestionItemsJson ?? "[]") as IList;
+        if (storedItems != null)
+        {
+            string[] visibleKeys = { "id", "title", "content", "questionType", "options", "knowledgePointId", "difficulty" };
+            foreach (object raw in storedItems)
+            {
+                Dictionary<string, object> item = raw as Dictionary<string, object>;
+                if (item == null) continue;
+                Dictionary<string, object> visible = new Dictionary<string, object>();
+                foreach (string key in visibleKeys)
+                    if (item.ContainsKey(key)) visible[key] = item[key];
+                visibleItems.Add(visible);
+            }
+        }
+        result["questionItems"] = visibleItems;
         result["status"] = assignment.Published ? "published" : "draft";
         result["published"] = assignment.Published;
         result["createdAt"] = assignment.CreatedAt;
@@ -925,6 +1191,15 @@ internal sealed class ClassroomStore
         result["clientEntityId"] = submission.ClientEntityId;
         result["status"] = submission.Status;
         result["submittedAt"] = submission.SubmittedAt;
+        result["answers"] = JsonCodec.Parse(submission.AnswersJson ?? "[]");
+        result["version"] = submission.Version;
+        result["previousSubmissionId"] = submission.PreviousSubmissionId;
+        result["reviewStatus"] = submission.ReviewStatus;
+        result["score"] = submission.Score;
+        result["feedback"] = submission.Feedback;
+        result["reviewRevision"] = submission.ReviewRevision;
+        result["updatedAt"] = submission.UpdatedAt;
+        result["perQuestionScores"] = JsonCodec.Parse(submission.PerQuestionScoresJson ?? "[]");
         return result;
     }
 
@@ -1106,7 +1381,9 @@ internal sealed class ClassroomHttpServer : IDisposable
             if (segment[3] == "assignments" && request.Method == "POST")
                 return HttpResponse.Json(201, store.CreateAssignment(classId, authorization, request.JsonBody()));
             if (segment[3] == "review-cases" && request.Method == "GET")
-                return HttpResponse.Json(200, store.EmptyClassCollection(classId, authorization));
+                return HttpResponse.Json(200, store.ListReviewCases(classId, authorization));
+            if (segment[3] == "assignment-submissions" && request.Method == "GET")
+                return HttpResponse.Json(200, store.ListClassSubmissions(classId, authorization));
         }
         if (segment.Length == 5 && segment[0] == "v1" && segment[1] == "classes")
         {
@@ -1115,6 +1392,8 @@ internal sealed class ClassroomHttpServer : IDisposable
                 return HttpResponse.Json(200, store.EmptyClassCollection(classId, authorization));
             if (segment[3] == "learning" && (segment[4] == "sync" || segment[4] == "exams") && request.Method == "POST")
                 return HttpResponse.Json(200, store.AcceptLearningSync(classId, authorization));
+            if (segment[3] == "assignment-submissions" && segment[4] == "me" && request.Method == "GET")
+                return HttpResponse.Json(200, store.ListOwnClassSubmissions(classId, authorization));
             if (segment[3] == "learning" && segment[4] == "report-snapshots" && request.Method == "POST")
                 return HttpResponse.Json(201, store.AcceptLearningSync(classId, authorization));
         }
@@ -1130,6 +1409,14 @@ internal sealed class ClassroomHttpServer : IDisposable
                 authorization,
                 request.JsonBody()
             ));
+        if (segment.Length == 5 && segment[0] == "v1" && segment[1] == "assignments"
+            && segment[3] == "submissions" && segment[4] == "me" && request.Method == "GET")
+            return HttpResponse.Json(200, store.ListOwnAssignmentSubmissions(
+                segment[2].ToLowerInvariant(), authorization));
+        if (segment.Length == 3 && segment[0] == "v1" && segment[1] == "review-cases"
+            && request.Method == "PATCH")
+            return HttpResponse.Json(200, store.DecideReviewCase(
+                segment[2].ToLowerInvariant(), authorization, request.JsonBody()));
         throw new ClientError(404, "not_found", "请求的班级资源不存在。");
     }
 
@@ -1475,7 +1762,7 @@ internal sealed class DataEnvelope
     public static DataEnvelope New()
     {
         DataEnvelope value = new DataEnvelope();
-        value.SchemaVersion = 1;
+        value.SchemaVersion = 2;
         value.InstanceId = Guid.NewGuid().ToString();
         value.Normalize();
         return value;
@@ -1491,6 +1778,23 @@ internal sealed class DataEnvelope
         if (Groups == null) Groups = new List<GroupRecord>();
         if (Assignments == null) Assignments = new List<AssignmentRecord>();
         if (Submissions == null) Submissions = new List<SubmissionRecord>();
+        foreach (AssignmentRecord assignment in Assignments)
+        {
+            if (assignment.QuestionIds == null) assignment.QuestionIds = new List<string>();
+            if (assignment.KnowledgePointKeys == null) assignment.KnowledgePointKeys = new List<string>();
+            if (String.IsNullOrEmpty(assignment.QuestionItemsJson)) assignment.QuestionItemsJson = "[]";
+        }
+        foreach (SubmissionRecord submission in Submissions)
+        {
+            if (String.IsNullOrEmpty(submission.AnswersJson)) submission.AnswersJson = "[]";
+            if (String.IsNullOrEmpty(submission.PerQuestionScoresJson)) submission.PerQuestionScoresJson = "[]";
+            if (submission.Version < 1) submission.Version = 1;
+            if (submission.ReviewRevision < 1) submission.ReviewRevision = 1;
+            if (String.IsNullOrEmpty(submission.ReviewStatus))
+                submission.ReviewStatus = submission.Status == "accepted" ? "approved" : "pending";
+            if (String.IsNullOrEmpty(submission.UpdatedAt)) submission.UpdatedAt = submission.SubmittedAt;
+        }
+        SchemaVersion = 2;
     }
 }
 
@@ -1571,6 +1875,7 @@ internal sealed class AssignmentRecord
     public string Target { get; set; }
     public bool Published { get; set; }
     public string CreatedAt { get; set; }
+    public string QuestionItemsJson { get; set; }
 }
 
 internal sealed class SubmissionRecord
@@ -1582,4 +1887,12 @@ internal sealed class SubmissionRecord
     public string AnswersJson { get; set; }
     public string Status { get; set; }
     public string SubmittedAt { get; set; }
+    public int Version { get; set; }
+    public string PreviousSubmissionId { get; set; }
+    public string ReviewStatus { get; set; }
+    public double? Score { get; set; }
+    public string Feedback { get; set; }
+    public int ReviewRevision { get; set; }
+    public string UpdatedAt { get; set; }
+    public string PerQuestionScoresJson { get; set; }
 }

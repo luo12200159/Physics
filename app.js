@@ -3613,13 +3613,20 @@ async function downloadBlob(filename, blob) {
     if (blob.size > (window.PhysicsStudioSecurity?.limits?.androidExportBytes || 100 * 1024 * 1024)) {
       throw new Error("安卓端单次完整备份不能超过 100 MB；请先移除或分批保存大型本地视频。");
     }
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ""));
-      reader.onerror = () => reject(reader.error || new Error("备份文件读取失败。"));
-      reader.readAsDataURL(blob);
-    });
-    const base64 = dataUrl.split(",")[1] || "";
+    const bridge = window.PhysicsStudioAndroid;
+    const chunked = ["beginChunkedFileExport", "appendChunkedFileExport", "finishChunkedFileExport", "abortChunkedFileExport"]
+      .every((name) => typeof bridge[name] === "function");
+    let base64 = "";
+    if (!chunked) {
+      // Compatibility path for APKs predating the bounded native export bridge.
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("备份文件读取失败。"));
+        reader.readAsDataURL(blob);
+      });
+      base64 = dataUrl.split(",")[1] || "";
+    }
     const requestId = crypto.randomUUID?.() || Array.from(crypto.getRandomValues(new Uint8Array(16)),
       (byte) => byte.toString(16).padStart(2, "0")).join("");
     await new Promise((resolve, reject) => {
@@ -3632,7 +3639,10 @@ async function downloadBlob(filename, blob) {
         window.PhysicsStudioAndroidExportResponse = previous;
         if (error) reject(error); else resolve();
       };
-      const timer = window.setTimeout(() => finish(new Error("未收到安卓文件保存确认；请检查目标位置，不要把本次导出视为成功。")), 60_000);
+      const timer = window.setTimeout(() => {
+        if (chunked) bridge.abortChunkedFileExport(requestId);
+        finish(new Error("未收到安卓文件保存确认；请检查目标位置，不要把本次导出视为成功。"));
+      }, 300_000);
       window.PhysicsStudioAndroidExportResponse = (response) => {
         if (response?.requestId !== requestId) {
           if (typeof previous === "function") previous(response);
@@ -3643,9 +3653,30 @@ async function downloadBlob(filename, blob) {
         else finish(new Error(`安卓文件保存失败（${String(response?.errorCode || "unknown")}）；备份未导出。`));
       };
       try {
-        window.PhysicsStudioAndroid.saveBase64FileWithAck(
-          requestId, filename, blob.type || "application/vnd.physics-studio.backup+zip", base64
-        );
+        if (chunked) {
+          bridge.beginChunkedFileExport(requestId, filename,
+            blob.type || "application/vnd.physics-studio.backup+zip", blob.size);
+          (async () => {
+            const chunkBytes = 256 * 1024;
+            for (let offset = 0, index = 0; offset < blob.size; offset += chunkBytes, index++) {
+              if (settled) return;
+              const bytes = new Uint8Array(await blob.slice(offset, offset + chunkBytes).arrayBuffer());
+              let binary = "";
+              for (let position = 0; position < bytes.length; position += 0x8000) {
+                binary += String.fromCharCode.apply(null, bytes.subarray(position, position + 0x8000));
+              }
+              bridge.appendChunkedFileExport(requestId, index, btoa(binary));
+            }
+            if (!settled) bridge.finishChunkedFileExport(requestId);
+          })().catch((error) => {
+            try { bridge.abortChunkedFileExport(requestId); } catch (_abortError) { /* preserve the write failure */ }
+            finish(error);
+          });
+        } else {
+          bridge.saveBase64FileWithAck(
+            requestId, filename, blob.type || "application/vnd.physics-studio.backup+zip", base64
+          );
+        }
       } catch (error) {
         finish(error);
       }

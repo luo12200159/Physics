@@ -178,9 +178,38 @@
     };
   }
 
-  function putStateEntities(state, revision = nextRevision()) {
+  function entityMap(records, name) {
+    const result = new Map();
+    if (!Array.isArray(records)) return result;
+    records.forEach((record, index) => {
+      if (!record || typeof record !== "object") return;
+      const id = String(record.id || `${name}-legacy-${index}`);
+      result.set(id, { ...record, id });
+    });
+    return result;
+  }
+
+  function entityChanges(state, previousState) {
+    const changes = [];
+    ENTITY_STORES.forEach((name) => {
+      // An absent collection must never erase earlier history.
+      if (!Array.isArray(state[name])) return;
+      const current = entityMap(state[name], name);
+      const previous = entityMap(previousState?.[name], name);
+      const remove = previousState ? [...previous.keys()].filter((id) => !current.has(id)) : [];
+      const put = [];
+      current.forEach((record, id) => {
+        if (!previous.has(id) || JSON.stringify(previous.get(id)) !== JSON.stringify(record)) put.push(record);
+      });
+      if (remove.length || put.length) changes.push({ name, remove, put });
+    });
+    return changes;
+  }
+
+  function putStateEntities(state, revision = nextRevision(), previousState = null) {
+    const changes = entityChanges(state, previousState);
     return openIndexedDb().then((db) => new Promise((resolve, reject) => {
-      const transaction = db.transaction(["meta", ...ENTITY_STORES], "readwrite");
+      const transaction = db.transaction(["meta", ...changes.map((item) => item.name)], "readwrite");
       transaction.oncomplete = () => { db.close(); resolve({ saved: true, revision, version: STORAGE_SCHEMA_VERSION }); };
       transaction.onerror = () => { const error = transaction.error || new Error("IndexedDB transaction failed"); db.close(); reject(error); };
       transaction.onabort = () => { const error = transaction.error || new Error("IndexedDB transaction aborted"); db.close(); reject(error); };
@@ -189,24 +218,10 @@
       meta.put({ key: "storageVersion", value: STORAGE_SCHEMA_VERSION, updatedAt: now });
       meta.put({ key: "stateShell", value: stateShell(state), updatedAt: now });
       meta.put({ key: "storageRevision", value: revision, updatedAt: now });
-      ENTITY_STORES.forEach((name) => {
+      changes.forEach(({ name, remove, put }) => {
         const store = transaction.objectStore(name);
-        // An absent collection is not an instruction to destroy existing history.
-        if (!Array.isArray(state[name])) return;
-        const records = new Map();
-        state[name].forEach((record, index) => {
-          if (!record || typeof record !== "object") return;
-          const id = String(record.id || `${name}-legacy-${index}`);
-          records.set(id, { ...record, id });
-        });
-        const existing = store.getAll();
-        existing.onsuccess = () => {
-          const previous = new Map(existing.result.map(record => [String(record.id), record]));
-          previous.forEach((_record, id) => { if (!records.has(id)) store.delete(id); });
-          records.forEach((record, id) => {
-            if (JSON.stringify(previous.get(id)) !== JSON.stringify(record)) store.put(record);
-          });
-        };
+        remove.forEach((id) => store.delete(id));
+        put.forEach((record) => store.put(record));
       });
     }));
   }
@@ -257,12 +272,12 @@
           if (hydrated?.revision !== marker.revision) emitStorageFailure(new Error("上次保存被中断；已恢复最后完成的事务，未提交内容无法恢复"), "interrupted-write");
           clearPendingRevision(pendingKey, marker.revision);
         }
-        if (hydrated) cache.set(normalizedKey, hydrated.state);
+        if (hydrated) cache.set(normalizedKey, JSON.parse(JSON.stringify(hydrated.state)));
         else cache.delete(normalizedKey);
         return hydrated?.state || null;
     }
     if (!parsed) { cache.delete(normalizedKey); return null; }
-    cache.set(normalizedKey, parsed);
+    cache.set(normalizedKey, JSON.parse(JSON.stringify(parsed)));
     if (!indexedDbAvailable()) return parsed;
     operation = "migration";
       if (rawGetItem(backupKey) == null) rawSetItem(backupKey, raw);
@@ -303,7 +318,15 @@
     }
     writeQueue = writeQueue.catch(() => {}).then(async () => {
       try {
-        const committed = await putStateEntities(snapshot, revision);
+        let previous = cache.get(normalizedKey) || null;
+        if (!previous) {
+          const pointer = rawGetItem(normalizedKey);
+          if (pointer) {
+            const parsedPointer = JSON.parse(pointer);
+            if (parsedPointer?.indexedDbPrimary) previous = (await readStateEntities())?.state || null;
+          }
+        }
+        const committed = await putStateEntities(snapshot, revision, previous);
         cache.set(normalizedKey, snapshot);
         rawSetItem(normalizedKey, JSON.stringify(lightweightState(snapshot)));
         rawSetItem("physics-storage-version-v1", String(STORAGE_SCHEMA_VERSION));

@@ -8,7 +8,7 @@ const { installQaActivationStub, launchBrowser } = require('./browser-launcher.c
   const browser = await launchBrowser({ headless: true });
   const failures = [];
   try {
-    for (const scenario of ['incremental', 'bounded-journal', 'revision-race', 'abort', 'migration', 'legacy-pending', 'explicit-migration', 'migration-race', 'restart', 'interrupted', 'quota', 'quota-error', 'cleanup-error', 'bulk-history', 'read-failure-backup', 'primary-without-idb', 'direct-stage-no-idb', 'failed-stage-cache']) {
+    for (const scenario of ['incremental', 'no-full-scan', 'bounded-journal', 'revision-race', 'abort', 'migration', 'legacy-pending', 'explicit-migration', 'migration-race', 'restart', 'interrupted', 'quota', 'quota-error', 'cleanup-error', 'bulk-history', 'read-failure-backup', 'primary-without-idb', 'direct-stage-no-idb', 'failed-stage-cache']) {
       const context = await browser.newContext();
       const page = await context.newPage();
       await page.route('http://localhost/storage-qa', route => route.fulfill({ body: '<html></html>', contentType: 'text/html' }));
@@ -109,7 +109,15 @@ const { installQaActivationStub, launchBrowser } = require('./browser-launcher.c
             return true;
           }
           await repo.stageLearningState(key, state);
-          if (scenario === 'incremental') {
+          if (scenario === 'no-full-scan') {
+            const original = IDBObjectStore.prototype.getAll;
+            let reads = 0;
+            IDBObjectStore.prototype.getAll = function (...args) { reads++; return original.apply(this, args); };
+            await repo.stageLearningState(key, { ...state, attempts: [...state.attempts, { id: 'b', profileId: 'p' }] });
+            IDBObjectStore.prototype.getAll = original;
+            check(reads === 0, `incremental save scanned ${reads} complete stores`);
+            check((await repo.prepareLearningState()).attempts.length === 2, 'incremental save lost an attempt');
+          } else if (scenario === 'incremental') {
             const calls = [];
             for (const name of ['clear', 'put', 'delete']) {
               const original = IDBObjectStore.prototype[name];

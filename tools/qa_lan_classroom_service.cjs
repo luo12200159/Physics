@@ -184,7 +184,12 @@ async function main() {
         dueAt: null,
         targetType: "class",
         targetId: null,
-        questionIds: ["q-1"],
+        questionIds: ["q-1", "q-2", "q-3"],
+        questionItems: [
+          { id: "q-1", title: "惯性", content: "匀速运动的物体合力是多少？", questionType: "填空题", options: [], answer: "0 N" },
+          { id: "q-2", title: "速度", content: "速度如何计算？", questionType: "计算题", options: [] },
+          { id: "q-3", title: "实验", content: "解释测量误差来源。", questionType: "实验题", options: [] },
+        ],
         knowledgePointKeys: ["kp-force"],
         target: "独立完成",
         publish: true,
@@ -192,18 +197,85 @@ async function main() {
     });
     assert.equal(assignment.status, 201);
     assert.match(assignment.body.id, UUID_RE);
+    assert.equal(assignment.body.questionItems.length, 3);
     const studentAssignments = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/assignments`, {
       authorization: `Bearer ${joinedAgain.body.accessToken}`,
     });
     assert.equal(studentAssignments.status, 200);
     assert.equal(studentAssignments.body.items.length, 1);
     assert.equal(studentAssignments.body.items[0].title, "同网专项任务");
+    assert.equal(studentAssignments.body.items[0].questionItems[0].answer, undefined,
+      "student assignment snapshot must not leak answer keys");
     const assignmentSubmission = await request(base, "POST", `/v1/assignments/${assignment.body.id}/submissions`, {
       authorization: `Bearer ${joinedAgain.body.accessToken}`,
-      body: { clientEntityId: "qa-assignment-complete", answers: [{ status: "completed" }] },
+      body: { clientEntityId: "qa-assignment-complete", answers: [
+        { questionId: "q-1", response: "0 N", steps: "匀速直线运动，合力为零" },
+        { questionId: "q-2", response: "2 m/s", steps: "v=s/t" },
+        { questionId: "q-3", response: "计时和读数误差", steps: "先控制单一变量" },
+      ] },
     });
     assert.equal(assignmentSubmission.status, 201);
     assert.equal(assignmentSubmission.body.status, "submitted");
+    assert.equal(assignmentSubmission.body.version, 1);
+    assert.equal(assignmentSubmission.body.answers.length, 3);
+    const duplicateSubmission = await request(base, "POST", `/v1/assignments/${assignment.body.id}/submissions`, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+      body: { clientEntityId: "qa-assignment-complete", answers: [] },
+    });
+    assert.equal(duplicateSubmission.status, 201);
+    assert.equal(duplicateSubmission.body.id, assignmentSubmission.body.id, "retry remains idempotent");
+    const emptyAnswer = await request(base, "POST", `/v1/assignments/${assignment.body.id}/submissions`, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+      body: { clientEntityId: "qa-no-real-answer", answers: [{ status: "completed" }] },
+    });
+    assert.equal(emptyAnswer.status, 400, "a completion flag is not a student answer");
+    const ownSubmissions = await request(base, "GET", `/v1/assignments/${assignment.body.id}/submissions/me`, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+    });
+    assert.equal(ownSubmissions.status, 200);
+    assert.equal(ownSubmissions.body.items.length, 1);
+    const classSubmissions = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/assignment-submissions`, {
+      authorization: ownerA,
+    });
+    assert.equal(classSubmissions.status, 200);
+    assert.equal(classSubmissions.body.items.length, 1);
+    const foreignSubmissions = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/assignment-submissions`, {
+      authorization: ownerB,
+    });
+    assert.equal(foreignSubmissions.status, 403);
+    const reviewQueue = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/review-cases`, {
+      authorization: ownerA,
+    });
+    assert.equal(reviewQueue.status, 200);
+    assert.equal(reviewQueue.body.items.length, 1);
+    const forbiddenReview = await request(base, "PATCH", `/v1/review-cases/${assignmentSubmission.body.id}`, {
+      authorization: ownerB,
+      body: { decision: "approve", score: 100, reason: "越权", perQuestionScores: [] },
+    });
+    assert.equal(forbiddenReview.status, 403);
+    const returned = await request(base, "PATCH", `/v1/review-cases/${assignmentSubmission.body.id}`, {
+      authorization: ownerA,
+      body: { decision: "return", score: 60, reason: "请补充实验误差分析", perQuestionScores: [
+        { questionId: "q-1", score: 100 }, { questionId: "q-2", score: 80 }, { questionId: "q-3", score: 0 },
+      ] },
+    });
+    assert.equal(returned.status, 200);
+    assert.equal(returned.body.status, "returned");
+    const correction = await request(base, "POST", `/v1/assignments/${assignment.body.id}/submissions`, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+      body: { clientEntityId: "qa-assignment-correction", answers: [
+        { questionId: "q-1", response: "0 N" },
+        { questionId: "q-2", response: "2 m/s" },
+        { questionId: "q-3", response: "计时误差和刻度读数误差；重复测量取平均" },
+      ] },
+    });
+    assert.equal(correction.status, 201);
+    assert.equal(correction.body.version, 2);
+    assert.equal(correction.body.previousSubmissionId, assignmentSubmission.body.id);
+    const correctionHistory = await request(base, "GET", `/v1/assignments/${assignment.body.id}/submissions/me`, {
+      authorization: `Bearer ${joinedAgain.body.accessToken}`,
+    });
+    assert.deepEqual(correctionHistory.body.items.map((item) => item.version), [1, 2]);
 
     const roster = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/roster`, {
       authorization: ownerA,
@@ -265,12 +337,28 @@ async function main() {
 
     child.kill();
     await new Promise((resolve) => child.once("exit", resolve));
+    const legacyPath = path.join(dataDir, "classroom-data-v1.json");
+    const legacyFixture = JSON.parse(fs.readFileSync(legacyPath, "utf8"));
+    legacyFixture.SchemaVersion = 1;
+    legacyFixture.Assignments.forEach((item) => { delete item.QuestionItemsJson; });
+    legacyFixture.Submissions.forEach((item) => {
+      for (const field of ["Version", "PreviousSubmissionId", "ReviewStatus", "Score", "Feedback",
+        "ReviewRevision", "UpdatedAt", "PerQuestionScoresJson"]) delete item[field];
+    });
+    fs.writeFileSync(legacyPath, JSON.stringify(legacyFixture));
     child = await startService(exe, dataDir, port, discoveryPort, readyFile);
     const persisted = await request(base, "GET", `/v1/classes/${createdA.body.class.id}`, {
       authorization: ownerA,
     });
     assert.equal(persisted.status, 200);
     assert.equal(persisted.body.name, "高三物理一班");
+    const migratedSubmissions = await request(base, "GET", `/v1/classes/${createdA.body.class.id}/assignment-submissions`, {
+      authorization: ownerA,
+    });
+    assert.equal(migratedSubmissions.status, 200);
+    assert.equal(migratedSubmissions.body.items.length, 2);
+    assert.ok(migratedSubmissions.body.items.every((item) => item.version === 1),
+      "v1 records normalize to a readable first submission version");
     const persistedText = fs.readFileSync(path.join(dataDir, "classroom-data-v1.json"), "utf8");
     assert.doesNotMatch(persistedText, new RegExp(createdA.body.ownerCapability.replaceAll(".", "\\.")));
     assert.doesNotMatch(persistedText, new RegExp(invite2.body.code));

@@ -11,7 +11,9 @@ const backup = fs.readFileSync(path.join(root, "backup.js"), "utf8");
 for (const store of ["attempts", "diagnosticAttempts", "examRecords", "growthRecords", "importedReports", "experimentRecords", "assessmentSessions"]) {
   assert.match(repository, new RegExp(`["']${store}["']`), `missing IndexedDB store ${store}`);
 }
-assert.match(repository, /db\.transaction\(\["meta", \.\.\.ENTITY_STORES\], "readwrite"\)/);
+assert.match(repository, /db\.transaction\(\["meta", \.\.\.changes\.map\(\(item\) => item\.name\)\], "readwrite"\)/);
+const writePath = repository.slice(repository.indexOf("function putStateEntities("), repository.indexOf("async function readStateEntities()"));
+assert.doesNotMatch(writePath, /\.getAll\(/, "incremental writes must not scan entire entity stores");
 assert.match(repository, /::idb-migration-backup/);
 assert.match(repository, /::idb-write-pending/);
 assert.match(repository, /indexedDbPrimary:\s*true/);

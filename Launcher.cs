@@ -17,8 +17,8 @@ using Microsoft.Web.WebView2.WinForms;
 [assembly: AssemblyDescription("支持离线使用、学情档案与受控联网服务的物理学习应用")]
 [assembly: AssemblyProduct("费曼物理")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyVersion("4.2.0.0")]
-[assembly: AssemblyFileVersion("4.2.0.0")]
+[assembly: AssemblyVersion("4.2.1.0")]
+[assembly: AssemblyFileVersion("4.2.1.0")]
 
 internal static class Program
 {
@@ -141,6 +141,8 @@ internal static class Program
             "activation.js",
             "storage-repository.js",
             "curriculum-taxonomy.js",
+            "curriculum-mapping.js",
+            "answer-schema.js",
             "solution-format.js",
             "curriculum-bank.js",
             "exam-question-index.js",
@@ -162,6 +164,7 @@ internal static class Program
             "learning-engine.js",
                 "physics-visuals.js",
                 "motion-representation-drafts.js",
+            "teaching-sequences.js",
                 "variant-generator.js",
             "teacher-mode-lock.js",
             "app.js",

@@ -39,6 +39,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.IOException;
@@ -87,6 +90,13 @@ public final class MainActivity extends Activity {
     private String pendingExportText;
     private byte[] pendingAttachmentBytes;
     private String pendingAttachmentRequestId;
+    private File pendingAttachmentTempFile;
+    private String chunkedExportFileName;
+    private String chunkedExportMimeType;
+    private long chunkedExportExpectedBytes;
+    private long chunkedExportReceivedBytes;
+    private int chunkedExportNextIndex;
+    private boolean chunkedPickerActive;
     private boolean fileExportReserved;
     private PermissionRequest pendingCameraPermissionRequest;
     private PermissionRequest pendingAudioPermissionRequest;
@@ -718,6 +728,112 @@ public final class MainActivity extends Activity {
             saveBase64FileInternal(requestId, fileName, mimeType, base64Data);
         }
 
+        @JavascriptInterface
+        public void beginChunkedFileExport(String requestId, String fileName, String mimeType, long totalBytes) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            if (totalBytes < 0 || totalBytes > MAX_ANDROID_EXPORT_BYTES
+                || fileName == null || fileName.length() > 240
+                || mimeType == null || mimeType.length() > 120) {
+                postFileExportResponse(requestId, "error", "invalid_data");
+                return;
+            }
+            synchronized (MainActivity.this) {
+                if (fileExportReserved) {
+                    postFileExportResponse(requestId, "error", "busy");
+                    return;
+                }
+                try {
+                    pendingAttachmentTempFile = File.createTempFile("physics-export-", ".bin", getCacheDir());
+                } catch (IOException error) {
+                    postFileExportResponse(requestId, "error", "write_failed");
+                    return;
+                }
+                fileExportReserved = true;
+                pendingAttachmentRequestId = requestId;
+                chunkedExportFileName = fileName;
+                chunkedExportMimeType = mimeType;
+                chunkedExportExpectedBytes = totalBytes;
+                chunkedExportReceivedBytes = 0;
+                chunkedExportNextIndex = 0;
+            }
+        }
+
+        @JavascriptInterface
+        public void appendChunkedFileExport(String requestId, int index, String base64Data) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            synchronized (MainActivity.this) {
+                if (!fileExportReserved || !requestId.equals(pendingAttachmentRequestId)
+                    || pendingAttachmentTempFile == null) {
+                    postFileExportResponse(requestId, "error", "invalid_state");
+                    return;
+                }
+                if (index != chunkedExportNextIndex || base64Data == null || base64Data.length() > 350000) {
+                    cancelChunkedExport(requestId, "invalid_chunk");
+                    return;
+                }
+                byte[] chunk;
+                try { chunk = Base64.decode(base64Data, Base64.NO_WRAP); }
+                catch (IllegalArgumentException error) {
+                    cancelChunkedExport(requestId, "invalid_chunk");
+                    return;
+                }
+                if (chunk.length > 256 * 1024
+                    || chunkedExportReceivedBytes + chunk.length > chunkedExportExpectedBytes) {
+                    cancelChunkedExport(requestId, "too_large");
+                    return;
+                }
+                try (FileOutputStream stream = new FileOutputStream(pendingAttachmentTempFile, true)) {
+                    stream.write(chunk);
+                } catch (IOException error) {
+                    cancelChunkedExport(requestId, "write_failed");
+                    return;
+                }
+                chunkedExportReceivedBytes += chunk.length;
+                chunkedExportNextIndex += 1;
+            }
+        }
+
+        @JavascriptInterface
+        public void finishChunkedFileExport(String requestId) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            synchronized (MainActivity.this) {
+                if (!fileExportReserved || !requestId.equals(pendingAttachmentRequestId)
+                    || pendingAttachmentTempFile == null || chunkedExportNextIndex < 0
+                    || chunkedExportReceivedBytes != chunkedExportExpectedBytes) {
+                    cancelChunkedExport(requestId, "incomplete_export");
+                    return;
+                }
+                chunkedExportNextIndex = -1;
+            }
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    synchronized (MainActivity.this) {
+                        if (!requestId.equals(pendingAttachmentRequestId) || pendingAttachmentTempFile == null) return;
+                        chunkedPickerActive = true;
+                    }
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType(chunkedExportMimeType);
+                    intent.putExtra(Intent.EXTRA_TITLE, sanitizeGenericFileName(chunkedExportFileName, chunkedExportMimeType));
+                    try { startActivityForResult(intent, REQUEST_SAVE_ATTACHMENT); }
+                    catch (ActivityNotFoundException error) {
+                        chunkedPickerActive = false;
+                        cancelChunkedExport(requestId, "no_file_picker");
+                        Toast.makeText(MainActivity.this, "没有可保存附件的应用。", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void abortChunkedFileExport(String requestId) {
+            if (!isSafeClassroomRequestId(requestId)) return;
+            synchronized (MainActivity.this) {
+                if (requestId.equals(pendingAttachmentRequestId) && pendingAttachmentTempFile != null)
+                    cancelChunkedExport(requestId, "canceled");
+            }
+        }
+
         private void saveBase64FileInternal(String requestId, String fileName, String mimeType, String base64Data) {
             if (base64Data == null) {
                 postFileExportResponse(requestId, "error", "invalid_data");
@@ -873,6 +989,30 @@ public final class MainActivity extends Activity {
             fileExportReserved = false;
         }
         postFileExportResponse(requestId, status, errorCode);
+    }
+
+    private void cancelChunkedExport(String requestId, String errorCode) {
+        synchronized (this) {
+            if (!requestId.equals(pendingAttachmentRequestId) || pendingAttachmentTempFile == null) {
+                postFileExportResponse(requestId, "error", "invalid_state");
+                return;
+            }
+            File temporary = pendingAttachmentTempFile;
+            boolean pickerActive = chunkedPickerActive;
+            pendingAttachmentTempFile = null;
+            pendingAttachmentRequestId = null;
+            chunkedExportFileName = null;
+            chunkedExportMimeType = null;
+            chunkedExportExpectedBytes = 0;
+            chunkedExportReceivedBytes = 0;
+            chunkedExportNextIndex = 0;
+            if (temporary.exists() && !temporary.delete()) {
+                Log.w(TAG, "Temporary export file cleanup deferred");
+            }
+            String status = "canceled".equals(errorCode) ? "canceled" : "error";
+            if (pickerActive) postFileExportResponse(requestId, status, errorCode);
+            else finishFileExport(requestId, status, errorCode);
+        }
     }
 
     private static boolean isSafeActivationCode(String code) {
@@ -1042,16 +1182,21 @@ public final class MainActivity extends Activity {
             return;
         }
         if (requestCode == REQUEST_SAVE_ATTACHMENT) {
+            chunkedPickerActive = false;
             final byte[] bytes = pendingAttachmentBytes;
+            final File temporary = pendingAttachmentTempFile;
             final String requestId = pendingAttachmentRequestId;
             pendingAttachmentBytes = null;
+            pendingAttachmentTempFile = null;
             pendingAttachmentRequestId = null;
             if (resultCode != RESULT_OK) {
+                if (temporary != null) temporary.delete();
                 finishFileExport(requestId, "canceled", null);
                 return;
             }
             final Uri outputUri = data == null ? null : data.getData();
-            if (outputUri == null || bytes == null) {
+            if (outputUri == null || (bytes == null && temporary == null)) {
+                if (temporary != null) temporary.delete();
                 finishFileExport(requestId, "error", "write_failed");
                 return;
             }
@@ -1060,10 +1205,19 @@ public final class MainActivity extends Activity {
                 public void run() {
                     try (OutputStream stream = getContentResolver().openOutputStream(outputUri)) {
                         if (stream == null) throw new IllegalStateException("Cannot open output stream");
-                        stream.write(bytes);
+                        if (temporary != null) {
+                            try (InputStream source = new FileInputStream(temporary)) {
+                                byte[] buffer = new byte[64 * 1024];
+                                int count;
+                                while ((count = source.read(buffer)) != -1) stream.write(buffer, 0, count);
+                            }
+                        } else {
+                            stream.write(bytes);
+                        }
                         stream.flush();
                     } catch (Exception error) {
                         Log.e(TAG, "Failed to save attachment", error);
+                        if (temporary != null) temporary.delete();
                         finishFileExport(requestId, "error", "write_failed");
                         runOnUiThread(new Runnable() {
                             @Override
@@ -1073,6 +1227,7 @@ public final class MainActivity extends Activity {
                         });
                         return;
                     }
+                    if (temporary != null) temporary.delete();
                     finishFileExport(requestId, "saved", null);
                     if (requestId == null) {
                         runOnUiThread(new Runnable() {

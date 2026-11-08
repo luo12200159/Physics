@@ -3,11 +3,11 @@
 
   const STORAGE_KEY = "physics-learning-loop-v1";
   const VERSION_SOURCE = globalThis.PHYSICS_STUDIO_VERSION || Object.freeze({
-    appVersion: "4.2.0",
+    appVersion: "4.2.1",
     stateVersion: 10,
     reportFormatVersion: 4
   });
-  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.0");
+  const APP_VERSION = String(VERSION_SOURCE.appVersion || "4.2.1");
   // v2.9 state migration keeps every v2.8 record and adds explicit placement
   // sessions plus stable portable student identities.
   const STATE_VERSION = Math.max(10, Number(VERSION_SOURCE.stateVersion) || 10);
@@ -1148,7 +1148,22 @@
     "cm³": { dimension: "volume", factor: 1e-6 },
     "kg/m³": { dimension: "density", factor: 1 },
     "g/cm³": { dimension: "density", factor: 1000 },
-    Hz: { dimension: "frequency", factor: 1 }
+    Hz: { dimension: "frequency", factor: 1 },
+    C: { dimension: "charge", factor: 1 },
+    T: { dimension: "magneticField", factor: 1 },
+    Wb: { dimension: "magneticFlux", factor: 1 },
+    F: { dimension: "capacitance", factor: 1 },
+    "μF": { dimension: "capacitance", factor: 1e-6 },
+    pF: { dimension: "capacitance", factor: 1e-12 },
+    eV: { dimension: "energy", factor: 1.602176634e-19 },
+    "N/C": { dimension: "electricField", factor: 1 },
+    "V/m": { dimension: "electricField", factor: 1 },
+    "N·s": { dimension: "momentum", factor: 1 },
+    "kg·m/s": { dimension: "momentum", factor: 1 },
+    "rad/s": { dimension: "angularSpeed", factor: 1 },
+    K: { dimension: "temperatureKelvin", factor: 1 },
+    "℃": { dimension: "temperatureCelsius", factor: 1 },
+    mol: { dimension: "amount", factor: 1 }
   };
 
   const quantityDimensions = {
@@ -2244,7 +2259,17 @@
     if (!Array.isArray(parts) || parts.length !== ids.length || new Set(parts.map((part) => part?.id)).size !== ids.length || parts.some((part) => !ids.includes(part?.id))) return pending("作答缺少小问、包含重复 ID 或未知小问", "part-structure");
     const issues = [];
     let matched = 0;
-    const directions = { right: "right", left: "left", up: "up", down: "down", "向右": "right", "向左": "left", "向上": "up", "向下": "down" };
+    const directions = {
+      right: "right", left: "left", up: "up", down: "down",
+      "incline-up": "incline-up", "incline-down": "incline-down",
+      "into-page": "into-page", "out-of-page": "out-of-page",
+      clockwise: "clockwise", counterclockwise: "counterclockwise",
+      "向右": "right", "向左": "left", "向上": "up", "向下": "down",
+      "水平向右": "right", "水平向左": "left", "竖直向上": "up", "竖直向下": "down",
+      "沿斜面向上": "incline-up", "沿斜面向下": "incline-down",
+      "垂直纸面向里": "into-page", "垂直纸面向外": "out-of-page",
+      "顺时针": "clockwise", "逆时针": "counterclockwise"
+    };
     for (const part of schema.parts) {
       const actual = parts.find((item) => item.id === part.id);
       if (part.kind === "choice") {
@@ -2258,7 +2283,7 @@
       if (part.kind !== "quantity") return pending("解释、判断或未知类型需要人工评分规范");
       const expected = part.expected;
       const tolerance = part.tolerance;
-      const quantityKinds = { force: "force", mass: "M", area: "area", pressure: "pressure", speed: "speed", acceleration: "acceleration", length: "L", time: "T", volume: "volume", energy: "energy", power: "power", voltage: "voltage", current: "current", resistance: "resistance", density: "density", frequency: "frequency" };
+      const quantityKinds = { force: "force", mass: "M", area: "area", pressure: "pressure", speed: "speed", acceleration: "acceleration", length: "L", time: "T", volume: "volume", energy: "energy", power: "power", voltage: "voltage", current: "current", resistance: "resistance", density: "density", frequency: "frequency", charge: "charge", magneticField: "magneticField", magneticFlux: "magneticFlux", capacitance: "capacitance", electricField: "electricField", momentum: "momentum", angularSpeed: "angularSpeed", temperatureKelvin: "temperatureKelvin", temperatureCelsius: "temperatureCelsius", amount: "amount" };
       if (!expected || typeof expected.value !== "number" || !Number.isFinite(expected.value) || !unitDefinitions[expected.unit]
         || !tolerance || !Number.isFinite(tolerance.absolute) || !Number.isFinite(tolerance.relative) || tolerance.absolute < 0 || tolerance.relative < 0) return pending("期望物理量、支持单位或题目级容差缺失");
       if (!quantityKinds[part.quantity] || quantityKinds[part.quantity] !== unitDefinitions[expected.unit].dimension) return pending("物理量身份与期望单位不一致或尚未定义");
